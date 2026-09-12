@@ -253,6 +253,12 @@ class Routes:
         params = {"id": video.id}
         if quality.id != "auto":
             params["quality"] = quality.id
+        manual_offset = query.get("adelay", ["0"])[0]
+        try:
+            if float(manual_offset):
+                params["adelay"] = manual_offset
+        except (TypeError, ValueError):
+            pass
         if burn_track is not None:
             mode, badge = "transcode", f"Burning in {burn_track.label}"
             params["sub"] = burn_track.id

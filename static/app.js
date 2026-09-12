@@ -82,6 +82,7 @@
     activeSubtitle: 'off',
     quality: 'auto',
     qualities: [],
+    audioOffset: 0,
     lastPointerMove: 0
   };
 
@@ -432,7 +433,8 @@
 
     try {
       const plan = await getJSON(API.playback + '?id=' + encodeURIComponent(videoId) +
-        '&quality=' + encodeURIComponent(state.quality));
+        '&quality=' + encodeURIComponent(state.quality) +
+        '&adelay=' + encodeURIComponent(state.audioOffset));
       startPlayback(plan);
     } catch (err) {
       el.buffering.classList.add('hidden');
@@ -883,7 +885,8 @@
 
     try {
       const next = await getJSON(API.playback + '?id=' + encodeURIComponent(plan.id) +
-        '&quality=' + encodeURIComponent(qualityId));
+        '&quality=' + encodeURIComponent(qualityId) +
+        '&adelay=' + encodeURIComponent(state.audioOffset));
       startPlayback(next, at);
       if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle);
       showToast('Quality: ' + (describeQuality(next) || qualityId), 2500);
@@ -914,12 +917,116 @@
 
   function menusOpen() {
     return !el.subtitleMenu.classList.contains('hidden') ||
-      !el.qualityMenu.classList.contains('hidden');
+      !el.qualityMenu.classList.contains('hidden') ||
+      !el.audioSyncMenu.classList.contains('hidden');
   }
 
   function closeMenus() {
     closeSubtitleMenu();
     closeQualityMenu();
+    closeAudioSyncMenu();
+  }
+
+  // --- Audio sync ------------------------------------------------------
+  const SYNC_STEPS = [-400, -300, -200, -150, -100, -50, 0, 50, 100, 150, 200, 300, 400];
+
+  function updateSyncLabel() {
+    const value = state.audioOffset;
+    el.syncLabel.textContent = value === 0 ? '0' : (value > 0 ? '+' : '') + value;
+    el.btnAudioSync.classList.toggle('adjusted', value !== 0);
+  }
+
+  function renderAudioSyncMenu() {
+    const menu = el.audioSyncMenu;
+    menu.replaceChildren();
+
+    const heading = document.createElement('div');
+    heading.className = 'popup-heading';
+    heading.textContent = 'Audio sync';
+    menu.appendChild(heading);
+
+    SYNC_STEPS.forEach(value => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'popup-item';
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', String(state.audioOffset === value));
+      item.dataset.syncValue = String(value);
+
+      const text = document.createElement('span');
+      text.className = 'popup-item-label';
+      text.textContent = value === 0 ? 'In sync (0 ms)'
+        : (value > 0 ? '+' : '') + value + ' ms';
+      item.appendChild(text);
+
+      if (value !== 0) {
+        const hint = document.createElement('span');
+        hint.className = 'popup-item-hint';
+        hint.textContent = value > 0 ? 'audio later' : 'audio earlier';
+        item.appendChild(hint);
+      }
+      menu.appendChild(item);
+    });
+
+    const note = document.createElement('div');
+    note.className = 'popup-note';
+    const plan = state.playback;
+    const auto = plan && plan.reorder_delay_ms ? plan.reorder_delay_ms : 0;
+    const rows = ['Use this if speech does not match the lips.'];
+    if (auto) rows.push('Automatic B-frame correction: ' + auto + ' ms');
+    rows.forEach(line => {
+      const row = document.createElement('div');
+      row.textContent = line;
+      note.appendChild(row);
+    });
+    menu.appendChild(note);
+  }
+
+  async function selectAudioOffset(value) {
+    const plan = state.playback;
+    closeAudioSyncMenu();
+    if (!plan || value === state.audioOffset) return;
+
+    const at = displayTime();
+    const previousSubtitle = state.activeSubtitle;
+    state.audioOffset = value;
+    try {
+      localStorage.setItem('litejelly_audio_offset', String(value));
+    } catch (err) { /* storage unavailable */ }
+    updateSyncLabel();
+    el.buffering.classList.remove('hidden');
+
+    try {
+      const next = await getJSON(API.playback + '?id=' + encodeURIComponent(plan.id) +
+        '&quality=' + encodeURIComponent(state.quality) +
+        '&adelay=' + encodeURIComponent(value));
+      startPlayback(next, at);
+      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle);
+      showToast('Audio sync ' + (value > 0 ? '+' : '') + value + ' ms', 2500);
+    } catch (err) {
+      el.buffering.classList.add('hidden');
+      showToast('Could not adjust audio sync: ' + err.message, 4000);
+    }
+  }
+
+  function toggleAudioSyncMenu() {
+    if (el.audioSyncMenu.classList.contains('hidden')) {
+      closeSubtitleMenu();
+      closeQualityMenu();
+      renderAudioSyncMenu();
+      el.audioSyncMenu.classList.remove('hidden');
+      el.btnAudioSync.setAttribute('aria-expanded', 'true');
+      const current = $('.popup-item[aria-checked="true"]', el.audioSyncMenu);
+      (current || $('.popup-item', el.audioSyncMenu)).focus();
+      showOSD(true);
+    } else {
+      closeAudioSyncMenu();
+    }
+  }
+
+  function closeAudioSyncMenu() {
+    el.audioSyncMenu.classList.add('hidden');
+    el.btnAudioSync.setAttribute('aria-expanded', 'false');
   }
 
   // --- Progress persistence --------------------------------------------
@@ -1160,6 +1267,7 @@
       case 'm': applyVolume(el.video.muted || el.video.volume === 0 ? 1 : 0); break;
       case 'c': toggleSubtitleMenu(); break;
       case 'q': toggleQualityMenu(); break;
+      case 'a': toggleAudioSyncMenu(); break;
       case '+':
       case '=': applyVolume(el.video.volume + 0.1); break;
       case '-': applyVolume(el.video.volume - 0.1); break;
@@ -1208,6 +1316,9 @@
     el.btnQuality = $('#btn-quality');
     el.qualityMenu = $('#quality-menu');
     el.qualityLabel = $('#quality-label');
+    el.btnAudioSync = $('#btn-audiosync');
+    el.audioSyncMenu = $('#audiosync-menu');
+    el.syncLabel = $('#sync-label');
     el.btnMute = $('#btn-mute');
     el.volumeRange = $('#volume-range');
     el.btnSpeed = $('#btn-speed');
@@ -1291,6 +1402,15 @@
     el.qualityMenu.addEventListener('click', event => {
       const item = event.target.closest('.popup-item');
       if (item) selectQuality(item.dataset.qualityId);
+    });
+
+    el.btnAudioSync.addEventListener('click', event => {
+      event.stopPropagation();
+      toggleAudioSyncMenu();
+    });
+    el.audioSyncMenu.addEventListener('click', event => {
+      const item = event.target.closest('.popup-item');
+      if (item) selectAudioOffset(parseInt(item.dataset.syncValue, 10));
     });
 
     $('#player-touch-area').addEventListener('click', () => {
@@ -1450,9 +1570,12 @@
       if (!isNaN(saved)) storedVolume = saved;
       const savedQuality = localStorage.getItem('litejelly_quality');
       if (savedQuality) state.quality = savedQuality;
+      const savedOffset = parseInt(localStorage.getItem('litejelly_audio_offset'), 10);
+      if (!isNaN(savedOffset)) state.audioOffset = savedOffset;
     } catch (err) { /* storage unavailable */ }
     applyVolume(storedVolume);
     updateQualityLabel();
+    updateSyncLabel();
 
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('fullscreenchange', syncFullscreenIcons);

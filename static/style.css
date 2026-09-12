@@ -1152,6 +1152,16 @@ select:focus:not(:focus-visible) {
   letter-spacing: 0.05em;
 }
 
+.sync-btn .btn-subtext {
+  font-size: 0.6rem;
+  opacity: 0.8;
+}
+
+.control-icon-btn.adjusted {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* Pointer follows the chrome: hidden while the OSD is hidden. */
 .player-container.idle,
 .player-container.idle * {
