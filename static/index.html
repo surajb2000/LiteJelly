@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#07090e">
+  <title>LiteJelly</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/static/site.webmanifest">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Ambient background glow -->
+  <div class="ambient-glow" aria-hidden="true"></div>
+
+  <!-- Top Glass Bar -->
+  <header id="topbar">
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="logo-icon" aria-hidden="true">▶</span>
+        <span id="server-name" class="logo-text">LiteJelly</span>
+      </div>
+      <div class="search-box">
+        <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" id="search-input" placeholder="Search videos..." autocomplete="off" spellcheck="false" aria-label="Search videos">
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="rescan-btn" class="icon-btn" title="Rescan library" aria-label="Rescan library">
+        <svg viewBox="0 0 24 24" width="19" height="19" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+      </button>
+      <button id="fullscreen-btn" class="icon-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">
+        <svg class="fs-icon-enter" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        <svg class="fs-icon-exit hidden" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+      </button>
+      <div class="status-pill">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="media-count">0 videos</span>
+      </div>
+      <div id="clock" class="clock-display">--:--</div>
+    </div>
+  </header>
+
+  <!-- Library View -->
+  <main id="library">
+    <section id="continue-section" class="rail-section hidden" aria-labelledby="continue-heading">
+      <h2 id="continue-heading" class="rail-title">Continue watching</h2>
+      <div id="continue-row" class="rail" role="list"></div>
+    </section>
+
+    <div class="library-header">
+      <div class="section-title-wrap">
+        <h1 class="section-title">Media Library</h1>
+        <p class="section-subtitle">Local streaming optimized for TV &amp; mobile</p>
+      </div>
+      <div class="library-tools">
+        <div class="filter-chips" role="group" aria-label="Filter by format">
+          <button class="chip active" data-filter="all" aria-pressed="true">All</button>
+          <button class="chip" data-filter="mp4" aria-pressed="false">MP4</button>
+          <button class="chip" data-filter="mkv" aria-pressed="false">MKV</button>
+          <button class="chip" data-filter="other" aria-pressed="false">Other</button>
+        </div>
+        <label class="sort-control">
+          <span class="sr-only">Sort by</span>
+          <select id="sort-select">
+            <option value="recent">Recently added</option>
+            <option value="name">Name (A–Z)</option>
+            <option value="size">Largest first</option>
+            <option value="folder">Folder</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div id="loading" class="loading-container">
+      <div class="spinner" aria-hidden="true"></div>
+      <span>Scanning library...</span>
+    </div>
+
+    <div id="video-grid" class="grid" role="list"></div>
+
+    <div id="empty-state" class="empty-container hidden">
+      <div class="empty-icon" aria-hidden="true">🎬</div>
+      <h2 id="empty-title">No videos found</h2>
+      <p id="empty-hint" class="hint">Drop video files into your media folder and rescan.</p>
+    </div>
+  </main>
+
+  <!-- Player View -->
+  <div id="player" class="player-container hidden" role="region" aria-label="Video player">
+    <video id="video-player" playsinline webkit-playsinline></video>
+
+    <div id="subtitle-layer" class="subtitle-layer" aria-hidden="true"></div>
+
+    <div id="buffering" class="buffering hidden" aria-hidden="true">
+      <div class="spinner"></div>
+    </div>
+
+    <div id="player-touch-area" class="player-touch-area"></div>
+
+    <div id="pause-indicator" class="center-playback-indicator hidden" aria-hidden="true">
+      <div class="center-btn">
+        <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      </div>
+    </div>
+
+    <!-- On-Screen Display -->
+    <div id="osd" class="osd hidden">
+      <div class="osd-top">
+        <button id="player-back-btn" class="osd-btn back-btn" title="Back to library" aria-label="Back to library">
+          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2.5" fill="none" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <div class="osd-title-group">
+          <h2 id="osd-title" class="osd-movie-title"></h2>
+          <span id="osd-badge" class="osd-meta-badge"></span>
+        </div>
+        <button id="player-fs-btn" class="osd-btn" title="Fullscreen" aria-label="Toggle fullscreen">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </button>
+      </div>
+
+      <div class="osd-bottom">
+        <div class="progress-wrap" id="progress-container">
+          <div class="progress-bar">
+            <div id="progress-buffered" class="progress-buffered"></div>
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <input id="seek-range" class="seek-range" type="range" min="0" max="1000" value="0" step="1"
+                 aria-label="Seek" aria-valuetext="0:00">
+          <div id="scrub-preview" class="scrub-preview hidden"></div>
+        </div>
+
+        <div class="osd-controls-row">
+          <div class="controls-left">
+            <button id="btn-play-pause" class="control-icon-btn" title="Play/Pause" aria-label="Play or pause">
+              <svg id="icon-play" class="hidden" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <svg id="icon-pause" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <button id="btn-rewind" class="control-icon-btn" title="Rewind 10 seconds" aria-label="Rewind 10 seconds">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
+              <span class="btn-subtext">10</span>
+            </button>
+            <button id="btn-forward" class="control-icon-btn" title="Forward 10 seconds" aria-label="Forward 10 seconds">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
+              <span class="btn-subtext">10</span>
+            </button>
+            <div class="volume-control">
+              <button id="btn-mute" class="control-icon-btn" title="Mute" aria-label="Mute">
+                <svg id="icon-volume" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+                <svg id="icon-muted" class="hidden" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
+              </button>
+              <input id="volume-range" class="volume-range" type="range" min="0" max="100" value="100" step="1" aria-label="Volume">
+            </div>
+            <div class="osd-time">
+              <span id="current-time">0:00</span>
+              <span class="time-sep" aria-hidden="true">/</span>
+              <span id="total-time">0:00</span>
+            </div>
+          </div>
+
+          <div class="controls-right">
+            <button id="btn-subtitles" class="control-icon-btn" title="Subtitles" aria-label="Subtitles"
+                    aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6.5 13.5h4M13.5 13.5h4" stroke-linecap="round"/></svg>
+            </button>
+            <button id="btn-speed" class="control-icon-btn speed-btn" title="Playback speed" aria-label="Playback speed">
+              <span>1x</span>
+            </button>
+            <button id="btn-aspect" class="control-icon-btn aspect-btn" title="Fit or fill screen" aria-label="Fit or fill screen">
+              <span>FIT</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="subtitle-menu" class="popup-menu hidden" role="menu" aria-label="Subtitle tracks"></div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <template id="card-template">
+    <button class="card" type="button" role="listitem">
+      <span class="card-thumb">
+        <img class="thumb-img" alt="" decoding="async">
+        <span class="card-letter"></span>
+        <span class="card-badge"></span>
+        <span class="card-play-overlay" aria-hidden="true">
+          <span class="card-play-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          </span>
+        </span>
+        <span class="card-progress hidden"><span class="card-progress-fill"></span></span>
+      </span>
+      <span class="card-info">
+        <span class="card-title"></span>
+        <span class="card-meta">
+          <span class="card-size"></span>
+          <span class="meta-dot" aria-hidden="true">•</span>
+          <span class="card-date"></span>
+        </span>
+      </span>
+    </button>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

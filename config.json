@@ -1,0 +1,19 @@
+{
+    "port": 8000,
+    "host": "0.0.0.0",
+    "media_dirs": [],
+    "server_name": "LiteJelly",
+    "scan_interval": 60,
+    "thumbnail_workers": 2,
+    "allow_hevc_direct": false,
+    "transcode": {
+        "video_codec": "libx264",
+        "audio_codec": "aac",
+        "preset": "veryfast",
+        "crf": 22,
+        "max_video_bitrate": "3000k",
+        "audio_bitrate": "160k",
+        "resolution": "1280x720",
+        "max_concurrent": 2
+    }
+}

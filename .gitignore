@@ -1,0 +1,25 @@
+# Bundled ffmpeg binaries (hundreds of MB - keep them out of git)
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
+ffmpeg
+ffprobe
+ffplay
+bin/
+
+# Generated caches and database
+.cache/
+.thumbnails/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

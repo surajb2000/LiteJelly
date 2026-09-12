@@ -1,0 +1,1346 @@
+/* ==========================================================================
+   LiteJelly Modern Dark Theme (TV & Mobile Optimized)
+   ========================================================================== */
+:root {
+  --bg: #07090e;
+  --card-bg: rgba(22, 27, 34, 0.75);
+  --card-border: rgba(255, 255, 255, 0.08);
+  --card-hover: rgba(35, 43, 56, 0.9);
+
+  --accent: #38bdf8;
+  --accent-glow: rgba(56, 189, 248, 0.35);
+  --accent-secondary: #818cf8;
+
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --topbar-height: 72px;
+  --border-radius-sm: 8px;
+  --border-radius-md: 14px;
+  --border-radius-lg: 20px;
+
+  --glass-bg: rgba(15, 23, 42, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-blur: blur(16px);
+
+  /* Bundled system stack - no network fetch, so it works fully offline. */
+  --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display",
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-stack);
+  background: var(--bg);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body.playing {
+  overflow: hidden;
+}
+
+/* Ambient Radial Glow */
+.ambient-glow {
+  position: fixed;
+  top: -150px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 700px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.12) 0%, rgba(129, 140, 248, 0.04) 50%, transparent 80%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ==========================================================================
+   Header Glass Bar
+   ========================================================================== */
+#topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--topbar-height);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 24px;
+  z-index: 100;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.logo-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  color: #000;
+  font-size: 14px;
+  font-weight: 900;
+  border-radius: 10px;
+  box-shadow: 0 0 16px var(--accent-glow);
+}
+
+.logo-text {
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(to right, #ffffff, #94a3b8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Search Box */
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.search-box input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 99px;
+  padding: 9px 16px 9px 38px;
+  color: #fff;
+  font-size: 0.88rem;
+  font-family: inherit;
+  width: 220px;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.search-box input:focus {
+  width: 280px;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.icon-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px 14px;
+  border-radius: 99px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+
+.clock-display {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  padding-left: 6px;
+}
+
+/* ==========================================================================
+   Main Library Content
+   ========================================================================== */
+#library {
+  position: relative;
+  z-index: 1;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: calc(var(--topbar-height) + 28px) 24px 60px;
+}
+
+.library-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 24px;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.section-title {
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #fff;
+}
+
+.section-subtitle {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.filter-chips {
+  display: flex;
+  gap: 8px;
+}
+
+.chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  padding: 7px 16px;
+  border-radius: 99px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+
+/* Video Cards Grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-gap: 22px;
+  gap: 22px;
+}
+
+/* Card (a <button>, so the browser handles keyboard activation) */
+.card {
+  display: block;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.22s ease, border-color 0.22s ease;
+  position: relative;
+  outline: none;
+  backdrop-filter: blur(8px);
+}
+
+.card:hover {
+  background: var(--card-hover);
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-4px);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.4);
+}
+
+/* D-pad Focus (TV Remote Highlight) */
+.card:focus,
+.card.focused {
+  outline: none;
+  border-color: var(--accent);
+  transform: scale(1.04) translateY(-2px);
+  box-shadow: 0 0 0 3px var(--accent), 0 12px 30px var(--accent-glow);
+  z-index: 10;
+}
+
+/* Thumbnail Box - padding ratio instead of aspect-ratio for old engines */
+.card-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding-top: 56.25%;
+  background: linear-gradient(135deg, #111827 0%, #030712 100%);
+  overflow: hidden;
+}
+
+.thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0;
+  transition: transform 0.35s ease, opacity 0.3s ease;
+}
+
+.thumb-img.loaded {
+  opacity: 1;
+}
+
+.card:hover .thumb-img,
+.card.focused .thumb-img {
+  transform: scale(1.06);
+}
+
+.card-letter {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 2.8rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.12);
+  text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+}
+
+/* Quick Play Overlay Icon on Card */
+.card-play-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.card:hover .card-play-overlay,
+.card.focused .card-play-overlay {
+  opacity: 1;
+}
+
+.card-play-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 15px var(--accent-glow);
+  transform: scale(0.85);
+  transition: transform 0.2s ease;
+}
+
+.card:hover .card-play-icon,
+.card.focused .card-play-icon {
+  transform: scale(1);
+}
+
+/* Badges */
+.card-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+  z-index: 2;
+}
+
+.card-badge {
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
+}
+
+.card-badge.ext-mp4,
+.card-badge.ext-m4v {
+  background: rgba(16, 185, 129, 0.85);
+  color: #fff;
+}
+
+.card-badge.ext-mkv {
+  background: rgba(245, 158, 11, 0.85);
+  color: #000;
+}
+
+.card-badge.ext-webm,
+.card-badge.ext-avi {
+  background: rgba(14, 165, 233, 0.85);
+  color: #fff;
+}
+
+/* Card Info */
+.card-info {
+  display: block;
+  padding: 14px 16px;
+}
+
+.card-title {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 6px;
+}
+
+.card-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ==========================================================================
+   Full Player View
+   ========================================================================== */
+.player-container {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 9999;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#video-player {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.player-touch-area {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 10;
+  cursor: pointer;
+}
+
+/* Center Playback Indicator (Big Icon) */
+.center-playback-indicator {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 20;
+  pointer-events: none;
+}
+
+.center-btn {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  animation: pulseScale 0.25s ease-out;
+}
+
+@keyframes pulseScale {
+  0% { transform: scale(0.7); opacity: 0.5; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* OSD Overlay */
+.osd {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.75) 0%, transparent 25%, transparent 65%, rgba(0,0,0,0.85) 100%);
+  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.osd.hidden {
+  opacity: 0;
+}
+
+.osd * {
+  pointer-events: auto;
+}
+
+/* OSD Top Bar */
+.osd-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 32px;
+  gap: 16px;
+}
+
+.osd-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  backdrop-filter: blur(8px);
+}
+
+.osd-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.osd-title-group {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.osd-movie-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 65vw;
+}
+
+.osd-meta-badge {
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: var(--accent);
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+/* OSD Bottom Controls */
+.osd-bottom {
+  padding: 0 32px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Progress Scrubber */
+.progress-wrap {
+  position: relative;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 99px;
+  position: relative;
+  transition: height 0.15s ease;
+  overflow: visible;
+}
+
+.progress-wrap:hover .progress-bar {
+  height: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(to right, var(--accent), var(--accent-secondary));
+  border-radius: 99px;
+  width: 0%;
+  position: relative;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 8px var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.progress-wrap:hover .progress-fill::after {
+  opacity: 1;
+}
+
+/* Controls Row */
+.osd-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.controls-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.control-icon-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.control-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: scale(1.05);
+}
+
+.btn-subtext {
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: -2px;
+}
+
+.aspect-btn {
+  width: auto;
+  padding: 0 14px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.osd-time {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  margin-left: 10px;
+}
+
+.time-sep {
+  color: var(--text-muted);
+  margin: 0 4px;
+}
+
+/* ==========================================================================
+   Loading & Empty States
+   ========================================================================== */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 0;
+  gap: 16px;
+  color: var(--text-secondary);
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.empty-container {
+  text-align: center;
+  padding: 80px 0;
+}
+
+.empty-icon {
+  font-size: 3.5rem;
+  margin-bottom: 12px;
+}
+
+.empty-container h2 {
+  font-size: 1.4rem;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.empty-container .hint {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   Toast Notification
+   ========================================================================== */
+.toast {
+  position: fixed;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  padding: 10px 22px;
+  border-radius: 99px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  z-index: 10000;
+  transition: all 0.25s ease;
+  pointer-events: none;
+}
+
+.toast.hidden {
+  opacity: 0;
+  transform: translate(-50%, 15px);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ==========================================================================
+   Responsive Breakpoints
+   ========================================================================== */
+@media (max-width: 640px) {
+  #topbar {
+    padding: 0 14px;
+    height: 64px;
+  }
+
+  .search-box input {
+    width: 140px;
+  }
+
+  .search-box input:focus {
+    width: 180px;
+  }
+
+  .clock-display {
+    display: none;
+  }
+
+  #library {
+    padding: calc(var(--topbar-height) + 14px) 14px 40px;
+  }
+
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+    grid-gap: 12px;
+    gap: 12px;
+  }
+
+  .card-info {
+    padding: 10px 12px;
+  }
+
+  .card-title {
+    font-size: 0.85rem;
+  }
+
+  .osd-top {
+    padding: 16px;
+  }
+
+  .osd-bottom {
+    padding: 0 16px 16px;
+  }
+
+  .osd-movie-title {
+    font-size: 1rem;
+    max-width: 50vw;
+  }
+
+  .control-icon-btn {
+    width: 38px;
+    height: 38px;
+  }
+}
+
+/* ==========================================================================
+   Shared primitives
+   ========================================================================== */
+[hidden] {
+  display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* :focus-visible is kept in separate rules; grouping it with supported
+   selectors would make older engines drop the whole block. */
+button:focus,
+select:focus,
+input:focus {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.card:focus,
+.search-box input:focus {
+  outline: none;
+}
+
+button:focus:not(:focus-visible),
+select:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ==========================================================================
+   Library tools: sort, rails, card progress
+   ========================================================================== */
+.library-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sort-control select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: rgba(255, 255, 255, 0.05);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+  background-size: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 7px 32px 7px 14px;
+  border-radius: 99px;
+  cursor: pointer;
+}
+
+.sort-control select:hover {
+  color: #fff;
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.sort-control option {
+  background: #0f172a;
+  color: #fff;
+}
+
+.rail-section {
+  margin-bottom: 36px;
+}
+
+.rail-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 14px;
+  color: #fff;
+}
+
+.rail {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 4px 14px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.rail-card {
+  flex: 0 0 240px;
+  scroll-snap-align: start;
+}
+
+.card-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 3;
+  display: block;
+}
+
+.card-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to right, var(--accent), var(--accent-secondary));
+}
+
+/* ==========================================================================
+   Player additions
+   ========================================================================== */
+.osd.hidden {
+  display: flex !important;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.osd.hidden * {
+  pointer-events: none;
+}
+
+.buffering {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 25;
+  pointer-events: none;
+}
+
+.buffering .spinner {
+  width: 54px;
+  height: 54px;
+  border-width: 4px;
+}
+
+/* Native range input layered over the styled progress bar for real scrubbing */
+.seek-range {
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  left: 0;
+  right: 0;
+  width: 100%;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  z-index: 4;
+}
+
+.seek-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 10px var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.seek-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 10px var(--accent);
+  opacity: 0;
+}
+
+.progress-wrap:hover .seek-range::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+.seek-range:focus-visible::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+.progress-wrap:hover .seek-range::-moz-range-thumb {
+  opacity: 1;
+}
+
+.progress-buffered {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 0%;
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 99px;
+}
+
+.progress-wrap.pending .progress-fill {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--accent) 0 8px,
+    var(--accent-secondary) 8px 16px
+  );
+  animation: scrubPulse 0.9s linear infinite;
+}
+
+@keyframes scrubPulse {
+  from { background-position: 0 0; }
+  to { background-position: 32px 0; }
+}
+
+.volume-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.volume-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0;
+  opacity: 0;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.3);
+  transition: width 0.2s ease, opacity 0.2s ease;
+  cursor: pointer;
+}
+
+.volume-control:hover .volume-range {
+  width: 90px;
+  opacity: 1;
+}
+
+.volume-range:focus-visible {
+  width: 90px;
+  opacity: 1;
+}
+
+.volume-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.volume-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.speed-btn,
+.aspect-btn {
+  width: auto;
+  padding: 0 14px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.controls-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.control-icon-btn.unavailable {
+  opacity: 0.45;
+}
+
+/* Subtitle popup */
+.popup-menu {
+  position: absolute;
+  right: 32px;
+  bottom: 108px;
+  min-width: 240px;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  border-radius: var(--border-radius-md);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.6);
+  padding: 8px;
+  z-index: 40;
+}
+
+.popup-heading {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 8px 12px 10px;
+}
+
+.popup-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: var(--border-radius-sm);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.popup-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.popup-item:focus {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.popup-item[aria-checked="true"] {
+  background: rgba(56, 189, 248, 0.16);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.popup-item[aria-checked="true"] .popup-item-label::before {
+  content: '✓ ';
+}
+
+.popup-item-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.popup-empty {
+  padding: 4px 12px 12px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+/* Subtitle rendering: cues are drawn into our own layer so they can sit above
+   the control dock, which native cue positioning cannot do reliably. */
+.subtitle-layer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 6%;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8%;
+  pointer-events: none;
+  transition: bottom 0.25s ease;
+}
+
+.subtitle-layer.raised {
+  bottom: 20%;
+}
+
+.subtitle-cue {
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-family: var(--font-stack);
+  font-size: 22px;
+  font-size: clamp(15px, 2.5vw, 30px);
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: center;
+  padding: 0.15em 0.6em;
+  border-radius: 6px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9);
+  max-width: 100%;
+}
+
+.subtitle-cue i {
+  font-style: italic;
+}
+
+.subtitle-cue b {
+  font-weight: 700;
+}
+
+/* ==========================================================================
+   Motion and small-screen adjustments
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .card:hover,
+  .card:focus {
+    transform: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .library-tools {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .rail-card {
+    flex: 0 0 180px;
+  }
+
+  .popup-menu {
+    right: 16px;
+    bottom: 96px;
+    min-width: 200px;
+  }
+
+  .volume-control:hover .volume-range {
+    width: 64px;
+  }
+
+  .osd-time {
+    font-size: 0.8rem;
+    margin-left: 4px;
+  }
+}
+
+/* ==========================================================================
+   Legacy engine fallbacks
+   Applied via the .no-flex-gap class when flexbox gap is unsupported
+   (Android TV browsers predating Chrome 84).
+   ========================================================================== */
+html.no-flex-gap .brand > * + * { margin-left: 10px; }
+html.no-flex-gap .topbar-left > * + * { margin-left: 24px; }
+html.no-flex-gap .topbar-right > * + * { margin-left: 14px; }
+html.no-flex-gap .status-pill > * + * { margin-left: 8px; }
+html.no-flex-gap .library-header > * + * { margin-left: 20px; }
+html.no-flex-gap .library-tools > * + * { margin-left: 12px; }
+html.no-flex-gap .filter-chips > * + * { margin-left: 8px; }
+html.no-flex-gap .rail > * + * { margin-left: 16px; }
+html.no-flex-gap .card-meta > * + * { margin-left: 6px; }
+html.no-flex-gap .osd-top > * + * { margin-left: 16px; }
+html.no-flex-gap .osd-title-group > * + * { margin-left: 14px; }
+html.no-flex-gap .osd-bottom > * + * { margin-top: 16px; }
+html.no-flex-gap .controls-left > * + *,
+html.no-flex-gap .controls-right > * + * { margin-left: 12px; }
+html.no-flex-gap .volume-control > * + * { margin-left: 8px; }
+html.no-flex-gap .popup-item > * + * { margin-left: 14px; }
+html.no-flex-gap .loading-container > * + * { margin-top: 16px; }
+html.no-flex-gap .subtitle-layer > * + * { margin-top: 4px; }
