@@ -97,12 +97,17 @@ def parse_range(header: str | None, file_size: int):
 
 
 def _audio_delay_ms(info, plan, query) -> float:
-    """Reorder compensation for copied video, plus any manual trim."""
-    delay = info.reorder_delay * 1000.0 if plan.video_action == "copy" else 0.0
+    """Manual audio trim only.
+
+    Compensating the B-frame reorder delay automatically was tried and removed:
+    measuring the delivered audio against a beep reference showed ffmpeg
+    already accounts for most of it, so adding the full reorder depth pushed
+    the audio late instead of aligning it.
+    """
     try:
-        delay += float(query.get("adelay", ["0"])[0])
+        delay = float(query.get("adelay", ["0"])[0])
     except (TypeError, ValueError):
-        pass
+        delay = 0.0
     return max(-5000.0, min(5000.0, delay))
 
 

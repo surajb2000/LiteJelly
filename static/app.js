@@ -1004,10 +1004,8 @@
 
     const note = document.createElement('div');
     note.className = 'popup-note';
-    const plan = state.playback;
-    const auto = plan && plan.reorder_delay_ms ? plan.reorder_delay_ms : 0;
-    const rows = ['Use this if speech does not match the lips.'];
-    if (auto) rows.push('Automatic B-frame correction: ' + auto + ' ms');
+    const rows = ['Use this if speech does not match the lips.',
+      'Applied on the server, so it survives seeking.'];
     rows.forEach(line => {
       const row = document.createElement('div');
       row.textContent = line;
