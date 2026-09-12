@@ -124,8 +124,21 @@ class MediaInfo:
     audio_codec: str = ""
     width: int = 0
     height: int = 0
+    has_b_frames: int = 0
+    fps: float = 0.0
     subtitles: list[SubtitleStream] = field(default_factory=list)
     probed: bool = False
+
+    @property
+    def reorder_delay(self) -> float:
+        """Seconds the muxer pushes copied video later to keep DTS <= PTS.
+
+        Matroska stores no DTS, so muxing a B-frame stream into MP4 shifts the
+        video by the reorder depth while the audio stays put.
+        """
+        if self.has_b_frames > 0 and self.fps > 0:
+            return self.has_b_frames / self.fps
+        return 0.0
 
 
 @dataclass
@@ -274,6 +287,14 @@ class FFmpegTools:
                 info.video_codec = codec
                 info.width = int(stream.get("width") or 0)
                 info.height = int(stream.get("height") or 0)
+                info.has_b_frames = int(stream.get("has_b_frames") or 0)
+                rate = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "")
+                numerator, _, denominator = rate.partition("/")
+                try:
+                    if denominator and float(denominator):
+                        info.fps = float(numerator) / float(denominator)
+                except ValueError:
+                    info.fps = 0.0
             elif kind == "audio" and not info.audio_codec:
                 info.audio_codec = codec
             elif kind == "subtitle":
@@ -472,6 +493,7 @@ class FFmpegTools:
         start: float = 0.0,
         burn_subtitle_index: int | None = None,
         quality: QualityLevel | None = None,
+        audio_delay_ms: float = 0.0,
     ) -> list[str]:
         """ffmpeg command producing a fragmented MP4 on stdout."""
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error"]
@@ -528,7 +550,13 @@ class FFmpegTools:
             # Copied video keeps source timestamps while the audio is rebuilt,
             # so pad/trim the audio to stay locked to the video clock.
             if not burning:
-                cmd += ["-af", "aresample=async=1:first_pts=0"]
+                filters = ["aresample=async=1"]
+                if audio_delay_ms > 0.5:
+                    filters.append(f"adelay={audio_delay_ms:.0f}:all=1")
+                elif audio_delay_ms < -0.5:
+                    filters.append(f"atrim=start={abs(audio_delay_ms) / 1000:.3f}")
+                    filters.append("asetpts=PTS-STARTPTS")
+                cmd += ["-af", ",".join(filters)]
 
         cmd += [
             "-avoid_negative_ts", "make_zero",

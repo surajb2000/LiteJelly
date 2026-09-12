@@ -96,6 +96,16 @@ def parse_range(header: str | None, file_size: int):
     return start, min(end, file_size - 1)
 
 
+def _audio_delay_ms(info, plan, query) -> float:
+    """Reorder compensation for copied video, plus any manual trim."""
+    delay = info.reorder_delay * 1000.0 if plan.video_action == "copy" else 0.0
+    try:
+        delay += float(query.get("adelay", ["0"])[0])
+    except (TypeError, ValueError):
+        pass
+    return max(-5000.0, min(5000.0, delay))
+
+
 class Application:
     """Holds every service and maps request paths to handlers."""
 
@@ -275,6 +285,12 @@ class Routes:
             "output_height": out_height,
             "video_codec": info.video_codec,
             "audio_codec": info.audio_codec,
+            "video_action": plan.video_action,
+            "audio_action": plan.audio_action,
+            "audio_delay_ms": round(_audio_delay_ms(info, plan, query), 1),
+            "reorder_delay_ms": round(info.reorder_delay * 1000.0, 1),
+            "target_video_codec": app.config.transcode.video_codec,
+            "target_audio_codec": app.config.transcode.audio_codec,
             "quality": quality.id,
             "qualities": [
                 {"id": level.id, "label": level.label, "height": level.height}
@@ -353,6 +369,7 @@ class Routes:
         cmd = app.tools.build_stream_command(
             path, plan, app.config.transcode, start=start,
             burn_subtitle_index=burn_index, quality=quality,
+            audio_delay_ms=_audio_delay_ms(info, plan, query),
         )
         h.pump_process(cmd, label=f"{video.name} @ {start:.0f}s ({plan.mode}/{quality.id})")
 

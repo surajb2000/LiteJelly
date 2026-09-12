@@ -441,6 +441,36 @@
     }
   }
 
+  function codecLabel(name) {
+    const aliases = { libx264: 'h264', libx265: 'hevc', 'libvpx-vp9': 'vp9', libopus: 'opus' };
+    return aliases[name] || name || 'unknown';
+  }
+
+  // "Remuxed" only changes the container, which is easy to mistake for a
+  // re-encode, so spell out what happens to each stream.
+  function describePipeline(plan) {
+    const lines = [];
+    const sourceVideo = codecLabel(plan.video_codec);
+    if (plan.video_action === 'copy') {
+      lines.push('Video: ' + sourceVideo + ' copied untouched' +
+        (plan.height ? ' (' + plan.width + '\u00d7' + plan.height + ')' : ''));
+    } else {
+      lines.push('Video: ' + sourceVideo + ' re-encoded to ' +
+        codecLabel(plan.target_video_codec) +
+        (plan.output_height ? ' ' + plan.output_width + '\u00d7' + plan.output_height : ''));
+    }
+
+    if (!plan.audio_codec) {
+      lines.push('Audio: none');
+    } else if (plan.audio_action === 'copy') {
+      lines.push('Audio: ' + codecLabel(plan.audio_codec) + ' copied untouched');
+    } else {
+      lines.push('Audio: ' + codecLabel(plan.audio_codec) + ' converted to ' +
+        codecLabel(plan.target_audio_codec));
+    }
+    return lines.join('\n');
+  }
+
   function describeQuality(plan) {
     const height = plan.output_height || plan.height;
     if (!height) return '';
@@ -460,8 +490,7 @@
     el.osdTitle.textContent = plan.title || '';
     const detail = describeQuality(plan);
     el.osdBadge.textContent = detail ? plan.badge + ' \u00b7 ' + detail : plan.badge || '';
-    el.osdBadge.title = [plan.reason, plan.video_codec, plan.audio_codec]
-      .filter(Boolean).join(' \u00b7 ');
+    el.osdBadge.title = describePipeline(plan);
     updateQualityLabel();
     renderQualityMenu();
 
@@ -823,6 +852,17 @@
       }
       menu.appendChild(item);
     });
+
+    if (plan) {
+      const note = document.createElement('div');
+      note.className = 'popup-note';
+      describePipeline(plan).split('\n').forEach(line => {
+        const row = document.createElement('div');
+        row.textContent = line;
+        note.appendChild(row);
+      });
+      menu.appendChild(note);
+    }
   }
 
   async function selectQuality(qualityId) {

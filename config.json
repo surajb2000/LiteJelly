@@ -5,7 +5,7 @@
     "server_name": "LiteJelly",
     "scan_interval": 60,
     "thumbnail_workers": 2,
-    "allow_hevc_direct": false,
+    "allow_hevc_direct": true,
     "stream_buffer_mb": 8,
     "ffmpeg_path": "",
     "ffprobe_path": "",
