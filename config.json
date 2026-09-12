@@ -6,6 +6,8 @@
     "scan_interval": 60,
     "thumbnail_workers": 2,
     "allow_hevc_direct": false,
+    "ffmpeg_path": "",
+    "ffprobe_path": "",
     "transcode": {
         "video_codec": "libx264",
         "audio_codec": "aac",

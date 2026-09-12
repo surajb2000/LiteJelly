@@ -25,6 +25,8 @@ def parse_args(argv=None):
     parser.add_argument("--host", help="Address to bind (default 0.0.0.0)")
     parser.add_argument("--name", help="Display name shown in the UI")
     parser.add_argument("--dir", action="append", help="Media directory (repeatable)")
+    parser.add_argument("--ffmpeg", help="Path to the ffmpeg binary (or its folder)")
+    parser.add_argument("--ffprobe", help="Path to the ffprobe binary (or its folder)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     parser.add_argument("--version", action="version", version=f"LiteJelly {__version__}")
     return parser.parse_args(argv)

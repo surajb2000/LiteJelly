@@ -10,7 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from litejelly.library import parse_title, human_size
+from litejelly.library import parse_title, human_size, display_name
+from litejelly.ffmpeg import fit_within, resolve_quality, QUALITY_BY_ID
 from litejelly.paths import resolve_within, safe_resolve
 from litejelly.subtitles import srt_to_vtt, shift_vtt, _language_from_token
 from litejelly.web import parse_range
@@ -170,6 +171,63 @@ class TitleParsingTests(unittest.TestCase):
     def test_human_size(self):
         self.assertEqual(human_size(512), "512.0 B")
         self.assertTrue(human_size(5 * 1024 ** 3).endswith("GB"))
+
+
+class DisplayNameTests(unittest.TestCase):
+    def test_episodes_stay_distinct(self):
+        a = display_name(parse_title("The.Mentalist.S01E21.1080p.BluRay.x265-KONTRAST.mkv"))
+        b = display_name(parse_title("The.Mentalist.S01E22.1080p.BluRay.x265-KONTRAST.mkv"))
+        self.assertNotEqual(a, b)
+        self.assertTrue(a.endswith("S01E21"))
+        self.assertTrue(b.endswith("S01E22"))
+
+    def test_episode_numbers_are_padded(self):
+        name = display_name(parse_title("Show.S01E09.mkv"))
+        self.assertTrue(name.endswith("S01E09"), name)
+
+    def test_movies_are_unchanged(self):
+        self.assertEqual(display_name(parse_title("Inception.2010.1080p.mkv")), "Inception")
+
+    def test_sorted_order_is_natural(self):
+        files = [
+            "The.Mentalist.S02E01.1080p.mkv",
+            "The.Mentalist.S01E10.1080p.mkv",
+            "The.Mentalist.S01E09.1080p.mkv",
+        ]
+        names = sorted(display_name(parse_title(f)) for f in files)
+        self.assertEqual(
+            names,
+            ["The Mentalist \u00b7 S01E09",
+             "The Mentalist \u00b7 S01E10",
+             "The Mentalist \u00b7 S02E01"],
+        )
+
+
+class QualityTests(unittest.TestCase):
+    def test_never_upscales(self):
+        self.assertEqual(fit_within(640, 480, 1920, 1080), (640, 480))
+
+    def test_downscales_preserving_aspect(self):
+        self.assertEqual(fit_within(1920, 1080, 1280, 720), (1280, 720))
+
+    def test_widescreen_keeps_ratio(self):
+        width, height = fit_within(1920, 800, 1280, 720)
+        self.assertEqual(width, 1280)
+        self.assertAlmostEqual(height, 532, delta=2)
+
+    def test_dimensions_are_even(self):
+        width, height = fit_within(1919, 1079, 1280, 720)
+        self.assertEqual(width % 2, 0)
+        self.assertEqual(height % 2, 0)
+
+    def test_unknown_quality_falls_back_to_auto(self):
+        self.assertEqual(resolve_quality("nonsense").id, "auto")
+        self.assertEqual(resolve_quality(None).id, "auto")
+        self.assertEqual(resolve_quality("720P").id, "720p")
+
+    def test_auto_and_original_have_no_cap(self):
+        self.assertEqual(QUALITY_BY_ID["auto"].height, 0)
+        self.assertEqual(QUALITY_BY_ID["original"].height, 0)
 
 
 if __name__ == "__main__":

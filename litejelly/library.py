@@ -84,6 +84,15 @@ def parse_title(filename: str) -> dict:
     return {"title": _smart_title(working), "year": year, "episode": episode}
 
 
+def display_name(parsed: dict) -> str:
+    """Every episode of a series parses to the same title, so re-attach SxxExx."""
+    episode = parsed.get("episode")
+    if not episode:
+        return parsed["title"]
+    return (f"{parsed['title']} \u00b7 "
+            f"S{episode['season']:02d}E{episode['episode']:02d}")
+
+
 @dataclass
 class Video:
     id: str
@@ -247,7 +256,7 @@ class Library:
                             stat.st_mtime, tz=datetime.timezone.utc)
                         videos.append(Video(
                             id=_make_id(index, rel),
-                            name=parsed["title"],
+                            name=display_name(parsed),
                             filename=filename,
                             path=rel,
                             dir_index=index,

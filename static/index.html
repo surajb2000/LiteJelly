@@ -114,9 +114,6 @@
           <h2 id="osd-title" class="osd-movie-title"></h2>
           <span id="osd-badge" class="osd-meta-badge"></span>
         </div>
-        <button id="player-fs-btn" class="osd-btn" title="Fullscreen" aria-label="Toggle fullscreen">
-          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-        </button>
       </div>
 
       <div class="osd-bottom">
@@ -163,17 +160,25 @@
                     aria-haspopup="menu" aria-expanded="false">
               <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6.5 13.5h4M13.5 13.5h4" stroke-linecap="round"/></svg>
             </button>
+            <button id="btn-quality" class="control-icon-btn quality-btn" title="Quality" aria-label="Video quality"
+                    aria-haspopup="menu" aria-expanded="false">
+              <span id="quality-label">Auto</span>
+            </button>
             <button id="btn-speed" class="control-icon-btn speed-btn" title="Playback speed" aria-label="Playback speed">
               <span>1x</span>
             </button>
             <button id="btn-aspect" class="control-icon-btn aspect-btn" title="Fit or fill screen" aria-label="Fit or fill screen">
               <span>FIT</span>
             </button>
+            <button id="player-fs-btn" class="control-icon-btn" title="Fullscreen" aria-label="Toggle fullscreen">
+              <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            </button>
           </div>
         </div>
       </div>
 
       <div id="subtitle-menu" class="popup-menu hidden" role="menu" aria-label="Subtitle tracks"></div>
+      <div id="quality-menu" class="popup-menu hidden" role="menu" aria-label="Video quality"></div>
     </div>
   </div>
 

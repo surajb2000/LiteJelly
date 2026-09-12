@@ -15,7 +15,7 @@ from email.utils import formatdate
 from http import HTTPStatus
 from pathlib import Path
 
-from .ffmpeg import FFmpegTools, popen_quiet
+from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
 from .library import Library
 from .store import ProgressStore
 from .subtitles import SubtitleService, discover as discover_subtitles
@@ -104,6 +104,8 @@ class Application:
             config.app_dir,
             transcode_slots=config.transcode.max_concurrent,
             thumbnail_slots=config.thumbnail_workers,
+            ffmpeg_path=config.ffmpeg_path,
+            ffprobe_path=config.ffprobe_path,
         )
         self.progress = ProgressStore(config.db_path)
         self.subtitles = SubtitleService(self.tools, config.cache_dir)
@@ -226,7 +228,8 @@ class Routes:
 
         app = h.app
         info = app.tools.probe(path)
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct)
+        quality = resolve_quality(query.get("quality", [""])[0])
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality)
         tracks = discover_subtitles(path, info)
 
         requested_sub = query.get("sub", [""])[0]
@@ -235,6 +238,8 @@ class Routes:
         )
 
         params = {"id": video.id}
+        if quality.id != "auto":
+            params["quality"] = quality.id
         if burn_track is not None:
             mode, badge = "transcode", f"Burning in {burn_track.label}"
             params["sub"] = burn_track.id
@@ -247,6 +252,8 @@ class Routes:
             badge = "Remuxed" if plan.mode == "remux" else "Transcoded"
             url = "/media/transcode?" + urllib.parse.urlencode(params)
 
+        out_width, out_height = app.tools.output_size(info, plan, app.config.transcode, quality)
+
         h.send_json({
             "id": video.id,
             "title": video.name,
@@ -257,8 +264,16 @@ class Routes:
             "duration": info.duration,
             "width": info.width,
             "height": info.height,
+            "output_width": out_width,
+            "output_height": out_height,
             "video_codec": info.video_codec,
             "audio_codec": info.audio_codec,
+            "quality": quality.id,
+            "qualities": [
+                {"id": level.id, "label": level.label, "height": level.height}
+                for level in QUALITY_LADDER
+                if level.height == 0 or not info.height or level.height <= info.height
+            ],
             # Direct play seeks via byte ranges; piped output needs a restart.
             "native_seek": mode == "direct",
             "url": url,
@@ -292,7 +307,8 @@ class Routes:
             start = 0.0
 
         info = app.tools.probe(path)
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct)
+        quality = resolve_quality(query.get("quality", [""])[0])
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality)
 
         burn_index = None
         requested_sub = query.get("sub", [""])[0]
@@ -303,9 +319,10 @@ class Routes:
                 burn_index = int(requested_sub.split(":")[1])
 
         cmd = app.tools.build_stream_command(
-            path, plan, app.config.transcode, start=start, burn_subtitle_index=burn_index
+            path, plan, app.config.transcode, start=start,
+            burn_subtitle_index=burn_index, quality=quality,
         )
-        h.pump_process(cmd, label=f"{video.name} @ {start:.0f}s ({plan.mode})")
+        h.pump_process(cmd, label=f"{video.name} @ {start:.0f}s ({plan.mode}/{quality.id})")
 
     @staticmethod
     def thumbnail(h, query):

@@ -1141,12 +1141,19 @@ select:focus:not(:focus-visible) {
 }
 
 .speed-btn,
-.aspect-btn {
+.aspect-btn,
+.quality-btn {
   width: auto;
   padding: 0 14px;
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.05em;
+}
+
+/* Pointer follows the chrome: hidden while the OSD is hidden. */
+.player-container.idle,
+.player-container.idle * {
+  cursor: none !important;
 }
 
 .controls-right {

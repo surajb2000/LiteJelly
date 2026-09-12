@@ -78,7 +78,10 @@
     aspect: 'contain',
     wakeLock: null,
     subtitleTracks: [],
-    activeSubtitle: 'off'
+    activeSubtitle: 'off',
+    quality: 'auto',
+    qualities: [],
+    lastPointerMove: 0
   };
 
   const $ = (sel, root) => (root || document).querySelector(sel);
@@ -225,19 +228,29 @@
     }
   }
 
+  function compareByName(a, b) {
+    // Episodes share a series title, so fall back to season/episode numbers.
+    const byTitle = (a.name || '').localeCompare(b.name || '', undefined,
+      { numeric: true, sensitivity: 'base' });
+    if (byTitle !== 0) return byTitle;
+    if ((a.season || 0) !== (b.season || 0)) return (a.season || 0) - (b.season || 0);
+    if ((a.episode || 0) !== (b.episode || 0)) return (a.episode || 0) - (b.episode || 0);
+    return (a.filename || '').localeCompare(b.filename || '', undefined, { numeric: true });
+  }
+
   function sortVideos(list) {
     const sorted = list.slice();
     switch (state.sort) {
       case 'name':
-        sorted.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        sorted.sort(compareByName);
         break;
       case 'size':
         sorted.sort((a, b) => b.size - a.size);
         break;
       case 'folder':
         sorted.sort((a, b) =>
-          (a.folder || '').localeCompare(b.folder || '') ||
-          a.name.localeCompare(b.name, undefined, { numeric: true }));
+          (a.folder || '').localeCompare(b.folder || '', undefined, { numeric: true }) ||
+          compareByName(a, b));
         break;
       default:
         sorted.sort((a, b) => b.modified_ts - a.modified_ts);
@@ -417,7 +430,8 @@
     showOSD(true);
 
     try {
-      const plan = await getJSON(API.playback + '?id=' + encodeURIComponent(videoId));
+      const plan = await getJSON(API.playback + '?id=' + encodeURIComponent(videoId) +
+        '&quality=' + encodeURIComponent(state.quality));
       startPlayback(plan);
     } catch (err) {
       el.buffering.classList.add('hidden');
@@ -426,16 +440,29 @@
     }
   }
 
+  function describeQuality(plan) {
+    const height = plan.output_height || plan.height;
+    if (!height) return '';
+    const scaled = plan.output_height && plan.height && plan.output_height < plan.height;
+    return height + 'p' + (scaled ? ' (from ' + plan.height + 'p)' : '');
+  }
+
   function startPlayback(plan, startAt) {
     state.playback = plan;
     state.pendingSeek = null;
     state.offset = 0;
     state.activeSubtitle = 'off';
     state.lastSavedPosition = -1;
+    state.qualities = Array.isArray(plan.qualities) ? plan.qualities : [];
+    if (plan.quality) state.quality = plan.quality;
 
     el.osdTitle.textContent = plan.title || '';
-    el.osdBadge.textContent = plan.badge || '';
-    el.osdBadge.title = plan.reason || '';
+    const detail = describeQuality(plan);
+    el.osdBadge.textContent = detail ? plan.badge + ' \u00b7 ' + detail : plan.badge || '';
+    el.osdBadge.title = [plan.reason, plan.video_codec, plan.audio_codec]
+      .filter(Boolean).join(' \u00b7 ');
+    updateQualityLabel();
+    renderQualityMenu();
 
     buildSubtitleMenu(plan);
 
@@ -550,11 +577,12 @@
     state.offset = 0;
     state.view = 'LIBRARY';
     el.player.classList.add('hidden');
+    el.player.classList.remove('idle');
     el.library.classList.remove('hidden');
     el.buffering.classList.add('hidden');
     document.body.classList.remove('playing');
     hideOSD();
-    closeSubtitleMenu();
+    closeMenus();
     releaseWakeLock();
     renderGrid();
     renderContinueWatching();
@@ -724,6 +752,7 @@
   }
   function toggleSubtitleMenu() {
     if (el.subtitleMenu.classList.contains('hidden')) {
+      closeQualityMenu();
       renderSubtitleMenu();
       el.subtitleMenu.classList.remove('hidden');
       el.btnSubtitles.setAttribute('aria-expanded', 'true');
@@ -738,6 +767,107 @@
   function closeSubtitleMenu() {
     el.subtitleMenu.classList.add('hidden');
     el.btnSubtitles.setAttribute('aria-expanded', 'false');
+  }
+
+  // --- Quality ---------------------------------------------------------
+  function updateQualityLabel() {
+    const level = state.qualities.find(item => item.id === state.quality);
+    el.qualityLabel.textContent = level ? level.label : 'Auto';
+  }
+
+  function renderQualityMenu() {
+    const menu = el.qualityMenu;
+    menu.replaceChildren();
+
+    const heading = document.createElement('div');
+    heading.className = 'popup-heading';
+    heading.textContent = 'Quality';
+    menu.appendChild(heading);
+
+    const plan = state.playback;
+    state.qualities.forEach(level => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'popup-item';
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', String(state.quality === level.id));
+      item.dataset.qualityId = level.id;
+
+      const text = document.createElement('span');
+      text.className = 'popup-item-label';
+      text.textContent = level.label;
+      item.appendChild(text);
+
+      let hint = '';
+      if (level.id === 'auto') hint = 'Server default';
+      else if (level.id === 'original') {
+        hint = plan && plan.height ? plan.height + 'p, no re-encode' : 'No downscale';
+      }
+      if (hint) {
+        const note = document.createElement('span');
+        note.className = 'popup-item-hint';
+        note.textContent = hint;
+        item.appendChild(note);
+      }
+      menu.appendChild(item);
+    });
+  }
+
+  async function selectQuality(qualityId) {
+    const plan = state.playback;
+    if (!plan || qualityId === state.quality) {
+      closeQualityMenu();
+      return;
+    }
+
+    const at = displayTime();
+    const previousSubtitle = state.activeSubtitle;
+    state.quality = qualityId;
+    try {
+      localStorage.setItem('litejelly_quality', qualityId);
+    } catch (err) { /* storage unavailable */ }
+    closeQualityMenu();
+    el.buffering.classList.remove('hidden');
+
+    try {
+      const next = await getJSON(API.playback + '?id=' + encodeURIComponent(plan.id) +
+        '&quality=' + encodeURIComponent(qualityId));
+      startPlayback(next, at);
+      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle);
+      showToast('Quality: ' + (describeQuality(next) || qualityId), 2500);
+    } catch (err) {
+      el.buffering.classList.add('hidden');
+      showToast('Could not switch quality: ' + err.message, 4000);
+    }
+  }
+
+  function toggleQualityMenu() {
+    if (el.qualityMenu.classList.contains('hidden')) {
+      closeSubtitleMenu();
+      renderQualityMenu();
+      el.qualityMenu.classList.remove('hidden');
+      el.btnQuality.setAttribute('aria-expanded', 'true');
+      const first = $('.popup-item', el.qualityMenu);
+      if (first) first.focus();
+      showOSD(true);
+    } else {
+      closeQualityMenu();
+    }
+  }
+
+  function closeQualityMenu() {
+    el.qualityMenu.classList.add('hidden');
+    el.btnQuality.setAttribute('aria-expanded', 'false');
+  }
+
+  function menusOpen() {
+    return !el.subtitleMenu.classList.contains('hidden') ||
+      !el.qualityMenu.classList.contains('hidden');
+  }
+
+  function closeMenus() {
+    closeSubtitleMenu();
+    closeQualityMenu();
   }
 
   // --- Progress persistence --------------------------------------------
@@ -776,11 +906,12 @@
   // --- OSD -------------------------------------------------------------
   function showOSD(sticky) {
     el.osd.classList.remove('hidden');
+    el.player.classList.remove('idle');
     el.subtitleLayer.classList.add('raised');
     clearTimeout(state.osdTimer);
     if (sticky) return;
     state.osdTimer = setTimeout(() => {
-      if (!el.video.paused && el.subtitleMenu.classList.contains('hidden') && !state.scrubbing) {
+      if (!el.video.paused && !menusOpen() && !state.scrubbing) {
         hideOSD();
       }
     }, OSD_TIMEOUT);
@@ -789,6 +920,8 @@
   function hideOSD() {
     el.osd.classList.add('hidden');
     el.subtitleLayer.classList.remove('raised');
+    // Hiding the chrome should hide the pointer with it.
+    if (state.view === 'PLAYER') el.player.classList.add('idle');
   }
 
   function renderProgress(current, duration, pending) {
@@ -947,11 +1080,12 @@
     // 10009 (Tizen) and 461 (webOS) are the remote's Back button.
     const isBackKey = event.keyCode === 10009 || event.keyCode === 461;
 
-    if (!el.subtitleMenu.classList.contains('hidden') &&
+    if (menusOpen() &&
         (event.key === 'Escape' || event.key === 'Backspace' || isBackKey)) {
       event.preventDefault();
-      closeSubtitleMenu();
-      el.btnSubtitles.focus();
+      const wasQuality = !el.qualityMenu.classList.contains('hidden');
+      closeMenus();
+      (wasQuality ? el.btnQuality : el.btnSubtitles).focus();
       return;
     }
 
@@ -973,6 +1107,7 @@
       case 'f': toggleFullscreen(); break;
       case 'm': applyVolume(el.video.muted || el.video.volume === 0 ? 1 : 0); break;
       case 'c': toggleSubtitleMenu(); break;
+      case 'q': toggleQualityMenu(); break;
       case '+':
       case '=': applyVolume(el.video.volume + 0.1); break;
       case '-': applyVolume(el.video.volume - 0.1); break;
@@ -1018,6 +1153,9 @@
     el.totalTime = $('#total-time');
     el.btnSubtitles = $('#btn-subtitles');
     el.subtitleMenu = $('#subtitle-menu');
+    el.btnQuality = $('#btn-quality');
+    el.qualityMenu = $('#quality-menu');
+    el.qualityLabel = $('#quality-label');
     el.btnMute = $('#btn-mute');
     el.volumeRange = $('#volume-range');
     el.btnSpeed = $('#btn-speed');
@@ -1094,9 +1232,18 @@
       if (item) selectSubtitle(item.dataset.trackId);
     });
 
+    el.btnQuality.addEventListener('click', event => {
+      event.stopPropagation();
+      toggleQualityMenu();
+    });
+    el.qualityMenu.addEventListener('click', event => {
+      const item = event.target.closest('.popup-item');
+      if (item) selectQuality(item.dataset.qualityId);
+    });
+
     $('#player-touch-area').addEventListener('click', () => {
-      if (!el.subtitleMenu.classList.contains('hidden')) {
-        closeSubtitleMenu();
+      if (menusOpen()) {
+        closeMenus();
         return;
       }
       if (el.osd.classList.contains('hidden')) {
@@ -1105,6 +1252,21 @@
         togglePlayPause();
         showOSD();
       }
+    });
+
+    // The hidden OSD has pointer-events disabled, so listen on the container.
+    el.player.addEventListener('mousemove', () => {
+      const now = Date.now();
+      if (now - state.lastPointerMove < 120) return;
+      state.lastPointerMove = now;
+      showOSD();
+    });
+    el.player.addEventListener('mouseleave', () => {
+      if (!el.video.paused && !menusOpen()) hideOSD();
+    });
+    el.player.addEventListener('dblclick', event => {
+      if (event.target.closest('.osd-bottom, .osd-top, .popup-menu')) return;
+      toggleFullscreen();
     });
 
     el.seekRange.addEventListener('pointerdown', () => {
@@ -1187,14 +1349,12 @@
     });
 
     document.addEventListener('click', event => {
-      if (!el.subtitleMenu.classList.contains('hidden') &&
-          !el.subtitleMenu.contains(event.target) &&
-          !el.btnSubtitles.contains(event.target)) {
-        closeSubtitleMenu();
-      }
+      if (!menusOpen()) return;
+      const insideMenu = event.target.closest('.popup-menu');
+      const onToggle = el.btnSubtitles.contains(event.target) ||
+        el.btnQuality.contains(event.target);
+      if (!insideMenu && !onToggle) closeMenus();
     });
-
-    el.osd.addEventListener('mousemove', () => showOSD());
   }
 
   function startClock() {
@@ -1236,8 +1396,11 @@
     try {
       const saved = parseFloat(localStorage.getItem('litejelly_volume'));
       if (!isNaN(saved)) storedVolume = saved;
+      const savedQuality = localStorage.getItem('litejelly_quality');
+      if (savedQuality) state.quality = savedQuality;
     } catch (err) { /* storage unavailable */ }
     applyVolume(storedVolume);
+    updateQualityLabel();
 
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('fullscreenchange', syncFullscreenIcons);

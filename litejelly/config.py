@@ -41,6 +41,8 @@ class Config:
     scan_interval: int = 60
     thumbnail_workers: int = 2
     allow_hevc_direct: bool = False
+    ffmpeg_path: str = ""
+    ffprobe_path: str = ""
     transcode: TranscodeSettings = field(default_factory=TranscodeSettings)
     app_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent)
 
@@ -93,6 +95,8 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
     cfg.scan_interval = max(5, _coerce_int(raw.get("scan_interval"), 60))
     cfg.thumbnail_workers = max(1, _coerce_int(raw.get("thumbnail_workers"), 2))
     cfg.allow_hevc_direct = bool(raw.get("allow_hevc_direct", False))
+    cfg.ffmpeg_path = str(raw.get("ffmpeg_path") or "")
+    cfg.ffprobe_path = str(raw.get("ffprobe_path") or "")
 
     ts = raw.get("transcode")
     if isinstance(ts, dict):
@@ -112,6 +116,10 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
             cfg.host = args.host
         if getattr(args, "name", None):
             cfg.server_name = args.name
+        if getattr(args, "ffmpeg", None):
+            cfg.ffmpeg_path = args.ffmpeg
+        if getattr(args, "ffprobe", None):
+            cfg.ffprobe_path = args.ffprobe
         if getattr(args, "dir", None):
             raw_dirs = list(args.dir)
 

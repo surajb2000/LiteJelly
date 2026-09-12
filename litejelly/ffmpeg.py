@@ -47,8 +47,16 @@ def _double_bitrate(rate: str) -> str:
         return "6000k"
 
 
-def find_binary(name: str, app_dir: Path) -> str | None:
-    """Look for a bundled binary next to the app first, then on PATH."""
+def find_binary(name: str, app_dir: Path, override: str | None = None) -> str | None:
+    """Explicit path, then a copy next to the app, then PATH."""
+    if override:
+        candidate = Path(os.path.expandvars(os.path.expanduser(str(override))))
+        if candidate.is_dir():
+            candidate = candidate / _binary_name(name)
+        if candidate.is_file():
+            return str(candidate)
+        log.warning("Configured %s path is not usable: %s", name, override)
+
     local = app_dir / _binary_name(name)
     if local.is_file() and os.access(local, os.X_OK):
         return str(local)
@@ -56,6 +64,19 @@ def find_binary(name: str, app_dir: Path) -> str | None:
     if bin_dir.is_file() and os.access(bin_dir, os.X_OK):
         return str(bin_dir)
     return shutil.which(name)
+
+
+def _scale_filter(width: int, height: int) -> str:
+    """Fit inside the box without ever upscaling, keeping dimensions even.
+
+    No padding: black bars baked into the stream would waste bitrate, and the
+    player letterboxes on its own.
+    """
+    return (
+        f"scale=w='min({width},iw)':h='min({height},ih)'"
+        ":force_original_aspect_ratio=decrease"
+        ",scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    )
 
 
 def run_quiet(cmd: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
@@ -115,12 +136,53 @@ class PlaybackPlan:
     seekable: bool            # can the client seek without restarting the stream?
 
 
+@dataclass
+class QualityLevel:
+    id: str
+    label: str
+    width: int = 0            # 0 means "keep the source resolution"
+    height: int = 0
+    bitrate: str = ""
+
+
+# "auto" follows config.json; "original" never downscales.
+QUALITY_LADDER = [
+    QualityLevel("auto", "Auto"),
+    QualityLevel("original", "Original"),
+    QualityLevel("1080p", "1080p", 1920, 1080, "8000k"),
+    QualityLevel("720p", "720p", 1280, 720, "3000k"),
+    QualityLevel("480p", "480p", 854, 480, "1500k"),
+    QualityLevel("360p", "360p", 640, 360, "800k"),
+]
+QUALITY_BY_ID = {level.id: level for level in QUALITY_LADDER}
+
+
+def resolve_quality(quality_id: str | None) -> QualityLevel:
+    return QUALITY_BY_ID.get((quality_id or "auto").lower(), QUALITY_BY_ID["auto"])
+
+
+def fit_within(width: int, height: int, max_width: int, max_height: int) -> tuple[int, int]:
+    """Scale down to fit the box, preserving aspect ratio. Never upscales."""
+    if not width or not height or not max_width or not max_height:
+        return width, height
+    if width <= max_width and height <= max_height:
+        return width, height
+    ratio = min(max_width / width, max_height / height)
+    return max(2, int(width * ratio) // 2 * 2), max(2, int(height * ratio) // 2 * 2)
+
+
 class FFmpegTools:
     """Locates the binaries and caches probe results per (path, mtime, size)."""
 
-    def __init__(self, app_dir: Path, transcode_slots: int = 2, thumbnail_slots: int = 2):
-        self.ffmpeg = find_binary("ffmpeg", app_dir)
-        self.ffprobe = find_binary("ffprobe", app_dir)
+    def __init__(self, app_dir: Path, transcode_slots: int = 2, thumbnail_slots: int = 2,
+                 ffmpeg_path: str | None = None, ffprobe_path: str | None = None):
+        self.ffmpeg = find_binary("ffmpeg", app_dir, ffmpeg_path)
+        self.ffprobe = find_binary("ffprobe", app_dir, ffprobe_path)
+        # The two ship together, so fall back to ffmpeg's own directory.
+        if self.ffmpeg and not self.ffprobe:
+            sibling = Path(self.ffmpeg).parent / _binary_name("ffprobe")
+            if sibling.is_file():
+                self.ffprobe = str(sibling)
         self.transcode_sem = threading.BoundedSemaphore(max(1, transcode_slots))
         self.thumbnail_sem = threading.BoundedSemaphore(max(1, thumbnail_slots))
         self._probe_cache: dict[tuple, MediaInfo] = {}
@@ -211,8 +273,22 @@ class FFmpegTools:
                 sub_index += 1
         return info
 
-    def plan_playback(self, info: MediaInfo, allow_hevc_direct: bool = False) -> PlaybackPlan:
+    def plan_playback(self, info: MediaInfo, allow_hevc_direct: bool = False,
+                      quality: QualityLevel | None = None) -> PlaybackPlan:
         """Pick the cheapest playback path the browser will accept."""
+        plan = self._natural_plan(info, allow_hevc_direct)
+
+        # A lower rung can only be honoured by re-encoding.
+        if (self.available and quality is not None and quality.height
+                and plan.video_action == "copy"
+                and info.height and info.height > quality.height):
+            return PlaybackPlan(
+                "transcode", "encode", "encode",
+                f"Downscaled to {quality.label} on request", False,
+            )
+        return plan
+
+    def _natural_plan(self, info: MediaInfo, allow_hevc_direct: bool) -> PlaybackPlan:
         if not self.available:
             return PlaybackPlan("direct", "copy", "copy", "ffmpeg unavailable", True)
 
@@ -240,6 +316,17 @@ class FFmpegTools:
             f"Transcoded from {info.video_codec or 'unknown'}", False,
         )
 
+    def output_size(self, info: MediaInfo, plan: PlaybackPlan, settings,
+                    quality: QualityLevel | None = None) -> tuple[int, int]:
+        """Resolution the client will actually receive."""
+        if plan.video_action == "copy":
+            return info.width, info.height
+        if quality is not None and quality.id == "original":
+            return info.width, info.height
+        if quality is not None and quality.height:
+            return fit_within(info.width, info.height, quality.width, quality.height)
+        return fit_within(info.width, info.height, *settings.size)
+
     def build_stream_command(
         self,
         path: Path,
@@ -247,6 +334,7 @@ class FFmpegTools:
         settings,
         start: float = 0.0,
         burn_subtitle_index: int | None = None,
+        quality: QualityLevel | None = None,
     ) -> list[str]:
         """ffmpeg command producing a fragmented MP4 on stdout."""
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error"]
@@ -254,18 +342,24 @@ class FFmpegTools:
             cmd += ["-ss", f"{start:.3f}"]
         cmd += ["-i", str(path)]
 
-        width, height = settings.size
+        keep_source = quality is not None and quality.id == "original"
+        if quality is not None and quality.height:
+            width, height, max_rate = quality.width, quality.height, quality.bitrate
+        else:
+            width, height = settings.size
+            max_rate = settings.max_video_bitrate
+
         burning = burn_subtitle_index is not None
+        scale = _scale_filter(width, height)
 
         if burning:
-            # Bitmap subtitles have to be composited onto the video.
-            cmd += [
-                "-filter_complex",
-                f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black[base];"
-                f"[base][0:s:{burn_subtitle_index}]overlay[v]",
-                "-map", "[v]", "-map", "0:a:0?",
-            ]
+            # Composite bitmap subtitles at native size, then scale the result;
+            # scaling first would misplace the overlay.
+            if keep_source:
+                graph = f"[0:v][0:s:{burn_subtitle_index}]overlay[v]"
+            else:
+                graph = f"[0:v][0:s:{burn_subtitle_index}]overlay[ov];[ov]{scale}[v]"
+            cmd += ["-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?"]
         else:
             cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
 
@@ -276,16 +370,12 @@ class FFmpegTools:
                 "-c:v", settings.video_codec,
                 "-preset", settings.preset,
                 "-crf", str(settings.crf),
-                "-maxrate", settings.max_video_bitrate,
-                "-bufsize", _double_bitrate(settings.max_video_bitrate),
                 "-pix_fmt", "yuv420p",
             ]
-            if not burning:
-                cmd += [
-                    "-vf",
-                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black",
-                ]
+            if not keep_source:
+                cmd += ["-maxrate", max_rate, "-bufsize", _double_bitrate(max_rate)]
+            if not burning and not keep_source:
+                cmd += ["-vf", scale]
 
         if plan.audio_action == "copy":
             cmd += ["-c:a", "copy"]
