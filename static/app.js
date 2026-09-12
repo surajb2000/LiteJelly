@@ -54,7 +54,7 @@
   const SEEK_LARGE = 60;
   const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
   const PROGRESS_SAVE_INTERVAL = 10000;
-  const SEEK_COMMIT_DELAY = 450;
+  const SEEK_COMMIT_DELAY = 300;
   const OSD_TIMEOUT = 3500;
 
   const state = {
@@ -499,8 +499,9 @@
     } else {
       // A stream copy can only start on a keyframe, so ask where that is;
       // guessing would skew the clock and subtitles by up to one GOP.
+      // Re-encoded streams seek exactly, so skip the extra round trip.
       let actual = target;
-      if (target > 0) {
+      if (target > 0 && plan.exact_seek === false) {
         try {
           const point = await getJSON(API.seekpoint + '?id=' + encodeURIComponent(plan.id) +
             '&t=' + target.toFixed(2) + '&quality=' + encodeURIComponent(state.quality));

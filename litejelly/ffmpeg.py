@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import os
@@ -187,6 +188,9 @@ class FFmpegTools:
         self.thumbnail_sem = threading.BoundedSemaphore(max(1, thumbnail_slots))
         self._probe_cache: dict[tuple, MediaInfo] = {}
         self._probe_lock = threading.Lock()
+        self._keyframe_cache: dict[tuple, float] = {}
+        self._keyframes: dict[tuple, list[float]] = {}
+        self._keyframe_jobs: set = set()
 
     @property
     def available(self) -> bool:
@@ -329,6 +333,68 @@ class FFmpegTools:
             f"Transcoded from {info.video_codec or 'unknown'}", False,
         )
 
+    def _keyframe_key(self, path: Path):
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return (str(path), stat.st_mtime_ns)
+
+    def keyframes(self, path: Path) -> list[float] | None:
+        """Cached keyframe timestamps, or None until the scan finishes."""
+        key = self._keyframe_key(path)
+        if key is None:
+            return None
+        with self._probe_lock:
+            return self._keyframes.get(key)
+
+    def ensure_keyframes(self, path: Path) -> None:
+        """Scan the keyframe index in the background so seeks stay instant."""
+        if not self.ffprobe:
+            return
+        key = self._keyframe_key(path)
+        if key is None:
+            return
+        with self._probe_lock:
+            if key in self._keyframes or key in self._keyframe_jobs:
+                return
+            self._keyframe_jobs.add(key)
+        threading.Thread(
+            target=self._scan_keyframes, args=(path, key),
+            name="keyframe-scan", daemon=True,
+        ).start()
+
+    def _scan_keyframes(self, path: Path, key) -> None:
+        # Packets only: this demuxes without decoding, so it stays cheap.
+        cmd = [
+            self.ffprobe, "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "packet=pts_time,flags",
+            "-of", "csv=p=0", str(path),
+        ]
+        stamps: list[float] = []
+        try:
+            result = run_quiet(cmd, timeout=180)
+            for line in result.stdout.decode("utf-8", "replace").splitlines():
+                parts = line.strip().split(",")
+                if len(parts) < 2 or "K" not in parts[1]:
+                    continue
+                try:
+                    stamps.append(float(parts[0]))
+                except ValueError:
+                    continue
+        except (subprocess.SubprocessError, OSError) as exc:
+            log.debug("Keyframe scan failed for %s: %s", path.name, exc)
+
+        stamps.sort()
+        with self._probe_lock:
+            self._keyframe_jobs.discard(key)
+            if stamps:
+                if len(self._keyframes) > 50:
+                    self._keyframes.clear()
+                self._keyframes[key] = stamps
+        log.debug("Indexed %d keyframes for %s", len(stamps), path.name)
+
     def keyframe_before(self, path: Path, target: float, window: float = 20.0) -> float:
         """Last keyframe at or before ``target``.
 
@@ -338,6 +404,24 @@ class FFmpegTools:
         """
         if not self.ffprobe or target <= 0:
             return 0.0
+
+        # The background index answers instantly once it is ready.
+        indexed = self.keyframes(path)
+        if indexed:
+            position = bisect.bisect_right(indexed, target + 0.001)
+            return indexed[position - 1] if position else 0.0
+
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+        # Repeated 10s skips land on the same second, so memoise per second.
+        cache_key = (str(path), mtime, round(target, 1))
+        with self._probe_lock:
+            cached = self._keyframe_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         window_start = max(0.0, target - window)
         cmd = [
             self.ffprobe, "-v", "error",
@@ -361,7 +445,13 @@ class FFmpegTools:
                 continue
             if stamp <= target + 0.001 and (best is None or stamp > best):
                 best = stamp
-        return best if best is not None else target
+
+        resolved = best if best is not None else target
+        with self._probe_lock:
+            if len(self._keyframe_cache) > 500:
+                self._keyframe_cache.clear()
+            self._keyframe_cache[cache_key] = resolved
+        return resolved
 
     def output_size(self, info: MediaInfo, plan: PlaybackPlan, settings,
                     quality: QualityLevel | None = None) -> tuple[int, int]:

@@ -41,6 +41,7 @@ class Config:
     scan_interval: int = 60
     thumbnail_workers: int = 2
     allow_hevc_direct: bool = False
+    stream_buffer_mb: int = 8
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
     transcode: TranscodeSettings = field(default_factory=TranscodeSettings)
@@ -57,6 +58,10 @@ class Config:
     @property
     def db_path(self) -> Path:
         return self.cache_dir / "litejelly.db"
+
+    @property
+    def stream_buffer_bytes(self) -> int:
+        return max(1, self.stream_buffer_mb) * 1024 * 1024
 
     def to_public_dict(self) -> dict:
         """Only fields that are safe to expose to browser clients."""
@@ -95,6 +100,7 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
     cfg.scan_interval = max(5, _coerce_int(raw.get("scan_interval"), 60))
     cfg.thumbnail_workers = max(1, _coerce_int(raw.get("thumbnail_workers"), 2))
     cfg.allow_hevc_direct = bool(raw.get("allow_hevc_direct", False))
+    cfg.stream_buffer_mb = max(1, _coerce_int(raw.get("stream_buffer_mb"), 8))
     cfg.ffmpeg_path = str(raw.get("ffmpeg_path") or "")
     cfg.ffprobe_path = str(raw.get("ffprobe_path") or "")
 

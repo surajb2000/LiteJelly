@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import http.server
 import json
 import logging
@@ -10,6 +11,7 @@ import socket
 import socketserver
 import subprocess
 import sys
+import threading
 import urllib.parse
 from email.utils import formatdate
 from http import HTTPStatus
@@ -255,6 +257,10 @@ class Routes:
 
         out_width, out_height = app.tools.output_size(info, plan, app.config.transcode, quality)
 
+        # Stream copies snap seeks to keyframes, so index them up front.
+        if plan.video_action == "copy" and mode != "direct":
+            app.tools.ensure_keyframes(path)
+
         h.send_json({
             "id": video.id,
             "title": video.name,
@@ -277,6 +283,8 @@ class Routes:
             ],
             # Direct play seeks via byte ranges; piped output needs a restart.
             "native_seek": mode == "direct",
+            # A re-encode can start anywhere; a stream copy snaps to a keyframe.
+            "exact_seek": plan.video_action == "encode",
             "url": url,
             "subtitles": [t.to_dict() for t in tracks],
             "resume": app.progress.get(video.id) or {},
@@ -381,6 +389,75 @@ class Routes:
             content_type="text/vtt; charset=utf-8",
             cache_control="public, max-age=3600",
         )
+
+
+class ReadAhead:
+    """Drains an ffmpeg pipe in a thread so it can run ahead of the socket.
+
+    Without this, ffmpeg blocks the moment the client stops pulling, so there
+    is no reserve to cover a network dip or to refill quickly after a seek.
+    """
+
+    def __init__(self, stream, capacity: int, chunk: int = CHUNK_SIZE):
+        self._stream = stream
+        self._capacity = max(chunk * 2, capacity)
+        self._chunk = chunk
+        self._queue: collections.deque = collections.deque()
+        self._size = 0
+        self._eof = False
+        self._stopped = False
+        self._lock = threading.Lock()
+        self._not_full = threading.Condition(self._lock)
+        self._not_empty = threading.Condition(self._lock)
+        self._thread = threading.Thread(target=self._fill, name="read-ahead", daemon=True)
+        self._thread.start()
+
+    @property
+    def buffered(self) -> int:
+        with self._lock:
+            return self._size
+
+    def _fill(self) -> None:
+        try:
+            while True:
+                data = self._stream.read(self._chunk)
+                if not data:
+                    break
+                with self._lock:
+                    while (self._size + len(data) > self._capacity
+                           and not self._stopped):
+                        self._not_full.wait(0.5)
+                    if self._stopped:
+                        return
+                    self._queue.append(data)
+                    self._size += len(data)
+                    self._not_empty.notify()
+        except (OSError, ValueError):
+            pass
+        finally:
+            with self._lock:
+                self._eof = True
+                self._not_empty.notify_all()
+
+    def read(self, timeout: float = 30.0) -> bytes:
+        with self._lock:
+            while not self._queue and not self._eof and not self._stopped:
+                if not self._not_empty.wait(timeout):
+                    return b""
+            if not self._queue:
+                return b""
+            data = self._queue.popleft()
+            self._size -= len(data)
+            self._not_full.notify()
+            return data
+
+    def close(self) -> None:
+        with self._lock:
+            self._stopped = True
+            self._queue.clear()
+            self._size = 0
+            self._not_full.notify_all()
+            self._not_empty.notify_all()
 
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
@@ -621,16 +698,20 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             if getattr(self, "_head_only", False):
                 return
 
-            while True:
-                chunk = process.stdout.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                if not self._write(chunk):
-                    break
-                try:
-                    self.wfile.flush()
-                except (OSError, ValueError):
-                    break
+            reader = ReadAhead(process.stdout, self.app.config.stream_buffer_bytes)
+            try:
+                while True:
+                    chunk = reader.read()
+                    if not chunk:
+                        break
+                    if not self._write(chunk):
+                        break
+                    try:
+                        self.wfile.flush()
+                    except (OSError, ValueError):
+                        break
+            finally:
+                reader.close()
         finally:
             if process is not None:
                 self._terminate(process)
