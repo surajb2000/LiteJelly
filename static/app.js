@@ -496,7 +496,8 @@
     updateQualityLabel();
     renderQualityMenu();
 
-    buildSubtitleMenu(plan);
+    // A restart passes an explicit time; only a fresh play picks a default.
+    buildSubtitleMenu(plan, typeof startAt !== 'number');
 
     const resume = plan.resume && plan.resume.position > 15 ? plan.resume.position : 0;
     const startTime = typeof startAt === 'number' ? startAt : resume;
@@ -528,9 +529,9 @@
         video.addEventListener('loadedmetadata', () => { video.currentTime = target; }, { once: true });
       }
     } else {
-      // A stream copy can only start on a keyframe, so ask where that is;
-      // guessing would skew the clock and subtitles by up to one GOP.
-      // Re-encoded streams seek exactly, so skip the extra round trip.
+      // Send the requested time as-is: snapping it onto a keyframe makes
+      // ffmpeg rewind a whole GOP. Ask only where it will actually land, so
+      // the clock and subtitles match the stream.
       let actual = target;
       if (target > 0 && plan.exact_seek === false) {
         try {
@@ -542,7 +543,7 @@
       if (state.playback !== plan) return;
       state.offset = actual;
       const separator = plan.url.indexOf('?') === -1 ? '?' : '&';
-      video.src = plan.url + separator + 'ss=' + actual.toFixed(2);
+      video.src = plan.url + separator + 'ss=' + target.toFixed(2);
     }
 
     video.load();
@@ -701,10 +702,35 @@
     el.subtitleLayer.replaceChildren(fragment);
   }
 
-  function buildSubtitleMenu(plan) {
+  // Remembers a language, or 'off' if subtitles were explicitly turned off.
+  function preferredSubtitle(tracks) {
+    let saved = 'en';
+    try {
+      const stored = localStorage.getItem('litejelly_subtitle');
+      if (stored) saved = stored;
+    } catch (err) { /* storage unavailable */ }
+    if (saved === 'off') return 'off';
+
+    const usable = tracks.filter(track => !track.burn_in_only);
+    if (!usable.length) return 'off';
+
+    const sameLanguage = usable.filter(track =>
+      (track.language || '').toLowerCase() === saved.toLowerCase());
+    const notForced = list => list.filter(track => !track.forced);
+
+    const choice = notForced(sameLanguage)[0] || sameLanguage[0] ||
+      notForced(usable)[0] || usable[0];
+    return choice ? choice.id : 'off';
+  }
+
+  function buildSubtitleMenu(plan, autoSelect) {
     clearSubtitleTracks();
     state.subtitleTracks = Array.isArray(plan.subtitles) ? plan.subtitles : [];
     const count = state.subtitleTracks.length;
+
+    if (autoSelect) {
+      state.activeSubtitle = preferredSubtitle(state.subtitleTracks);
+    }
 
     attachSubtitleTracks(state.offset);
 
@@ -788,6 +814,10 @@
     }
 
     state.activeSubtitle = trackId;
+    try {
+      localStorage.setItem('litejelly_subtitle',
+        trackId === 'off' ? 'off' : ((track && track.language) || 'on'));
+    } catch (err) { /* storage unavailable */ }
     applyActiveSubtitle();
     renderSubtitleMenu();
     closeSubtitleMenu();
@@ -844,7 +874,11 @@
       let hint = '';
       if (level.id === 'auto') hint = 'Server default';
       else if (level.id === 'original') {
-        hint = plan && plan.height ? plan.height + 'p, no re-encode' : 'No downscale';
+        hint = plan && plan.height ? plan.height + 'p, no re-encode' : 'No re-encode';
+      } else if (plan && plan.height && level.height >= plan.height) {
+        hint = 'Re-encode, same size';
+      } else {
+        hint = 'Re-encode, smaller';
       }
       if (hint) {
         const note = document.createElement('span');

@@ -273,10 +273,6 @@ class Routes:
 
         out_width, out_height = app.tools.output_size(info, plan, app.config.transcode, quality)
 
-        # Stream copies snap seeks to keyframes, so index them up front.
-        if plan.video_action == "copy" and mode != "direct":
-            app.tools.ensure_keyframes(path)
-
         h.send_json({
             "id": video.id,
             "title": video.name,
@@ -332,7 +328,7 @@ class Routes:
         # Re-encoding can start anywhere; a stream copy snaps to a keyframe.
         start = target
         if plan.video_action == "copy" and target > 0:
-            start = app.tools.keyframe_before(path, target)
+            start = app.tools.seek_landing(path, target)
         h.send_json({"requested": target, "start": start, "exact": plan.video_action != "copy"})
 
     @staticmethod
