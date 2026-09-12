@@ -433,6 +433,11 @@ class FFmpegTools:
         # MKV timestamps are often sparse; regenerate them before seeking.
         cmd += ["-fflags", "+genpts"]
         if start > 0:
+            # Accurate seek trims the audio to the exact timestamp, but copied
+            # video can only begin at a keyframe, which splits them by up to a
+            # whole GOP. Re-encoded video is trimmed too, so it stays accurate.
+            if plan.video_action == "copy":
+                cmd += ["-noaccurate_seek"]
             cmd += ["-ss", f"{start:.3f}"]
         cmd += ["-i", str(path)]
 
