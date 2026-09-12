@@ -44,6 +44,7 @@
     library: '/api/library',
     rescan: '/api/rescan',
     playback: '/api/playback',
+    seekpoint: '/api/seekpoint',
     progress: '/api/progress',
     thumbnail: '/api/thumbnail',
     subtitle: '/api/subtitle'
@@ -479,7 +480,7 @@
     showOSD();
   }
 
-  function loadSource(time, initial) {
+  async function loadSource(time, initial) {
     const plan = state.playback;
     if (!plan) return;
     const video = el.video;
@@ -496,10 +497,20 @@
         video.addEventListener('loadedmetadata', () => { video.currentTime = target; }, { once: true });
       }
     } else {
-      // Piped ffmpeg output is not byte-seekable, so restart it at the offset.
-      state.offset = target;
+      // A stream copy can only start on a keyframe, so ask where that is;
+      // guessing would skew the clock and subtitles by up to one GOP.
+      let actual = target;
+      if (target > 0) {
+        try {
+          const point = await getJSON(API.seekpoint + '?id=' + encodeURIComponent(plan.id) +
+            '&t=' + target.toFixed(2) + '&quality=' + encodeURIComponent(state.quality));
+          if (typeof point.start === 'number') actual = point.start;
+        } catch (err) { /* fall back to the requested time */ }
+      }
+      if (state.playback !== plan) return;
+      state.offset = actual;
       const separator = plan.url.indexOf('?') === -1 ? '?' : '&';
-      video.src = plan.url + separator + 'ss=' + target.toFixed(2);
+      video.src = plan.url + separator + 'ss=' + actual.toFixed(2);
     }
 
     video.load();

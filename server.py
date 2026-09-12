@@ -47,13 +47,22 @@ def print_banner(config, app: Application, video_count: int) -> None:
         f"{config.server_name} {__version__}",
         f"Local:   http://127.0.0.1:{config.port}",
         f"Network: http://{get_local_ip()}:{config.port}",
-        f"ffmpeg:  {tools.ffmpeg or 'not found - transcoding and thumbnails disabled'}",
-        f"ffprobe: {tools.ffprobe or 'not found - falling back to extension checks'}",
+        f"ffmpeg:  {tools.describe('ffmpeg')}",
+        f"ffprobe: {tools.describe('ffprobe')}",
         f"Videos:  {video_count}",
         "Media directories:",
     ]
     for directory in config.media_dirs:
         lines.append(f"  - {directory}")
+
+    if not tools.available:
+        lines += [
+            "",
+            "ffmpeg was NOT detected. Only browser-native files (MP4/WebM with",
+            "H.264+AAC) will play; MKV, AC3 audio, thumbnails and embedded",
+            "subtitles are unavailable. Put ffmpeg next to server.py, on PATH,",
+            "or set ffmpeg_path in config.json / pass --ffmpeg.",
+        ]
 
     width = max(len(line) for line in lines) + 2
     print("=" * width)

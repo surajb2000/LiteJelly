@@ -120,6 +120,7 @@ class Application:
             ("GET", "/api/library"): Routes.library,
             ("POST", "/api/rescan"): Routes.rescan,
             ("GET", "/api/playback"): Routes.playback,
+            ("GET", "/api/seekpoint"): Routes.seekpoint,
             ("GET", "/api/thumbnail"): Routes.thumbnail,
             ("GET", "/api/subtitle"): Routes.subtitle,
             ("GET", "/api/progress"): Routes.progress_get,
@@ -280,6 +281,29 @@ class Routes:
             "subtitles": [t.to_dict() for t in tracks],
             "resume": app.progress.get(video.id) or {},
         })
+
+    @staticmethod
+    def seekpoint(h, query):
+        """Where a restarted stream will really begin for a given seek target."""
+        app = h.app
+        video, path = app.resolve_video(query)
+        if path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+        try:
+            target = max(0.0, float(query.get("t", ["0"])[0]))
+        except (TypeError, ValueError):
+            target = 0.0
+
+        info = app.tools.probe(path)
+        quality = resolve_quality(query.get("quality", [""])[0])
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality)
+
+        # Re-encoding can start anywhere; a stream copy snaps to a keyframe.
+        start = target
+        if plan.video_action == "copy" and target > 0:
+            start = app.tools.keyframe_before(path, target)
+        h.send_json({"requested": target, "start": start, "exact": plan.video_action != "copy"})
 
     @staticmethod
     def stream(h, query):

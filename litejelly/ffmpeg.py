@@ -196,6 +196,19 @@ class FFmpegTools:
     def can_probe(self) -> bool:
         return self.ffprobe is not None
 
+    def describe(self, which: str = "ffmpeg") -> str:
+        """Human-readable '<version> (<path>)', for the startup banner."""
+        binary = self.ffmpeg if which == "ffmpeg" else self.ffprobe
+        if not binary:
+            return "NOT FOUND"
+        try:
+            result = run_quiet([binary, "-version"], timeout=10)
+            first = result.stdout.decode("utf-8", "replace").splitlines()[0]
+            version = first.split(" version ")[-1].split(" ")[0]
+        except (subprocess.SubprocessError, OSError, IndexError):
+            version = "unknown version"
+        return f"{version}  ({binary})"
+
     def probe(self, path: Path) -> MediaInfo:
         """Probe a file, memoising on (path, mtime, size)."""
         try:
@@ -316,6 +329,40 @@ class FFmpegTools:
             f"Transcoded from {info.video_codec or 'unknown'}", False,
         )
 
+    def keyframe_before(self, path: Path, target: float, window: float = 20.0) -> float:
+        """Last keyframe at or before ``target``.
+
+        A stream copy cannot start mid-GOP, so ffmpeg silently rewinds to the
+        preceding keyframe. The client needs that real start time or its clock,
+        subtitles and progress bar all drift by up to one GOP.
+        """
+        if not self.ffprobe or target <= 0:
+            return 0.0
+        window_start = max(0.0, target - window)
+        cmd = [
+            self.ffprobe, "-v", "error",
+            "-select_streams", "v:0",
+            "-skip_frame", "nokey",
+            "-show_entries", "frame=pts_time",
+            "-read_intervals", f"{window_start:.3f}%{target + 0.5:.3f}",
+            "-of", "csv=p=0", str(path),
+        ]
+        try:
+            result = run_quiet(cmd, timeout=20)
+        except (subprocess.SubprocessError, OSError) as exc:
+            log.debug("Keyframe probe failed for %s: %s", path.name, exc)
+            return target
+
+        best = None
+        for line in result.stdout.decode("utf-8", "replace").splitlines():
+            try:
+                stamp = float(line.strip().rstrip(","))
+            except ValueError:
+                continue
+            if stamp <= target + 0.001 and (best is None or stamp > best):
+                best = stamp
+        return best if best is not None else target
+
     def output_size(self, info: MediaInfo, plan: PlaybackPlan, settings,
                     quality: QualityLevel | None = None) -> tuple[int, int]:
         """Resolution the client will actually receive."""
@@ -338,6 +385,8 @@ class FFmpegTools:
     ) -> list[str]:
         """ffmpeg command producing a fragmented MP4 on stdout."""
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error"]
+        # MKV timestamps are often sparse; regenerate them before seeking.
+        cmd += ["-fflags", "+genpts"]
         if start > 0:
             cmd += ["-ss", f"{start:.3f}"]
         cmd += ["-i", str(path)]
@@ -386,8 +435,13 @@ class FFmpegTools:
                 "-ac", "2",
                 "-ar", "48000",
             ]
+            # Copied video keeps source timestamps while the audio is rebuilt,
+            # so pad/trim the audio to stay locked to the video clock.
+            if not burning:
+                cmd += ["-af", "aresample=async=1:first_pts=0"]
 
         cmd += [
+            "-avoid_negative_ts", "make_zero",
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-f", "mp4",
             "pipe:1",

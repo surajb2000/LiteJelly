@@ -1077,8 +1077,9 @@ select:focus:not(:focus-visible) {
   top: 0;
   height: 100%;
   width: 0%;
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.45);
   border-radius: 99px;
+  transition: width 0.25s linear;
 }
 
 .progress-wrap.pending .progress-fill {
@@ -1245,13 +1246,13 @@ select:focus:not(:focus-visible) {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 6%;
+  bottom: 8%;
   z-index: 15;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 0 8%;
+  gap: 2px;
+  padding: 0 10%;
   pointer-events: none;
   transition: bottom 0.25s ease;
 }
@@ -1260,19 +1261,26 @@ select:focus:not(:focus-visible) {
   bottom: 20%;
 }
 
+/* Netflix-style: no box, white text carried by a layered shadow outline. */
 .subtitle-cue {
-  background: rgba(0, 0, 0, 0.72);
+  background: none;
   color: #fff;
   font-family: var(--font-stack);
-  font-size: 22px;
-  font-size: clamp(15px, 2.5vw, 30px);
+  font-size: 30px;
+  font-size: clamp(18px, 3.1vw, 46px);
   font-weight: 500;
-  line-height: 1.35;
+  line-height: 1.28;
   text-align: center;
-  padding: 0.15em 0.6em;
-  border-radius: 6px;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9);
+  letter-spacing: 0.01em;
+  padding: 0;
+  border-radius: 0;
   max-width: 100%;
+  text-shadow:
+    -2px -2px 2px rgba(0, 0, 0, 0.75),
+     2px -2px 2px rgba(0, 0, 0, 0.75),
+    -2px  2px 2px rgba(0, 0, 0, 0.75),
+     2px  2px 2px rgba(0, 0, 0, 0.75),
+     0 2px 6px rgba(0, 0, 0, 0.9);
 }
 
 .subtitle-cue i {
@@ -1350,4 +1358,4 @@ html.no-flex-gap .controls-right > * + * { margin-left: 12px; }
 html.no-flex-gap .volume-control > * + * { margin-left: 8px; }
 html.no-flex-gap .popup-item > * + * { margin-left: 14px; }
 html.no-flex-gap .loading-container > * + * { margin-top: 16px; }
-html.no-flex-gap .subtitle-layer > * + * { margin-top: 4px; }
+html.no-flex-gap .subtitle-layer > * + * { margin-top: 2px; }
