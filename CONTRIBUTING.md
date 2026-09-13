@@ -70,6 +70,13 @@ This document outlines the architectural standards, code quality conventions, an
 - `Library` owns its directory list. Change it through `Library.set_media_dirs()` so the lock is held, the scan fingerprint is cleared, and any scan already in flight is discarded rather than publishing stale `dir_index` values.
 - `port` and `host` cannot be rebound on a live server. They are saved and reported through `settings.RESTART_REQUIRED` instead of being applied.
 
+### 9. Logging
+- Get a logger with `logging.getLogger("litejelly.<module>")`. Handlers are installed once by `litejelly.logs.configure()`; never call `basicConfig` or add handlers elsewhere.
+- Pick the level by who needs the message: `info` for things an operator cares about, `warning`/`error` for problems, `debug` for diagnosing a specific fault, `trace` for per-chunk or per-frame detail.
+- INFO is the floor for what gets recorded. Do not add a setting that can hide warnings or errors; "quiet" belongs in the log *viewer's* filter, not in capture.
+- Use lazy formatting (`log.info("Indexed %d", count)`), not f-strings, so suppressed records cost nothing.
+- Anything polled by the admin page should be excluded in `log_message`, or the log fills with requests for the log.
+
 ---
 
 ## 🌐 Frontend Architecture Guidelines (`static/`)

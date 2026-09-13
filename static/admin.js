@@ -36,6 +36,8 @@
     try {
       window.localStorage.setItem('litejelly_admin_tab', panelId);
     } catch (e) { /* private mode */ }
+    if (panelId === 'panel-logs') { loadLogs(); }
+    setAutoRefresh(panelId === 'panel-logs' && $('log-auto').checked);
   }
 
   function initTabs() {
@@ -151,6 +153,10 @@
     $('ffmpeg_path').value = settings.ffmpeg_path || '';
     $('ffprobe_path').value = settings.ffprobe_path || '';
     $('admin_token').value = settings.admin_token || '';
+    $('log_verbosity').value = settings.log_verbosity || 'info';
+    $('log_to_file').checked = settings.log_to_file !== false;
+    $('log_max_mb').value = settings.log_max_mb == null ? '' : settings.log_max_mb;
+    $('log_backups').value = settings.log_backups == null ? '' : settings.log_backups;
 
     var tc = settings.transcode || {};
     fillSelect($('tc_preset'), state.presets, tc.preset);
@@ -231,6 +237,8 @@
       ffmpeg_path: $('ffmpeg_path').value.trim(),
       ffprobe_path: $('ffprobe_path').value.trim(),
       admin_token: $('admin_token').value.trim(),
+      log_verbosity: $('log_verbosity').value,
+      log_to_file: $('log_to_file').checked,
       transcode: {
         preset: $('tc_preset').value,
         resolution: $('tc_resolution').value.trim(),
@@ -243,7 +251,9 @@
       port: 'port',
       scan_interval: 'scan_interval',
       thumbnail_workers: 'thumbnail_workers',
-      stream_buffer_mb: 'stream_buffer_mb'
+      stream_buffer_mb: 'stream_buffer_mb',
+      log_max_mb: 'log_max_mb',
+      log_backups: 'log_backups'
     };
     for (var key in numeric) {
       if (!numeric.hasOwnProperty(key)) { continue; }
@@ -272,6 +282,106 @@
       showBanner('ffmpeg was not found. Only browser-native files will play, ' +
                  'and thumbnails and embedded subtitles are unavailable.', 'warn');
     }
+  }
+
+  // -- logs ----------------------------------------------------------------
+
+  var logTimer = null;
+
+  function setAutoRefresh(on) {
+    if (logTimer) {
+      window.clearInterval(logTimer);
+      logTimer = null;
+    }
+    if (on) { logTimer = window.setInterval(loadLogs, 4000); }
+  }
+
+  function humanBytes(bytes) {
+    if (!bytes) { return '0 B'; }
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var value = bytes;
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return value.toFixed(unit ? 1 : 0) + ' ' + units[unit];
+  }
+
+  function loadLogs() {
+    var url = '/api/admin/logs?lines=' + encodeURIComponent($('log-lines').value) +
+              '&level=' + encodeURIComponent($('log-filter').value);
+    var token = adminToken();
+    if (token) { url += '&token=' + encodeURIComponent(token); }
+
+    return request('GET', url).then(function (result) {
+      if (!result.ok) { return; }
+      renderLogs(result.data);
+    });
+  }
+
+  function renderLogs(data) {
+    var view = $('log-view');
+    var atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
+    clear(view);
+
+    var entries = data.entries || [];
+    if (!entries.length) {
+      var empty = document.createElement('span');
+      empty.className = 'log-empty';
+      var message;
+      if (data.to_file === false) {
+        message = 'Logging to a file is turned off.';
+      } else if ($('log-filter').value) {
+        message = 'No lines match this filter.';
+      } else {
+        message = 'Nothing recorded yet.';
+      }
+      empty.appendChild(document.createTextNode(message));
+      view.appendChild(empty);
+    } else {
+      for (var i = 0; i < entries.length; i++) {
+        view.appendChild(logLine(entries[i]));
+      }
+    }
+
+    var meta = [];
+    if (data.file) { meta.push(data.file); }
+    if (data.exists) { meta.push(humanBytes(data.size)); }
+    meta.push(entries.length + (entries.length === 1 ? ' line' : ' lines') + ' shown');
+    text($('log-meta'), meta.join(' \u00b7 '));
+    text($('log-path'), data.file
+      ? 'Written to ' + data.file + ' in the ' + (data.folder || 'logs') +
+        ' folder beside server.py.'
+      : '');
+
+    if (atBottom) { view.scrollTop = view.scrollHeight; }
+  }
+
+  function logLine(entry) {
+    var row = document.createElement('span');
+    row.className = 'log-line' + (entry.level ? ' lvl-' + entry.level.toLowerCase() : '');
+    // textContent throughout: log messages contain filenames from disk.
+    var parts = [];
+    if (entry.time) { parts.push(entry.time); }
+    if (entry.level) { parts.push(pad(entry.level, 7)); }
+    if (entry.logger) { parts.push(entry.logger + ':'); }
+    parts.push(entry.message);
+    row.textContent = parts.join(' ');
+    return row;
+  }
+
+  function pad(text, width) {
+    var out = String(text);
+    while (out.length < width) { out += ' '; }
+    return out;
+  }
+
+  function clearLogs() {
+    if (!window.confirm('Clear the log file?')) { return; }
+    request('POST', '/api/admin/logs/clear' + tokenQuery(), {}).then(function () {
+      loadLogs();
+    });
   }
 
   // -- directory picker ----------------------------------------------------
@@ -404,6 +514,13 @@
     $('gen-token').addEventListener('click', function () {
       $('admin_token').value = generateToken();
       updateRemoteUrl();
+    });
+    $('log-refresh').addEventListener('click', loadLogs);
+    $('log-clear').addEventListener('click', clearLogs);
+    $('log-filter').addEventListener('change', loadLogs);
+    $('log-lines').addEventListener('change', loadLogs);
+    $('log-auto').addEventListener('change', function () {
+      setAutoRefresh(this.checked && !$('panel-logs').hidden);
     });
     $('admin_token').addEventListener('input', updateRemoteUrl);
     $('port').addEventListener('input', function () {

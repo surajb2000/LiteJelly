@@ -14,6 +14,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from .logs import VERBOSITY
+
 log = logging.getLogger("litejelly.settings")
 
 SETTINGS_FILE = "settings.json"
@@ -235,6 +237,26 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
             errors.append("admin_token cannot contain spaces")
         else:
             clean["admin_token"] = token
+
+    if "log_verbosity" in payload:
+        verbosity = str(payload["log_verbosity"] or "").strip().lower()
+        if verbosity not in VERBOSITY:
+            errors.append(f"log_verbosity must be one of: {', '.join(VERBOSITY)}")
+        else:
+            clean["log_verbosity"] = verbosity
+
+    if "log_to_file" in payload:
+        clean["log_to_file"] = bool(payload["log_to_file"])
+
+    if "log_max_mb" in payload:
+        number = _as_int(payload["log_max_mb"], 1, 512, "log_max_mb", errors)
+        if number is not None:
+            clean["log_max_mb"] = number
+
+    if "log_backups" in payload:
+        number = _as_int(payload["log_backups"], 0, 20, "log_backups", errors)
+        if number is not None:
+            clean["log_backups"] = number
 
     if "transcode" in payload:
         transcode = _clean_transcode(payload["transcode"], errors)

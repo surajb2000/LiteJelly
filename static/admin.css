@@ -168,6 +168,50 @@ input[type="checkbox"] { margin-right: 8px; }
 
 input[readonly] { color: var(--muted); }
 
+/* Log viewer */
+.log-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0 -6px 14px;
+}
+.log-tools > * { margin: 0 6px 8px; }
+
+.inline-field {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+.inline-field > span { margin-right: 6px; }
+.inline-field select { width: auto; }
+.inline-field.checkbox > input { margin-right: 6px; }
+
+.log-view {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  max-height: 460px;
+  overflow: auto;
+  background: #0b0e12;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: Consolas, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  color: var(--muted);
+}
+
+.log-line { display: block; }
+.log-line.lvl-info { color: var(--text); }
+.log-line.lvl-warning { color: #ffd08a; }
+.log-line.lvl-error,
+.log-line.lvl-critical { color: #ff9d9d; }
+.log-line.lvl-debug,
+.log-line.lvl-trace { color: #7f8c9b; }
+
+.log-empty { color: var(--muted); font-style: italic; }
+
 .save-bar {
   position: sticky;
   bottom: 0;

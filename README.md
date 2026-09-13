@@ -94,7 +94,8 @@ lucid-fermi/
 │   ├── admin.py            # Admin access control: loopback rule, token check, CSRF guard
 │   ├── config.py           # Configuration loading, validation, and CLI overrides
 │   ├── ffmpeg.py           # Media probe, playback planner, quality ladders, transcode commands
-│   ├── library.py          # Media scanner, title cleanup, regex SxxExx parser
+│   ├── library.py          # Media scanner, title cleanup, series grouping, SxxExx parser
+│   ├── logs.py             # Verbosity, rotating log file, and reading it back
 │   ├── paths.py            # Realpath containment and symlink traversal guards
 │   ├── settings.py         # settings.json load/save and admin input validation
 │   ├── store.py            # SQLite WAL progress store and continue watching
@@ -115,7 +116,12 @@ lucid-fermi/
 ├── tests/                  # Automated test suite
 │   ├── test_litejelly.py   # Unit tests for containment, ranges, subtitles, and titles
 │   ├── test_admin.py       # Settings validation, admin access control, library rebuild
-│   └── test_avsync.py      # Regression tests for the seeking and A/V sync fixes
+│   ├── test_avsync.py      # Regression tests for the seeking and A/V sync fixes
+│   ├── test_grouping.py    # Categories, series identity, episode ordering
+│   ├── test_http.py        # Live-server tests over a real socket
+│   └── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
+│
+├── logs/                   # Rotating log files (gitignored)
 │
 └── tools/                  # Diagnostic and verification utilities
     └── avsync_probe.py     # Diagnostic harness for measuring A/V synchronization drift
@@ -234,7 +240,8 @@ rare ones:
 | **Library** | Media folders and their content types, scan interval, manual rescan |
 | **Playback** | HEVC direct play, default transcode quality |
 | **General** | Server name, port and bind address, remote access, status |
-| **Advanced** | x264 preset and CRF, bitrates, concurrency, stream buffer, ffmpeg paths |
+| **Logs** | Detail level and a viewer for the recent log |
+| **Advanced** | x264 preset and CRF, bitrates, concurrency, stream buffer, log rotation, ffmpeg paths |
 
 Everything except `port` and `host` applies immediately; those two are saved
 and reported as needing a restart.
@@ -258,6 +265,30 @@ available to the whole network without a token.
 hands files out of, so a request that can change it can make the server share
 anything on the machine. Writes additionally require a same-origin request, so
 another website cannot post to it from your browser.
+
+---
+
+## 📋 Logs
+
+LiteJelly writes to `logs/litejelly.log`, rotating at 2 MB and keeping three
+old files by default. The console shows the same lines.
+
+Activity, warnings and errors are always recorded — there is no setting that
+hides a failure. The detail level only decides how much *extra* is kept:
+
+| Level | Records |
+| :--- | :--- |
+| **Normal** (default) | Scans, playback decisions, requests, warnings, errors |
+| **Debug** | Plus ffmpeg decisions, skipped files, probe failures |
+| **Trace** | Everything, including per-chunk streaming detail |
+
+Change it on **Logs** in the admin page; it applies immediately, without a
+restart. `python server.py --verbose` forces debug for a single run without
+changing the saved setting.
+
+The same tab shows the recent log with filtering by severity, so you can look
+for errors without reading through every request. Rotation size and how many
+old files to keep live under **Advanced → Log file** and need a restart.
 
 ---
 

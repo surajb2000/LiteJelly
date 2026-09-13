@@ -71,7 +71,7 @@ class AdminAuthorizationTests(unittest.TestCase):
     def test_remote_denied_without_token(self):
         allowed, reason = admin.authorize(_Config(), "192.168.1.50", _Headers(), {})
         self.assertFalse(allowed)
-        self.assertIn("admin_token", reason)
+        self.assertIn("token", reason)
 
     def test_remote_allowed_with_matching_header_token(self):
         allowed, _ = admin.authorize(

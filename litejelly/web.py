@@ -19,6 +19,7 @@ from http import HTTPStatus
 from pathlib import Path
 
 from . import admin as admin_auth
+from . import logs as log_setup
 from . import settings as user_settings
 from .config import load_config
 from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
@@ -163,6 +164,8 @@ class Application:
             ("GET", "/api/admin/settings"): Routes.admin_settings_get,
             ("POST", "/api/admin/settings"): Routes.admin_settings_post,
             ("GET", "/api/admin/browse"): Routes.admin_browse,
+            ("GET", "/api/admin/logs"): Routes.admin_logs,
+            ("POST", "/api/admin/logs/clear"): Routes.admin_logs_clear,
             ("GET", "/media/stream"): Routes.stream,
             ("GET", "/media/transcode"): Routes.transcode,
         }
@@ -191,6 +194,9 @@ class Application:
             self.static_dir = new_config.static_dir.resolve()
             del old_tools
 
+        # Verbosity applies to the live handlers; the file settings only take
+        # effect on restart because reopening the file would lose buffered lines.
+        log_setup.set_verbosity(new_config.log_verbosity)
         self.library.set_media_dirs(new_config.media_dirs, new_config.scan_interval)
 
     def resolve_video(self, query: dict):
@@ -374,6 +380,49 @@ class Routes:
 
         parent = str(target.parent) if target.parent != target else ""
         h.send_json({"path": str(target), "parent": parent, "entries": entries})
+
+    @staticmethod
+    def admin_logs(h, query):
+        if not h.require_admin(query):
+            return
+        config = h.app.config
+        try:
+            limit = int(query.get("lines", ["300"])[0])
+        except (TypeError, ValueError):
+            limit = 300
+        limit = max(1, min(limit, 2000))
+        level = query.get("level", [""])[0]
+
+        path = log_setup.log_path(config.app_dir)
+        h.send_json({
+            "entries": log_setup.read_entries(config.app_dir, limit, level),
+            # Name only. Whoever can reach this page knows where it installed
+            # LiteJelly, so the absolute path just puts the host's layout on screen.
+            "file": log_setup.LOG_FILE,
+            "folder": log_setup.LOG_DIR,
+            "exists": path.is_file(),
+            "size": log_setup.file_size(),
+            "to_file": config.log_to_file,
+            "verbosity": config.log_verbosity,
+            "verbosity_options": list(log_setup.VERBOSITY),
+            "view_levels": list(log_setup.VIEW_LEVELS),
+        })
+
+    @staticmethod
+    def admin_logs_clear(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        path = log_setup.log_path(h.app.config.app_dir)
+        try:
+            if path.is_file():
+                # Truncate rather than unlink: the handler holds it open.
+                with open(path, "w", encoding="utf-8"):
+                    pass
+        except OSError as exc:
+            h.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not clear: {exc}")
+            return
+        log.info("Log file cleared from the admin page")
+        h.send_json({"ok": True})
 
     @staticmethod
     def progress_get(h, query):
@@ -666,7 +715,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     # -- logging ----------------------------------------------------------
     def log_message(self, fmt, *args):
-        if getattr(self, "path", "").startswith(("/static/", "/api/thumbnail")):
+        # The log viewer polls; logging its own requests would bury everything
+        # else in the file it is displaying.
+        if getattr(self, "path", "").startswith(
+                ("/static/", "/api/thumbnail", "/api/admin/logs")):
             return
         log.info("%s - %s", self.address_string(), fmt % args)
 

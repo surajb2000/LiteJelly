@@ -14,6 +14,9 @@ bin/
 # Settings written by the admin page (per-install, not shared)
 settings.json
 
+# Rotating log files
+logs/
+
 # Python
 __pycache__/
 *.py[cod]

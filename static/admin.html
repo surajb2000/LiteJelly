@@ -27,6 +27,7 @@
     <button type="button" class="tab" role="tab" data-panel="panel-library" aria-selected="true">Library</button>
     <button type="button" class="tab" role="tab" data-panel="panel-playback" aria-selected="false">Playback</button>
     <button type="button" class="tab" role="tab" data-panel="panel-general" aria-selected="false">General</button>
+    <button type="button" class="tab" role="tab" data-panel="panel-logs" aria-selected="false">Logs</button>
     <button type="button" class="tab" role="tab" data-panel="panel-advanced" aria-selected="false">Advanced</button>
   </nav>
 
@@ -149,6 +150,64 @@
       </section>
     </div>
 
+    <!-- Logs -->
+    <div class="panel" id="panel-logs" role="tabpanel" hidden>
+      <section class="card">
+        <h2>Detail level</h2>
+        <div class="field">
+          <label for="log_verbosity">Record</label>
+          <select id="log_verbosity" name="log_verbosity">
+            <option value="info">Normal — activity, warnings and errors</option>
+            <option value="debug">Debug — plus diagnostic detail</option>
+            <option value="trace">Trace — everything, very noisy</option>
+          </select>
+          <p class="hint">
+            Warnings and errors are always recorded. Debug and trace are for
+            chasing a specific problem; leave them off for day-to-day use.
+            Takes effect immediately.
+          </p>
+        </div>
+        <div class="field check">
+          <label>
+            <input type="checkbox" id="log_to_file" name="log_to_file">
+            Write logs to a file
+          </label>
+          <p class="hint" id="log-path">Restart required to start or stop the file.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Recent logs</h2>
+        <div class="log-tools">
+          <label class="inline-field">
+            <span>Show</span>
+            <select id="log-filter">
+              <option value="">Everything recorded</option>
+              <option value="info">Info and above</option>
+              <option value="warning">Warnings and errors</option>
+              <option value="error">Errors only</option>
+            </select>
+          </label>
+          <label class="inline-field">
+            <span>Lines</span>
+            <select id="log-lines">
+              <option value="100">100</option>
+              <option value="300" selected>300</option>
+              <option value="1000">1000</option>
+            </select>
+          </label>
+          <label class="inline-field checkbox">
+            <input type="checkbox" id="log-auto">
+            <span>Auto-refresh</span>
+          </label>
+          <button type="button" class="btn" id="log-refresh">Refresh</button>
+          <button type="button" class="btn danger" id="log-clear">Clear log</button>
+        </div>
+        <pre class="log-view" id="log-view" tabindex="0" aria-live="off"></pre>
+        <p class="hint" id="log-meta"></p>
+      </section>
+    </div>
+
     <!-- Advanced -->
     <div class="panel" id="panel-advanced" role="tabpanel" hidden>
       <p class="hint lead">
@@ -202,6 +261,21 @@
             Read-ahead held in memory per active transcode. Raise it if playback
             stutters on a slow network; lower it on a memory-constrained device.
           </p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Log file</h2>
+        <div class="row">
+          <div class="field">
+            <label for="log_max_mb">Rotate at (MB)</label>
+            <input type="number" id="log_max_mb" name="log_max_mb" min="1" max="512">
+          </div>
+          <div class="field">
+            <label for="log_backups">Old files to keep</label>
+            <input type="number" id="log_backups" name="log_backups" min="0" max="20">
+            <p class="hint">Restart required. 0 discards the log once it fills.</p>
+          </div>
         </div>
       </section>
 

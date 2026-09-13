@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from litejelly import __version__
+from litejelly import logs as log_setup
 from litejelly.config import load_config
 from litejelly.web import Application, create_server, get_local_ip
 
@@ -56,17 +57,22 @@ def parse_args(argv=None):
     parser.add_argument("--host", help="Address to bind (default 0.0.0.0)")
     parser.add_argument("--dir", action="append",
                         help="Media directory, for first run only (repeatable)")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Log debug detail for this run")
     parser.add_argument("--version", action="version", version=f"LiteJelly {__version__}")
     return parser.parse_args(argv)
 
 
-def configure_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-        stream=sys.stderr,
+def configure_logging(app_dir: Path, config=None, verbose: bool = False) -> list[str]:
+    """Console plus a rotating file. --verbose only overrides for this run."""
+    if config is None:
+        return log_setup.configure(app_dir, verbosity="debug" if verbose else "info")
+    return log_setup.configure(
+        app_dir,
+        verbosity="debug" if verbose else config.log_verbosity,
+        to_file=config.log_to_file,
+        max_mb=config.log_max_mb,
+        backups=config.log_backups,
     )
 
 
@@ -115,11 +121,15 @@ def print_banner(config, app: Application, video_count: int) -> None:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    configure_logging(args.verbose)
+    app_dir = Path(__file__).resolve().parent
+
+    # Log to the console first so config problems are visible, then reconfigure
+    # with the settings that were just read.
+    configure_logging(app_dir, verbose=args.verbose)
     restore_terminal_on_exit()
 
-    app_dir = Path(__file__).resolve().parent
     config, warnings = load_config(app_dir, args)
+    warnings += configure_logging(app_dir, config, verbose=args.verbose)
     for warning in warnings:
         log.warning(warning)
 

@@ -59,7 +59,8 @@ def authorize(config, client_address: str, headers=None, query=None) -> tuple[bo
     if is_loopback(client_address):
         return True, ""
     return False, ("Admin access is limited to the machine running LiteJelly. "
-                   "Set \"admin_token\" in config.json to allow it from other devices.")
+                   "Open /admin there and set a token under General to allow "
+                   "it from other devices.")
 
 
 def same_origin(headers, host: str) -> bool:

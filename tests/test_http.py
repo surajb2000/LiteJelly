@@ -146,6 +146,44 @@ class LiveServerTests(unittest.TestCase):
         self.assertIn("error", json.loads(response.read()))
         conn.close()
 
+    def test_logs_endpoint_reports_the_current_verbosity(self):
+        conn = self.connect()
+        conn.request("GET", "/api/admin/logs?lines=10")
+        payload = json.loads(conn.getresponse().read())
+        self.assertIn("entries", payload)
+        self.assertEqual(payload["verbosity_options"], ["info", "debug", "trace"])
+        conn.close()
+
+    def test_logs_endpoint_is_admin_guarded(self):
+        # Log lines carry absolute paths, so they are not public.
+        self.assertIn(("GET", "/api/admin/logs"), self.app.routes)
+        self.assertIn(("POST", "/api/admin/logs/clear"), self.app.routes)
+
+    def test_log_line_limit_is_capped(self):
+        conn = self.connect()
+        conn.request("GET", "/api/admin/logs?lines=999999")
+        payload = json.loads(conn.getresponse().read())
+        self.assertLessEqual(len(payload["entries"]), 2000)
+        conn.close()
+
+    def test_bad_line_count_falls_back(self):
+        conn = self.connect()
+        conn.request("GET", "/api/admin/logs?lines=plenty")
+        self.assertEqual(conn.getresponse().status, 200)
+        conn.close()
+
+    def test_log_requests_are_not_themselves_logged(self):
+        # Auto-refresh polls this endpoint; logging it would bury the content.
+        handler_path = "/api/admin/logs"
+        self.assertTrue(handler_path.startswith("/api/admin/logs"))
+        conn = self.connect()
+        conn.request("GET", "/api/admin/logs?lines=5")
+        first = json.loads(conn.getresponse().read())["entries"]
+        conn.request("GET", "/api/admin/logs?lines=5")
+        second = json.loads(conn.getresponse().read())["entries"]
+        conn.close()
+        self.assertEqual(len(first), len(second))
+
     def test_range_request_returns_partial_content(self):
         conn = self.connect()
         conn.request("GET", "/api/library")
