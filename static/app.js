@@ -39,6 +39,68 @@
     }
   })();
 
+  /* Which kind of screen is this, judged by capability rather than identity.
+   *
+   * No browser reports "I am a television", and user-agent strings lie, so
+   * the question asked here is the one that actually changes the design:
+   * can the thing hover, and how big is it. A wide screen that cannot hover
+   * is being driven by a remote from across a room.
+   */
+  const PROFILE_KEY = 'litejelly.profile';
+  const PROFILES = ['tv', 'desktop', 'phone'];
+
+  function mediaMatch(query) {
+    return !!(window.matchMedia && window.matchMedia(query).matches);
+  }
+
+  function detectProfile() {
+    if (Math.min(window.innerWidth, window.innerHeight) < 560
+        || window.innerWidth < 900) {
+      return 'phone';
+    }
+    // hover is Chrome 38+, pointer 41+, so both are safe on the TV floor.
+    if (mediaMatch('(hover: none)') || mediaMatch('(pointer: coarse)')
+        || mediaMatch('(pointer: none)')) {
+      return 'tv';
+    }
+    if (!window.matchMedia) return 'desktop';
+    return 'desktop';
+  }
+
+  function storedProfile() {
+    try {
+      const saved = window.localStorage.getItem(PROFILE_KEY);
+      return PROFILES.indexOf(saved) === -1 ? '' : saved;
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function applyProfile(name, remember) {
+    if (PROFILES.indexOf(name) === -1) return;
+    state.profile = name;
+    document.documentElement.setAttribute('data-profile', name);
+    if (!remember) return;
+    try {
+      window.localStorage.setItem(PROFILE_KEY, name);
+    } catch (err) {
+      // Private mode; the profile just will not persist.
+    }
+  }
+
+  // A remote that turns out to have a mouse should stop being treated as a
+  // remote. Detection is a starting guess, not a verdict.
+  function watchInputModality() {
+    if (storedProfile()) return;
+    function sawPointer() {
+      if (state.profile === 'tv' && window.innerWidth >= 900) {
+        applyProfile('desktop', false);
+      }
+      document.removeEventListener('mousemove', sawPointer, true);
+    }
+    document.addEventListener('mousemove', sawPointer, true);
+  }
+
   const API = {
     config: '/api/config',
     library: '/api/library',
@@ -62,6 +124,7 @@
 
   const state = {
     view: 'LIBRARY',
+    profile: 'desktop',
     videos: [],
     filtered: [],
     entries: [],
@@ -541,18 +604,31 @@
     }
 
     const img = $('.thumb-img', card);
-    img.dataset.src = artworkUrl(video);
+    const shape = artworkShape(video, inSeries);
+    card.classList.add('shape-' + shape);
+    img.dataset.src = artworkUrl(video, shape);
     if (thumbObserver) thumbObserver.observe(card);
     else loadThumbnail(img);
 
     return card;
   }
 
-  // A poster shipped with the media beats a frame grabbed from the video.
-  function artworkUrl(video) {
-    return video.has_poster
-      ? API.artwork + '?id=' + encodeURIComponent(video.id)
-      : API.thumbnail + '?id=' + encodeURIComponent(video.id);
+  /* Posters are portrait and episode stills are landscape, so the shape has
+   * to follow the content. Forcing both into one box is what cropped every
+   * poster to a slice, and what made a series look like the same picture
+   * repeated once per episode.
+   */
+  function artworkUrl(video, shape) {
+    // An episode's own frame identifies it; the series poster does not.
+    if (shape === 'still' || !video.has_poster) {
+      return API.thumbnail + '?id=' + encodeURIComponent(video.id);
+    }
+    return API.artwork + '?id=' + encodeURIComponent(video.id);
+  }
+
+  function artworkShape(video, inSeries) {
+    if (inSeries || (video.episode != null && video.series_id)) return 'still';
+    return video.has_poster ? 'poster' : 'still';
   }
 
   // Without an episode name, repeating the show title on every row says
@@ -597,7 +673,10 @@
     const poster = group.episodes.slice().sort(compareByEpisode)[0] || group.newest;
     const img = $('.thumb-img', card);
     if (poster) {
-      img.dataset.src = artworkUrl(poster);
+      // A series is represented by its poster, never by one episode's frame.
+      const shape = poster.has_poster ? 'poster' : 'still';
+      card.classList.add('shape-' + shape);
+      img.dataset.src = artworkUrl(poster, shape);
       if (thumbObserver) thumbObserver.observe(card);
       else loadThumbnail(img);
     }
@@ -697,6 +776,11 @@
       fragment.appendChild(entry.isSeries ? buildSeriesCard(entry) : buildCard(entry));
     });
     el.grid.replaceChildren(fragment);
+    // Portrait tiles want a narrower column than landscape ones, and a grid
+    // cannot size its tracks from the shape of its children.
+    el.grid.classList.toggle('grid-poster',
+                             !state.seriesId && $$('.shape-poster', el.grid).length
+                               > $$('.shape-still', el.grid).length);
     requestAnimationFrame(measureColumns);
     ensureThumbnailsRequested();
   }
@@ -2187,6 +2271,8 @@
   }
 
   function init() {
+    applyProfile(storedProfile() || detectProfile(), false);
+    watchInputModality();
     cacheElements();
     detectFlexGap();
     setupThumbObserver();

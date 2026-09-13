@@ -27,6 +27,45 @@
   /* Bundled system stack - no network fetch, so it works fully offline. */
   --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display",
     "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+
+  /* Type scale. Overridden per device profile below, so every size in the
+     sheet is expressed once and rescaled in one place. */
+  --fs-title: 1.8rem;
+  --fs-rail: 1.15rem;
+  --fs-card: 0.95rem;
+  --fs-card-sub: 0.8rem;
+  --fs-meta: 0.8rem;
+  --fs-body: 0.95rem;
+  --fs-control: 0.85rem;
+
+  /* Overscan safe area. Only a television needs one. */
+  --safe-x: 24px;
+
+  --focus-ring: 3px;
+  --focus-scale: 1.04;
+}
+
+/* A remote at three metres. Nothing here may be small: the smallest value
+   below is 19px, because anything less is unreadable from a sofa. */
+[data-profile="tv"] {
+  --fs-title: 3.5rem;
+  --fs-rail: 1.9rem;
+  --fs-card: 1.375rem;
+  --fs-card-sub: 1.1875rem;
+  --fs-meta: 1.1875rem;
+  --fs-body: 1.375rem;
+  --fs-control: 1.25rem;
+  --topbar-height: 104px;
+  --safe-x: 5%;
+  --focus-ring: 4px;
+  --focus-scale: 1.08;
+}
+
+[data-profile="phone"] {
+  --fs-title: 1.75rem;
+  --fs-card: 0.875rem;
+  --topbar-height: 64px;
+  --safe-x: 14px;
 }
 
 *, *::before, *::after {
@@ -231,7 +270,12 @@ body.playing {
   z-index: 1;
   max-width: 1440px;
   margin: 0 auto;
-  padding: calc(var(--topbar-height) + 28px) 24px 60px;
+  padding: calc(var(--topbar-height) + 28px) var(--safe-x) 60px;
+}
+
+/* A 1440px column wastes a third of a television. */
+[data-profile="tv"] #library {
+  max-width: none;
 }
 
 .library-header {
@@ -244,14 +288,14 @@ body.playing {
 }
 
 .section-title {
-  font-size: 1.8rem;
+  font-size: var(--fs-title);
   font-weight: 800;
   letter-spacing: -0.03em;
   color: #fff;
 }
 
 .section-subtitle {
-  font-size: 0.9rem;
+  font-size: var(--fs-meta);
   color: var(--text-secondary);
   margin-top: 4px;
 }
@@ -267,11 +311,15 @@ body.playing {
   color: var(--text-secondary);
   padding: 7px 16px;
   border-radius: 99px;
-  font-size: 0.82rem;
+  font-size: var(--fs-control);
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
   font-family: inherit;
+}
+
+[data-profile="tv"] .chip {
+  padding: 14px 30px;
 }
 
 .chip:hover {
@@ -292,6 +340,21 @@ body.playing {
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   grid-gap: 22px;
   gap: 22px;
+}
+
+/* Portrait tiles need a narrower column than landscape ones. */
+.grid.grid-poster {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+[data-profile="tv"] .grid {
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-gap: 32px;
+  gap: 32px;
+}
+
+[data-profile="tv"] .grid.grid-poster {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
 }
 
 /* Card (a <button>, so the browser handles keyboard activation) */
@@ -320,17 +383,22 @@ body.playing {
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.4);
 }
 
-/* D-pad Focus (TV Remote Highlight) */
+/* D-pad Focus (TV Remote Highlight). On a remote this is the cursor, so it
+   changes size as well as colour and never relies on hue alone. */
 .card:focus,
 .card.focused {
   outline: none;
   border-color: var(--accent);
-  transform: scale(1.04) translateY(-2px);
-  box-shadow: 0 0 0 3px var(--accent), 0 12px 30px var(--accent-glow);
+  transform: scale(var(--focus-scale)) translateY(-2px);
+  box-shadow: 0 0 0 var(--focus-ring) var(--accent),
+              0 0 0 calc(var(--focus-ring) + 5px) var(--accent-glow),
+              0 12px 30px var(--accent-glow);
   z-index: 10;
 }
 
-/* Thumbnail Box - padding ratio instead of aspect-ratio for old engines */
+/* Thumbnail Box. The padding-top trick stands in for aspect-ratio, which the
+   TV browser predates; modern engines get the real property further down.
+   Default is 16:9 so an untagged card behaves as it always did. */
 .card-thumb {
   position: relative;
   display: block;
@@ -338,6 +406,15 @@ body.playing {
   padding-top: 56.25%;
   background: linear-gradient(135deg, #111827 0%, #030712 100%);
   overflow: hidden;
+}
+
+/* A poster is portrait and must not be cropped into a letterbox. */
+.shape-poster .card-thumb {
+  padding-top: 150%;
+}
+
+.shape-still .card-thumb {
+  padding-top: 56.25%;
 }
 
 .thumb-img {
@@ -462,7 +539,7 @@ body.playing {
 
 .card-title {
   display: block;
-  font-size: 0.95rem;
+  font-size: var(--fs-card);
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -473,7 +550,7 @@ body.playing {
 
 .card-subtitle {
   display: block;
-  font-size: 0.8rem;
+  font-size: var(--fs-card-sub);
   font-weight: 600;
   color: var(--accent);
   letter-spacing: 0.03em;
@@ -518,11 +595,16 @@ body.playing {
 }
 
 .card-meta {
-  font-size: 0.8rem;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* File sizes and dates are noise at three metres; the title is the point. */
+[data-profile="tv"] .card-meta {
+  display: none;
 }
 
 /* ==========================================================================
@@ -1116,7 +1198,7 @@ select:focus:not(:focus-visible) {
 }
 
 .rail-title {
-  font-size: 1.15rem;
+  font-size: var(--fs-rail);
   font-weight: 700;
   letter-spacing: -0.02em;
   margin-bottom: 14px;
@@ -1578,3 +1660,50 @@ html.no-flex-gap .volume-control > * + * { margin-left: 8px; }
 html.no-flex-gap .popup-item > * + * { margin-left: 14px; }
 html.no-flex-gap .loading-container > * + * { margin-top: 16px; }
 html.no-flex-gap .subtitle-layer > * + * { margin-top: 2px; }
+
+
+/* ==========================================================================
+   Progressive enhancement
+   --------------------------------------------------------------------------
+   Everything above is the path the television takes, and it is the default
+   so a bug in here can never reach it. Modern engines opt in below.
+   Feature queries, not version checks: a user-agent string does not tell you
+   what is implemented, and @supports asks the browser directly.
+   ========================================================================== */
+
+@supports (aspect-ratio: 16 / 9) {
+  .card-thumb {
+    padding-top: 0;
+    aspect-ratio: 16 / 9;
+  }
+  .shape-poster .card-thumb {
+    padding-top: 0;
+    aspect-ratio: 2 / 3;
+  }
+  .shape-still .card-thumb {
+    padding-top: 0;
+    aspect-ratio: 16 / 9;
+  }
+}
+
+/* Off-screen rails and rows cost nothing to lay out until they scroll in.
+   This is the one enhancement that measurably helps a long library. */
+@supports (content-visibility: auto) {
+  .rail-section,
+  .card {
+    content-visibility: auto;
+  }
+  .card {
+    contain-intrinsic-size: auto 320px;
+  }
+}
+
+/* Fluid type between the profile steps rather than jumping at a breakpoint. */
+@supports (font-size: clamp(1rem, 2vw, 2rem)) {
+  [data-profile="desktop"] {
+    --fs-title: clamp(1.6rem, 2.4vw, 2.4rem);
+  }
+  [data-profile="tv"] {
+    --fs-title: clamp(2.75rem, 3.4vw, 4rem);
+  }
+}
