@@ -83,7 +83,7 @@ def log_path(app_dir: Path) -> Path:
 
 def configure(app_dir: Path, verbosity: str = DEFAULT_VERBOSITY,
               to_file: bool = True, max_mb: int = 2,
-              backups: int = 3) -> list[str]:
+              backups: int = 3, to_console: bool = False) -> list[str]:
     """Install the console and file handlers. Returns any setup warnings."""
     global _file_handler, _console_handler
 
@@ -105,7 +105,9 @@ def configure(app_dir: Path, verbosity: str = DEFAULT_VERBOSITY,
 
     _console_handler = logging.StreamHandler(stream=sys.stderr)
     _console_handler.setFormatter(formatter)
-    _console_handler.setLevel(level)
+    # Off still means warnings and errors: a terminal that shows nothing when
+    # something is broken is worse than one that is slightly noisy.
+    _console_handler.setLevel(level if to_console else logging.WARNING)
     root.addHandler(_console_handler)
 
     _file_handler = None
@@ -130,13 +132,14 @@ def configure(app_dir: Path, verbosity: str = DEFAULT_VERBOSITY,
     return warnings
 
 
-def set_verbosity(verbosity: str) -> int:
+def set_verbosity(verbosity: str, to_console: bool = False) -> int:
     """Change the live handlers without a restart. Returns the level applied."""
     level = resolve_verbosity(verbosity)
     logging.getLogger("litejelly").setLevel(level)
-    for handler in (_console_handler, _file_handler):
-        if handler is not None:
-            handler.setLevel(level)
+    if _file_handler is not None:
+        _file_handler.setLevel(level)
+    if _console_handler is not None:
+        _console_handler.setLevel(level if to_console else logging.WARNING)
     return level
 
 

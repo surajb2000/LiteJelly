@@ -143,7 +143,8 @@ class Application:
         )
         self.progress = ProgressStore(config.db_path)
         self.subtitles = SubtitleService(self.tools, config.cache_dir)
-        self.thumbnails = ThumbnailService(self.tools, config.cache_dir)
+        self.thumbnails = ThumbnailService(self.tools, config.cache_dir,
+                                           config.thumbnail_workers)
         self.static_dir = config.static_dir.resolve()
 
         self.routes = {
@@ -187,16 +188,19 @@ class Application:
                 ffmpeg_path=new_config.ffmpeg_path,
                 ffprobe_path=new_config.ffprobe_path,
             )
+            old_thumbnails = self.thumbnails
             self.config = new_config
             self.tools = tools
             self.subtitles = SubtitleService(tools, new_config.cache_dir)
-            self.thumbnails = ThumbnailService(tools, new_config.cache_dir)
+            self.thumbnails = ThumbnailService(tools, new_config.cache_dir,
+                                               new_config.thumbnail_workers)
             self.static_dir = new_config.static_dir.resolve()
+            old_thumbnails.close()
             del old_tools
 
         # Verbosity applies to the live handlers; the file settings only take
         # effect on restart because reopening the file would lose buffered lines.
-        log_setup.set_verbosity(new_config.log_verbosity)
+        log_setup.set_verbosity(new_config.log_verbosity, new_config.log_to_console)
         self.library.set_media_dirs(new_config.media_dirs, new_config.scan_interval)
 
     def resolve_video(self, query: dict):
@@ -214,6 +218,7 @@ class Application:
 
     def shutdown(self) -> None:
         self.library.stop()
+        self.thumbnails.close()
         self.progress.close()
 
 
@@ -403,6 +408,7 @@ class Routes:
             "exists": path.is_file(),
             "size": log_setup.file_size(),
             "to_file": config.log_to_file,
+            "to_console": config.log_to_console,
             "verbosity": config.log_verbosity,
             "verbosity_options": list(log_setup.VERBOSITY),
             "view_levels": list(log_setup.VIEW_LEVELS),
@@ -606,11 +612,19 @@ class Routes:
         if path is None:
             h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
             return
-        thumb = h.app.thumbnails.get(path)
-        if thumb is None:
-            h.send_api_error(HTTPStatus.NOT_FOUND, "No thumbnail available")
+
+        thumb = h.app.thumbnails.cached(path)
+        if thumb is not None:
+            h.serve_static_file(thumb, cache_control="public, max-age=604800",
+                                content_type="image/jpeg")
             return
-        h.serve_static_file(thumb, cache_control="public, max-age=604800", content_type="image/jpeg")
+
+        # Not ready: queue it and answer at once. Blocking here would pin one of
+        # the few connections a TV browser has while ffmpeg works.
+        if h.app.thumbnails.request(path):
+            h.send_json({"status": "generating"}, status=HTTPStatus.ACCEPTED)
+        else:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No thumbnail available")
 
     @staticmethod
     def subtitle(h, query):

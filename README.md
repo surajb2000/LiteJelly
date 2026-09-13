@@ -286,6 +286,10 @@ Change it on **Logs** in the admin page; it applies immediately, without a
 restart. `python server.py --verbose` forces debug for a single run without
 changing the saved setting.
 
+The terminal stays quiet by default and shows only warnings and errors. Tick
+**Also print logs to the terminal** on the Logs tab to mirror everything there,
+which is useful when running in the foreground.
+
 The same tab shows the recent log with filtering by severity, so you can look
 for errors without reading through every request. Rotation size and how many
 old files to keep live under **Advanced → Log file** and need a restart.

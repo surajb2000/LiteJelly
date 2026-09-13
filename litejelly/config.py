@@ -63,6 +63,7 @@ class Config:
     admin_token: str = ""
     log_verbosity: str = "info"
     log_to_file: bool = True
+    log_to_console: bool = False
     log_max_mb: int = 2
     log_backups: int = 3
     transcode: TranscodeSettings = field(default_factory=TranscodeSettings)
@@ -117,6 +118,7 @@ class Config:
             "admin_token": self.admin_token,
             "log_verbosity": self.log_verbosity,
             "log_to_file": self.log_to_file,
+            "log_to_console": self.log_to_console,
             "log_max_mb": self.log_max_mb,
             "log_backups": self.log_backups,
             "transcode": asdict(self.transcode),
@@ -171,6 +173,7 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
     cfg.admin_token = str(raw.get("admin_token") or "")
     cfg.log_verbosity = str(raw.get("log_verbosity") or "info").lower()
     cfg.log_to_file = bool(raw.get("log_to_file", True))
+    cfg.log_to_console = bool(raw.get("log_to_console", False))
     cfg.log_max_mb = max(1, _coerce_int(raw.get("log_max_mb"), 2))
     cfg.log_backups = max(0, _coerce_int(raw.get("log_backups"), 3))
 

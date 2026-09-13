@@ -208,6 +208,57 @@ class ReadEntriesTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
 
 
+class ConsoleOutputTests(unittest.TestCase):
+    """The terminal is quiet by default, but never silent about problems."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        root = logging.getLogger("litejelly")
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            handler.close()
+        self._tmp.cleanup()
+
+    def _console_level(self):
+        return logs._console_handler.level
+
+    def test_console_is_quiet_by_default(self):
+        logs.configure(self.root, verbosity="info")
+        self.assertEqual(self._console_level(), logging.WARNING)
+
+    def test_warnings_still_reach_the_console_when_off(self):
+        logs.configure(self.root, verbosity="info", to_console=False)
+        self.assertLessEqual(self._console_level(), logging.WARNING)
+
+    def test_console_mirrors_everything_when_on(self):
+        logs.configure(self.root, verbosity="info", to_console=True)
+        self.assertEqual(self._console_level(), logging.INFO)
+
+    def test_console_follows_verbosity_when_on(self):
+        logs.configure(self.root, verbosity="debug", to_console=True)
+        self.assertEqual(self._console_level(), logging.DEBUG)
+
+    def test_debug_does_not_leak_to_a_quiet_console(self):
+        logs.configure(self.root, verbosity="debug", to_console=False)
+        self.assertEqual(self._console_level(), logging.WARNING)
+
+    def test_console_can_be_toggled_live(self):
+        logs.configure(self.root, verbosity="info", to_console=False)
+        logs.set_verbosity("info", to_console=True)
+        self.assertEqual(self._console_level(), logging.INFO)
+        logs.set_verbosity("info", to_console=False)
+        self.assertEqual(self._console_level(), logging.WARNING)
+
+    def test_the_file_still_records_everything_when_the_console_is_quiet(self):
+        logs.configure(self.root, verbosity="debug", to_console=False)
+        logging.getLogger("litejelly.test").debug("written anyway")
+        entries = logs.read_entries(self.root, 50)
+        self.assertTrue(any("written anyway" in e["message"] for e in entries))
+
+
 class LogSettingsValidationTests(unittest.TestCase):
     def test_verbosity_whitelist(self):
         _, errors = settings.validate({"log_verbosity": "shout"})
@@ -228,6 +279,14 @@ class LogSettingsValidationTests(unittest.TestCase):
         clean, errors = settings.validate({"log_to_file": False})
         self.assertEqual(errors, [])
         self.assertIs(clean["log_to_file"], False)
+
+    def test_console_toggle_is_boolean(self):
+        clean, errors = settings.validate({"log_to_console": True})
+        self.assertEqual(errors, [])
+        self.assertIs(clean["log_to_console"], True)
+
+    def test_console_toggle_applies_without_a_restart(self):
+        self.assertEqual(settings.restart_required({}, {"log_to_console": True}), [])
 
     def test_rotation_bounds(self):
         _, errors = settings.validate({"log_max_mb": 0})

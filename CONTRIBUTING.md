@@ -74,8 +74,14 @@ This document outlines the architectural standards, code quality conventions, an
 - Get a logger with `logging.getLogger("litejelly.<module>")`. Handlers are installed once by `litejelly.logs.configure()`; never call `basicConfig` or add handlers elsewhere.
 - Pick the level by who needs the message: `info` for things an operator cares about, `warning`/`error` for problems, `debug` for diagnosing a specific fault, `trace` for per-chunk or per-frame detail.
 - INFO is the floor for what gets recorded. Do not add a setting that can hide warnings or errors; "quiet" belongs in the log *viewer's* filter, not in capture.
+- The console is quiet by default but always shows warnings and errors. Anything a user would need to see when something breaks must be at least `warning`.
+- When an external tool fails, log its stderr. "Could not make a thumbnail" without ffmpeg's reason is not actionable from the admin page.
 - Use lazy formatting (`log.info("Indexed %d", count)`), not f-strings, so suppressed records cost nothing.
 - Anything polled by the admin page should be excluded in `log_message`, or the log fills with requests for the log.
+
+### 10. Work That Blocks a Request
+- A TV browser opens only a handful of connections. Never do slow work inside a request handler: generating thumbnails there held those connections behind a worker semaphore and starved the page.
+- Queue the work, answer `202` immediately, and let the client retry. Give up after a bounded number of failures so a file that can never succeed is not retried on every page load.
 
 ---
 
@@ -96,6 +102,11 @@ This document outlines the architectural standards, code quality conventions, an
 - Maintain spatial navigation index math (`focusIndex + 1`, `focusIndex + gridColumns`) in `handleLibraryKeys`.
 - When focus updates, always invoke `scrollIntoView({ block: 'nearest' })`. Do not use `behavior: 'smooth'` or `block: 'center'` during D-pad repeats; both cause visible jank on low-powered TV browsers.
 - Ensure high-contrast focus outlines (neon cyan `--accent` border + glow) are defined in CSS for both `:focus` and `.focused` classes.
+
+### 3a. IntersectionObserver
+- Observe an element that is certain to have a layout box, such as the card. An element with no box is never reported, and the symptom is silent: the feature simply never runs.
+- This has bitten twice. First with the `hidden` attribute, then with an absolutely positioned image inside a padding-ratio box whose percentage height resolved to zero.
+- Anything driven by the observer needs a fallback path, because a lazy-loading optimisation that silently never fires looks identical to a broken feature.
 
 ### 4. Media Player & Web APIs
 - Seamlessly handle browser media events: `timeupdate`, `loadedmetadata`, `play`, `pause`, `ended`, `error`.

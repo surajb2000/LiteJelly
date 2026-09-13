@@ -248,6 +248,9 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
     if "log_to_file" in payload:
         clean["log_to_file"] = bool(payload["log_to_file"])
 
+    if "log_to_console" in payload:
+        clean["log_to_console"] = bool(payload["log_to_console"])
+
     if "log_max_mb" in payload:
         number = _as_int(payload["log_max_mb"], 1, 512, "log_max_mb", errors)
         if number is not None:

@@ -155,6 +155,7 @@
     $('admin_token').value = settings.admin_token || '';
     $('log_verbosity').value = settings.log_verbosity || 'info';
     $('log_to_file').checked = settings.log_to_file !== false;
+    $('log_to_console').checked = settings.log_to_console === true;
     $('log_max_mb').value = settings.log_max_mb == null ? '' : settings.log_max_mb;
     $('log_backups').value = settings.log_backups == null ? '' : settings.log_backups;
 
@@ -239,6 +240,7 @@
       admin_token: $('admin_token').value.trim(),
       log_verbosity: $('log_verbosity').value,
       log_to_file: $('log_to_file').checked,
+      log_to_console: $('log_to_console').checked,
       transcode: {
         preset: $('tc_preset').value,
         resolution: $('tc_resolution').value.trim(),

@@ -96,6 +96,7 @@
   const el = {};
   let cardTemplate = null;
   let thumbObserver = null;
+  let thumbFallbackTimer = null;
 
   // --- Utilities -------------------------------------------------------
   function formatTime(seconds) {
@@ -510,7 +511,7 @@
 
     const img = $('.thumb-img', card);
     img.dataset.src = API.thumbnail + '?id=' + encodeURIComponent(video.id);
-    if (thumbObserver) thumbObserver.observe(img);
+    if (thumbObserver) thumbObserver.observe(card);
     else loadThumbnail(img);
 
     return card;
@@ -551,7 +552,7 @@
     const img = $('.thumb-img', card);
     if (poster) {
       img.dataset.src = API.thumbnail + '?id=' + encodeURIComponent(poster.id);
-      if (thumbObserver) thumbObserver.observe(img);
+      if (thumbObserver) thumbObserver.observe(card);
       else loadThumbnail(img);
     }
 
@@ -569,26 +570,63 @@
     return value.toFixed(1) + ' ' + units[unit];
   }
 
+  // The server answers 202 while a thumbnail is still being made, which the
+  // browser reports as a load error. Retrying is what makes them appear on a
+  // slow machine; giving up on the first failure left every card blank.
+  const THUMB_RETRY_DELAYS = [1500, 4000, 9000, 20000];
+
   function loadThumbnail(img) {
     if (!img.dataset.src || img.getAttribute('src')) return;
+    attemptThumbnail(img, img.dataset.src);
+  }
+
+  function attemptThumbnail(img, src) {
     img.addEventListener('load', () => {
       img.classList.add('loaded');
       const letter = $('.card-letter', img.parentElement);
       if (letter) letter.classList.add('hidden');
     }, { once: true });
-    img.addEventListener('error', () => img.removeAttribute('src'), { once: true });
-    img.src = img.dataset.src;
+    img.addEventListener('error', () => retryThumbnail(img), { once: true });
+    img.src = src;
+  }
+
+  function retryThumbnail(img) {
+    img.removeAttribute('src');
+    const attempt = Number(img.dataset.attempt || 0);
+    if (attempt >= THUMB_RETRY_DELAYS.length) return;  // Keep the letter.
+    img.dataset.attempt = String(attempt + 1);
+    setTimeout(() => {
+      if (!document.body.contains(img)) return;
+      // Cache-bust so the browser does not reuse the 202 as the answer.
+      attemptThumbnail(img, img.dataset.src + '&try=' + img.dataset.attempt);
+    }, THUMB_RETRY_DELAYS[attempt]);
   }
 
   function setupThumbObserver() {
     if (!('IntersectionObserver' in window)) return;
+    // Observe the card, not the <img>. The image is absolutely positioned
+    // inside a padding-ratio box, and an engine that resolves its percentage
+    // height to zero gives it no layout box, which the observer never reports.
     thumbObserver = new IntersectionObserver((entries, observer) => {
       entries.forEach(entry => {
         if (!entry.isIntersecting) return;
         observer.unobserve(entry.target);
-        loadThumbnail(entry.target);
+        const img = $('.thumb-img', entry.target);
+        if (img) loadThumbnail(img);
       });
     }, { rootMargin: '300px 0px' });
+  }
+
+  // Safety net for engines where the observer never reports anything. Without
+  // it, a TV browser that misbehaves here shows no thumbnails at all, forever.
+  function ensureThumbnailsRequested() {
+    clearTimeout(thumbFallbackTimer);
+    thumbFallbackTimer = setTimeout(() => {
+      const images = $$('.thumb-img', el.grid).concat($$('.thumb-img', el.continueRow));
+      if (!images.length) return;
+      if (images.some(img => img.getAttribute('src'))) return;
+      images.forEach(loadThumbnail);
+    }, 2500);
   }
 
   function renderGrid() {
@@ -614,6 +652,7 @@
     });
     el.grid.replaceChildren(fragment);
     requestAnimationFrame(measureColumns);
+    ensureThumbnailsRequested();
   }
 
   function renderContinueWatching() {

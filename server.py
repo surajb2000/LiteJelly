@@ -66,13 +66,16 @@ def parse_args(argv=None):
 def configure_logging(app_dir: Path, config=None, verbose: bool = False) -> list[str]:
     """Console plus a rotating file. --verbose only overrides for this run."""
     if config is None:
-        return log_setup.configure(app_dir, verbosity="debug" if verbose else "info")
+        # Before the config is read, mirror everything so startup problems show.
+        return log_setup.configure(app_dir, verbosity="debug" if verbose else "info",
+                                   to_console=True)
     return log_setup.configure(
         app_dir,
         verbosity="debug" if verbose else config.log_verbosity,
         to_file=config.log_to_file,
         max_mb=config.log_max_mb,
         backups=config.log_backups,
+        to_console=verbose or config.log_to_console,
     )
 
 
