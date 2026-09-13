@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly.providers import (
     MetadataCache, MetadataProviders, SeriesInfo, episode_key, parse_anilist,
-    parse_aniskip, parse_tvmaze, strip_html,
+    parse_aniskip, parse_omdb, parse_tmdb, parse_tvmaze, redact, strip_html,
 )
 
 logging.getLogger("litejelly.providers").setLevel(logging.CRITICAL)
@@ -58,6 +58,23 @@ ANISKIP = {"found": True, "results": [
     {"interval": {"startTime": 28.783, "endTime": 118.783}, "skipType": "op"},
     {"interval": {"startTime": 1389.96, "endTime": 1461.0}, "skipType": "ed"},
 ], "statusCode": 200}
+
+# From TMDb's own documented example response.
+TMDB_MOVIE = {"page": 1, "results": [{
+    "id": 550,
+    "title": "Fight Club",
+    "original_title": "Fight Club",
+    "overview": "A ticking-time-bomb insomniac and a slippery soap salesman.",
+    "poster_path": "/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+    "backdrop_path": "/hZkgoQYus5vegHoetLkCJzb17zJ.jpg",
+    "release_date": "1999-10-15",
+    "vote_average": 8.433,
+    "vote_count": 26279,
+}]}
+
+# OMDb's documented response shape.
+OMDB = {"Title": "Fight Club", "Year": "1999", "imdbRating": "8.8",
+        "imdbID": "tt0137523", "Response": "True"}
 
 
 class StripHtmlTests(unittest.TestCase):
@@ -172,6 +189,83 @@ class AniSkipParsingTests(unittest.TestCase):
             "nonsense",
         ]}
         self.assertEqual(parse_aniskip(payload, 1500), [])
+
+
+class TmdbParsingTests(unittest.TestCase):
+    def test_movie_fields(self):
+        info = parse_tmdb(TMDB_MOVIE, "movie")
+        self.assertEqual(info.source, "TMDb")
+        self.assertEqual(info.title, "Fight Club")
+        self.assertEqual(info.year, 1999)
+        self.assertEqual(info.rating, 8.4)
+        self.assertTrue(info.poster_url.startswith("https://image.tmdb.org/t/p/"))
+        self.assertIn("insomniac", info.summary)
+
+    def test_tv_uses_name_and_first_air_date(self):
+        payload = {"results": [{"name": "Breaking Bad", "first_air_date": "2008-01-20",
+                                "overview": "Chemistry.", "vote_average": 8.9,
+                                "poster_path": "/x.jpg"}]}
+        info = parse_tmdb(payload, "tv")
+        self.assertEqual(info.title, "Breaking Bad")
+        self.assertEqual(info.year, 2008)
+
+    def test_no_results(self):
+        self.assertIsNone(parse_tmdb({"results": []}, "movie"))
+        self.assertIsNone(parse_tmdb({}, "movie"))
+
+    def test_untitled_result_is_refused(self):
+        self.assertIsNone(parse_tmdb({"results": [{"overview": "x"}]}, "movie"))
+
+    def test_zero_votes_is_not_a_rating(self):
+        payload = {"results": [{"title": "Unrated", "vote_average": 0}]}
+        self.assertIsNone(parse_tmdb(payload, "movie").rating)
+
+    def test_a_relative_poster_path_is_required(self):
+        payload = {"results": [{"title": "X", "poster_path": "http://evil/x.jpg"}]}
+        self.assertEqual(parse_tmdb(payload, "movie").poster_url, "")
+
+
+class OmdbParsingTests(unittest.TestCase):
+    def test_rating_and_id(self):
+        rating, imdb_id = parse_omdb(OMDB)
+        self.assertEqual(rating, 8.8)
+        self.assertEqual(imdb_id, "tt0137523")
+
+    def test_failed_response(self):
+        self.assertEqual(parse_omdb({"Response": "False", "Error": "Movie not found!"}),
+                         (None, ""))
+        self.assertEqual(parse_omdb({}), (None, ""))
+
+    def test_not_available_rating(self):
+        rating, imdb_id = parse_omdb({"Response": "True", "imdbID": "tt1",
+                                      "imdbRating": "N/A"})
+        self.assertIsNone(rating)
+        self.assertEqual(imdb_id, "tt1")
+
+    def test_nonsense_rating_does_not_raise(self):
+        self.assertEqual(parse_omdb({"Response": "True", "imdbRating": "great"})[0], None)
+
+    def test_out_of_range_rating_is_refused(self):
+        self.assertIsNone(parse_omdb({"Response": "True", "imdbRating": "88"})[0])
+
+
+class SecretRedactionTests(unittest.TestCase):
+    """Keys travel in the query string, and failures log the URL."""
+
+    def test_api_key_is_hidden(self):
+        self.assertNotIn("s3cret", redact(
+            "https://api.themoviedb.org/3/search/movie?api_key=s3cret&query=x"))
+
+    def test_omdb_key_is_hidden(self):
+        self.assertNotIn("s3cret", redact("https://www.omdbapi.com/?apikey=s3cret&t=x"))
+
+    def test_the_rest_of_the_url_survives(self):
+        self.assertIn("query=fight", redact(
+            "https://api.themoviedb.org/3/search/movie?api_key=s3cret&query=fight"))
+
+    def test_urls_without_keys_are_untouched(self):
+        url = "https://api.tvmaze.com/singlesearch/shows?q=x"
+        self.assertEqual(redact(url), url)
 
 
 class CacheTests(unittest.TestCase):
@@ -348,6 +442,76 @@ class ProviderTests(unittest.TestCase):
     def test_episode_key(self):
         self.assertEqual(episode_key(1, 2), "s1e2")
         self.assertEqual(episode_key(None, None), "s0e0")
+
+
+class KeyedProviderTests(unittest.TestCase):
+    """TMDb and OMDb need a key, so they must stay inert without one."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_films_are_skipped_without_a_tmdb_key(self):
+        providers = MetadataProviders(self.root, _FakeFetcher(raise_on_call=True))
+        self.assertIsNone(providers.movie("Fight Club", 1999))
+
+    def test_film_lookup_with_a_key(self):
+        fetcher = _FakeFetcher({"search/movie": TMDB_MOVIE})
+        providers = MetadataProviders(self.root, fetcher, tmdb_key="k")
+        info = providers.movie("Fight Club", 1999)
+        self.assertEqual(info.title, "Fight Club")
+        self.assertEqual(info.source, "TMDb")
+
+    def test_film_lookup_is_cached(self):
+        fetcher = _FakeFetcher({"search/movie": TMDB_MOVIE})
+        providers = MetadataProviders(self.root, fetcher, tmdb_key="k")
+        providers.movie("Fight Club", 1999)
+        providers.movie("Fight Club", 1999)
+        self.assertEqual(len(fetcher.calls), 1)
+
+    def test_cached_movie_never_calls_out(self):
+        fetcher = _FakeFetcher({"search/movie": TMDB_MOVIE})
+        MetadataProviders(self.root, fetcher, tmdb_key="k").movie("Fight Club", 1999)
+        offline = MetadataProviders(self.root, _FakeFetcher(raise_on_call=True))
+        self.assertEqual(offline.cached_movie("Fight Club", 1999).title, "Fight Club")
+
+    def test_tmdb_backs_up_tvmaze_for_shows(self):
+        # TVmaze misses; TMDb answers because a key is present.
+        fetcher = _FakeFetcher({"search/tv": {"results": [
+            {"name": "Obscure Show", "first_air_date": "2020-01-01",
+             "vote_average": 7.0, "overview": "x"}]}})
+        providers = MetadataProviders(self.root, fetcher, tmdb_key="k")
+        info = providers.series("Obscure Show")
+        self.assertEqual(info.source, "TMDb")
+
+    def test_imdb_rating_is_added_when_omdb_has_a_key(self):
+        fetcher = _FakeFetcher({"singlesearch": TVMAZE, "omdbapi": OMDB})
+        providers = MetadataProviders(self.root, fetcher, omdb_key="k")
+        info = providers.series("The Mentalist")
+        self.assertEqual(info.imdb_rating, 8.8)
+        self.assertEqual(info.rating, 8.2, "the source's own rating is kept too")
+
+    def test_no_omdb_key_means_no_imdb_rating(self):
+        fetcher = _FakeFetcher({"singlesearch": TVMAZE})
+        providers = MetadataProviders(self.root, fetcher)
+        self.assertIsNone(providers.series("The Mentalist").imdb_rating)
+
+    def test_imdb_rating_survives_the_cache(self):
+        fetcher = _FakeFetcher({"singlesearch": TVMAZE, "omdbapi": OMDB})
+        MetadataProviders(self.root, fetcher, omdb_key="k").series("The Mentalist")
+        offline = MetadataProviders(self.root, _FakeFetcher(raise_on_call=True))
+        self.assertEqual(offline.cached_series("The Mentalist").imdb_rating, 8.8)
+
+    def test_the_key_is_sent_but_not_in_the_cache_key(self):
+        fetcher = _FakeFetcher({"search/movie": TMDB_MOVIE})
+        providers = MetadataProviders(self.root, fetcher, tmdb_key="s3cret")
+        providers.movie("Fight Club", 1999)
+        self.assertIn("api_key=s3cret", fetcher.calls[0])
+        for path in self.root.rglob("*.json"):
+            self.assertNotIn("s3cret", path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

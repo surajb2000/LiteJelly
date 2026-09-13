@@ -210,6 +210,14 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
     if "online_metadata" in payload:
         clean["online_metadata"] = bool(payload["online_metadata"])
 
+    for key in ("tmdb_api_key", "omdb_api_key"):
+        if key in payload:
+            value = str(payload[key] or "").strip()
+            if value and (len(value) > 128 or any(ch.isspace() for ch in value)):
+                errors.append(f"{key} does not look like an API key")
+            else:
+                clean[key] = value
+
     for key in ("ffmpeg_path", "ffprobe_path"):
         if key in payload:
             text = str(payload[key] or "").strip()

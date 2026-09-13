@@ -105,6 +105,17 @@ titles to a third party, which is your decision rather than the default.
 | [TVmaze](https://www.tvmaze.com) | Television: episode names, plots, ratings, posters, IMDb id | No |
 | [AniList](https://anilist.co) | Anime: titles, scores, cover art | No |
 | [AniSkip](https://www.aniskip.com) | Anime opening and ending times | No |
+| [TMDb](https://www.themoviedb.org) | Films, and shows TVmaze does not have | Free key |
+| [OMDb](https://www.omdbapi.com) | The actual IMDb rating | Free key |
+
+The first three work out of the box. The last two are the same pair Jellyfin
+ships with, and both need a free key, which you paste into **Library → Online
+metadata**:
+
+- **TMDb** — [themoviedb.org](https://www.themoviedb.org/settings/api). Without
+  it, films get nothing, since no free film source works without an account.
+- **OMDb** — [omdbapi.com](https://www.omdbapi.com/apikey.aspx), emailed to
+  you. Without it the rating shown is TVmaze's or AniList's own, not IMDb's.
 
 Anything found locally still wins: a `.nfo` and a `poster.jpg` were put there
 deliberately, and a fuzzy title match should not override them.
@@ -115,12 +126,10 @@ simply arrives later. Posters are downloaded and served locally rather than
 hotlinked, both because the page's CSP is `img-src 'self'` and so the library
 keeps working offline.
 
-Two honest gaps. **Films** have no keyless source, so only television and anime
-are enriched. And **IMDb ratings** are not available without an API key: TVmaze
-supplies the IMDb *id*, and the rating shown is TVmaze's or AniList's own.
-
 > Show data is provided by [TVmaze](https://www.tvmaze.com), used under
-> [CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/).
+> [CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/). Film data is
+> provided by [TMDb](https://www.themoviedb.org), which does not endorse or
+> certify this product.
 - **Rescan & Search**: Instant real-time video search, category format filters (`All`, `MP4`, `MKV`, `Other`), and multi-attribute sorting.
 - **Display WakeLock**: Leverages the Screen Wake Lock API to prevent smart TV screens and phones from sleeping during playback.
 

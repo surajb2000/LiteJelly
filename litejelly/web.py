@@ -141,7 +141,9 @@ def _build_metadata(config):
     """Online lookups are opt-in: they send your titles to a third party."""
     if not getattr(config, "online_metadata", False):
         return None, None
-    providers = MetadataProviders(config.cache_dir)
+    providers = MetadataProviders(config.cache_dir,
+                                  tmdb_key=getattr(config, "tmdb_api_key", ""),
+                                  omdb_key=getattr(config, "omdb_api_key", ""))
     return providers, Enricher(providers)
 
 

@@ -129,6 +129,24 @@
             Anything found in a local .nfo or poster file still wins.
           </p>
         </div>
+        <div class="field">
+          <label for="tmdb_api_key">TMDb API key (optional)</label>
+          <input type="text" id="tmdb_api_key" name="tmdb_api_key" spellcheck="false"
+                 autocomplete="off" placeholder="Leave empty to skip films">
+          <p class="hint">
+            Films have no source that works without an account. A free key from
+            themoviedb.org adds posters, plots and ratings for them.
+          </p>
+        </div>
+        <div class="field">
+          <label for="omdb_api_key">OMDb API key (optional)</label>
+          <input type="text" id="omdb_api_key" name="omdb_api_key" spellcheck="false"
+                 autocomplete="off" placeholder="Leave empty for no IMDb scores">
+          <p class="hint">
+            The only free route to the actual IMDb rating. A free key is
+            emailed by omdbapi.com.
+          </p>
+        </div>
       </section>
     </div>
 

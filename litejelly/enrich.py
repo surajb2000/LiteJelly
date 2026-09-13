@@ -36,6 +36,9 @@ class Enricher:
     def enqueue_series(self, title: str, anime: bool) -> bool:
         return self._enqueue(("series", title, anime))
 
+    def enqueue_movie(self, title: str, year) -> bool:
+        return self._enqueue(("movie", title, year))
+
     def enqueue_skip(self, mal_id: int, episode: int) -> bool:
         if not mal_id or not episode:
             return False
@@ -103,6 +106,16 @@ class Enricher:
             info = self.providers.series(title, anime)
             if info is None:
                 log.debug("No online match for %r", title)
+                return
+            log.info("Found %s on %s", info.title or title, info.source)
+            if info.poster_url:
+                self.providers.artwork(info.poster_url)
+            self._pending_updates = True
+        elif kind == "movie":
+            _, title, year = job
+            info = self.providers.movie(title, year)
+            if info is None:
+                log.debug("No online match for film %r", title)
                 return
             log.info("Found %s on %s", info.title or title, info.source)
             if info.poster_url:

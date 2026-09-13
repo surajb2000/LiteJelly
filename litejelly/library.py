@@ -200,6 +200,7 @@ class Video:
     season: int | None = None
     episode: int | None = None
     rating: float | None = None
+    imdb_rating: float | None = None
     has_poster: bool = False
     mal_id: int | None = None
     # Kept in memory for /api/details and artwork serving. Plots run to
@@ -398,7 +399,10 @@ class Library:
         Anything found locally wins: a .nfo and a poster.jpg were put there
         deliberately, and a fuzzy title match should not override them.
         """
-        if self.metadata is None or not video.series_id:
+        if self.metadata is None:
+            return
+        if not video.series_id:
+            self._apply_online_movie(video)
             return
 
         anime = video.category == "anime"
@@ -420,6 +424,8 @@ class Library:
             })
         if video.rating is None:
             video.rating = episode.get("rating") or info.rating
+        if video.imdb_rating is None:
+            video.imdb_rating = info.imdb_rating
 
         if not video.poster_path and info.poster_url:
             downloaded = self.metadata.artwork_path(info.poster_url)
@@ -440,6 +446,33 @@ class Library:
             video.mal_id = info.mal_id
             if self.enricher is not None and video.episode:
                 self.enricher.enqueue_skip(info.mal_id, video.episode)
+
+    def _apply_online_movie(self, video: Video) -> None:
+        info = self.metadata.cached_movie(video.title, video.year)
+        if info is None:
+            if (self.enricher is not None
+                    and not self.metadata.has_looked_up_movie(video.title, video.year)):
+                self.enricher.enqueue_movie(video.title, video.year)
+            return
+
+        if video.rating is None:
+            video.rating = info.rating
+        if video.imdb_rating is None:
+            video.imdb_rating = info.imdb_rating
+        if video.year is None:
+            video.year = info.year
+        if not video.poster_path and info.poster_url:
+            downloaded = self.metadata.artwork_path(info.poster_url)
+            if downloaded is not None:
+                video.poster_path = str(downloaded)
+                video.has_poster = True
+
+        merged = dict(video.meta or {})
+        merged.setdefault("plot", info.summary)
+        merged.setdefault("genres", info.genres)
+        merged["source"] = info.source
+        merged["imdb_id"] = info.imdb_id
+        video.meta = merged
 
     def _directory_signature(self, dirs) -> dict[str, tuple]:
         """Cheap fingerprint of each tree, used to skip unnecessary rescans."""

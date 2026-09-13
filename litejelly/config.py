@@ -58,6 +58,8 @@ class Config:
     thumbnail_workers: int = 2
     allow_hevc_direct: bool = False
     online_metadata: bool = False
+    tmdb_api_key: str = ""
+    omdb_api_key: str = ""
     stream_buffer_mb: int = 8
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
@@ -111,6 +113,8 @@ class Config:
             "thumbnail_workers": self.thumbnail_workers,
             "allow_hevc_direct": self.allow_hevc_direct,
             "online_metadata": self.online_metadata,
+            "tmdb_api_key": self.tmdb_api_key,
+            "omdb_api_key": self.omdb_api_key,
             "stream_buffer_mb": self.stream_buffer_mb,
             "ffmpeg_path": self.ffmpeg_path,
             "ffprobe_path": self.ffprobe_path,
@@ -166,6 +170,8 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
     cfg.thumbnail_workers = max(1, _coerce_int(raw.get("thumbnail_workers"), 2))
     cfg.allow_hevc_direct = bool(raw.get("allow_hevc_direct", False))
     cfg.online_metadata = bool(raw.get("online_metadata", False))
+    cfg.tmdb_api_key = str(raw.get("tmdb_api_key") or "").strip()
+    cfg.omdb_api_key = str(raw.get("omdb_api_key") or "").strip()
     cfg.stream_buffer_mb = max(1, _coerce_int(raw.get("stream_buffer_mb"), 8))
     cfg.ffmpeg_path = str(raw.get("ffmpeg_path") or "")
     cfg.ffprobe_path = str(raw.get("ffprobe_path") or "")

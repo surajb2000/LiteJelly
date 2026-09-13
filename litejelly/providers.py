@@ -36,6 +36,16 @@ USER_AGENT = "LiteJelly/0.2 (+https://github.com/surajb2000/LiteJelly)"
 TVMAZE_ROOT = "https://api.tvmaze.com"
 ANILIST_URL = "https://graphql.anilist.co"
 ANISKIP_ROOT = "https://api.aniskip.com"
+TMDB_ROOT = "https://api.themoviedb.org/3"
+TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
+OMDB_ROOT = "https://www.omdbapi.com/"
+
+_SECRET = re.compile(r"(api_?key=)[^&]+", re.IGNORECASE)
+
+
+def redact(url: str) -> str:
+    """Keys travel in the query string, so a logged URL would leak them."""
+    return _SECRET.sub(r"\1***", url or "")
 
 # TVmaze allows at least 20 calls per 10s; stay well inside it.
 MIN_REQUEST_INTERVAL = 0.6
@@ -111,10 +121,10 @@ class RateLimitedFetcher:
                     # The documented remedy is simply to pause and retry.
                     time.sleep(2 ** attempt * 2)
                     continue
-                log.debug("%s returned HTTP %s", url, exc.code)
+                log.debug("%s returned HTTP %s", redact(url), exc.code)
                 return None
             except (urllib.error.URLError, OSError, ValueError) as exc:
-                log.debug("%s failed: %s", url, exc)
+                log.debug("%s failed: %s", redact(url), exc)
                 return None
         return None
 
@@ -183,6 +193,7 @@ class SeriesInfo:
     title: str = ""
     summary: str = ""
     rating: float | None = None
+    imdb_rating: float | None = None
     year: int | None = None
     genres: list[str] = field(default_factory=list)
     imdb_id: str = ""
@@ -194,7 +205,8 @@ class SeriesInfo:
     def to_dict(self) -> dict:
         return {
             "source": self.source, "title": self.title, "summary": self.summary,
-            "rating": self.rating, "year": self.year, "genres": self.genres,
+            "rating": self.rating, "imdb_rating": self.imdb_rating,
+            "year": self.year, "genres": self.genres,
             "imdb_id": self.imdb_id, "mal_id": self.mal_id,
             "poster_url": self.poster_url, "episodes": self.episodes,
         }
@@ -208,6 +220,7 @@ class SeriesInfo:
         info.title = str(data.get("title") or "")
         info.summary = str(data.get("summary") or "")
         info.rating = data.get("rating")
+        info.imdb_rating = data.get("imdb_rating")
         info.year = data.get("year")
         info.genres = list(data.get("genres") or [])
         info.imdb_id = str(data.get("imdb_id") or "")
@@ -269,6 +282,44 @@ def parse_anilist(payload: dict) -> SeriesInfo:
     return info
 
 
+def parse_tmdb(payload: dict, kind: str = "movie") -> SeriesInfo | None:
+    """First result of a TMDb search. Movies use title/release_date, TV uses
+    name/first_air_date."""
+    results = payload.get("results") or []
+    if not results or not isinstance(results[0], dict):
+        return None
+    top = results[0]
+
+    info = SeriesInfo(source="TMDb")
+    info.title = str(top.get("title") or top.get("name") or "")
+    info.summary = str(top.get("overview") or "").strip()
+    score = top.get("vote_average")
+    if isinstance(score, (int, float)) and score > 0:
+        info.rating = round(float(score), 1)
+    released = str(top.get("release_date") or top.get("first_air_date") or "")
+    if released[:4].isdigit():
+        info.year = int(released[:4])
+    poster = top.get("poster_path")
+    if isinstance(poster, str) and poster.startswith("/"):
+        info.poster_url = f"{TMDB_IMAGE}{poster}"
+    return info if info.title else None
+
+
+def parse_omdb(payload: dict) -> tuple[float | None, str]:
+    """OMDb's IMDb rating and id. Returns (rating, imdb_id)."""
+    if not payload or str(payload.get("Response") or "").lower() != "true":
+        return None, ""
+    imdb_id = str(payload.get("imdbID") or "")
+    raw = str(payload.get("imdbRating") or "").strip()
+    if not raw or raw.upper() == "N/A":
+        return None, imdb_id
+    try:
+        value = float(raw)
+    except ValueError:
+        return None, imdb_id
+    return (round(value, 1) if 0 <= value <= 10 else None), imdb_id
+
+
 def parse_aniskip(payload: dict, duration: float = 0.0) -> list[dict]:
     if not payload or not payload.get("found"):
         return []
@@ -302,10 +353,13 @@ def parse_aniskip(payload: dict, duration: float = 0.0) -> list[dict]:
 class MetadataProviders:
     """Looks things up once, remembers the answer, and never blocks a request."""
 
-    def __init__(self, cache_dir: Path, fetcher: RateLimitedFetcher | None = None):
+    def __init__(self, cache_dir: Path, fetcher: RateLimitedFetcher | None = None,
+                 tmdb_key: str = "", omdb_key: str = ""):
         self.cache = MetadataCache(cache_dir / "metadata")
         self.artwork_dir = cache_dir / "artwork"
         self.fetcher = fetcher or RateLimitedFetcher()
+        self.tmdb_key = (tmdb_key or "").strip()
+        self.omdb_key = (omdb_key or "").strip()
 
     # -- series -----------------------------------------------------------
     def cached_series(self, title: str, anime: bool = False) -> SeriesInfo | None:
@@ -354,11 +408,73 @@ class MetadataProviders:
             return SeriesInfo.from_dict(cached) if cached else None
 
         info = self._fetch_anilist(title) if anime else self._fetch_tvmaze(title)
+        if info is None and not anime:
+            # TMDb covers shows TVmaze does not, but only with a key.
+            info = self._fetch_tmdb(title, kind="tv")
         if info is None:
             self.cache.put(namespace, title, None, miss=True)
             return None
+        self._attach_imdb_rating(info)
         self.cache.put(namespace, title, info.to_dict())
         return info
+
+    def movie(self, title: str, year: int | None = None) -> SeriesInfo | None:
+        """Films have no keyless source, so this needs a TMDb key."""
+        if not title.strip() or not self.tmdb_key:
+            return None
+        key = f"{title}|{year or ''}"
+        cached = self.cache.get("tmdb-movie", key)
+        if cached is not None:
+            return SeriesInfo.from_dict(cached) if cached else None
+
+        info = self._fetch_tmdb(title, year, kind="movie")
+        if info is None:
+            self.cache.put("tmdb-movie", key, None, miss=True)
+            return None
+        self._attach_imdb_rating(info)
+        self.cache.put("tmdb-movie", key, info.to_dict())
+        return info
+
+    def cached_movie(self, title: str, year: int | None = None) -> SeriesInfo | None:
+        if not title.strip():
+            return None
+        cached = self.cache.get("tmdb-movie", f"{title}|{year or ''}")
+        return SeriesInfo.from_dict(cached) if cached else None
+
+    def has_looked_up_movie(self, title: str, year: int | None = None) -> bool:
+        if not title.strip():
+            return False
+        return self.cache.get("tmdb-movie", f"{title}|{year or ''}") is not None
+
+    def _fetch_tmdb(self, title: str, year: int | None = None,
+                    kind: str = "movie") -> SeriesInfo | None:
+        if not self.tmdb_key:
+            return None
+        path = "movie" if kind == "movie" else "tv"
+        url = (f"{TMDB_ROOT}/search/{path}"
+               f"?api_key={urllib.parse.quote(self.tmdb_key)}"
+               f"&query={urllib.parse.quote(title)}&include_adult=false")
+        if year:
+            url += f"&year={int(year)}"
+        payload = self.fetcher.fetch_json(url)
+        return parse_tmdb(payload, kind) if payload else None
+
+    def _attach_imdb_rating(self, info: SeriesInfo) -> None:
+        """OMDb is the only free way to the actual IMDb score, and needs a key."""
+        if not self.omdb_key or info.imdb_rating is not None:
+            return
+        query = (f"i={urllib.parse.quote(info.imdb_id)}" if info.imdb_id
+                 else f"t={urllib.parse.quote(info.title)}"
+                      + (f"&y={info.year}" if info.year else ""))
+        url = f"{OMDB_ROOT}?apikey={urllib.parse.quote(self.omdb_key)}&{query}"
+        payload = self.fetcher.fetch_json(url)
+        if not payload:
+            return
+        rating, imdb_id = parse_omdb(payload)
+        if rating is not None:
+            info.imdb_rating = rating
+        if imdb_id and not info.imdb_id:
+            info.imdb_id = imdb_id
 
     def _fetch_tvmaze(self, title: str) -> SeriesInfo | None:
         url = (f"{TVMAZE_ROOT}/singlesearch/shows"
