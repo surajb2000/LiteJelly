@@ -180,6 +180,73 @@ def _make_id(dir_index: int, rel_path: str) -> str:
     return digest[:16]
 
 
+def episode_order(video: Video) -> tuple:
+    """Sort key inside a series. Filename breaks ties so order is stable."""
+    return (video.season or 0, video.episode or 0, video.filename.lower())
+
+
+def next_episode(videos, current: Video) -> Video | None:
+    """The episode that follows ``current`` within its series.
+
+    Lives on the server because the edge cases deserve tests: the last episode
+    of a show, numbering with gaps, and films, which have no next at all.
+    """
+    if current is None or not current.series_id:
+        return None
+    siblings = sorted((v for v in videos if v.series_id == current.series_id),
+                      key=episode_order)
+    for index, video in enumerate(siblings):
+        if video.id == current.id:
+            return siblings[index + 1] if index + 1 < len(siblings) else None
+    return None
+
+
+def build_continue_watching(videos, progress: dict, limit: int = 12) -> list[dict]:
+    """One entry per series, newest first.
+
+    A show with twenty part-watched episodes should occupy one row, not twenty.
+    When the last thing watched in a series is finished, the row becomes the
+    next episode instead, which is the thing the viewer actually wants next.
+    """
+    by_id = {video.id: video for video in videos}
+    entries = sorted(
+        (entry for entry in progress.values() if entry.get("video_id") in by_id),
+        key=lambda entry: entry.get("updated_at") or 0,
+        reverse=True,
+    )
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for entry in entries:
+        video = by_id[entry["video_id"]]
+        key = video.series_id or video.id
+        if key in seen:
+            continue
+
+        if entry.get("finished"):
+            following = next_episode(videos, video)
+            if following is None:
+                continue
+            if (progress.get(following.id) or {}).get("finished"):
+                continue
+            seen.add(key)
+            out.append({"id": following.id, "position": 0.0,
+                        "duration": 0.0, "next_up": True})
+        else:
+            # A few seconds in is an accident, not something to resume.
+            if (entry.get("position") or 0) < 15:
+                continue
+            seen.add(key)
+            out.append({"id": video.id,
+                        "position": entry.get("position") or 0.0,
+                        "duration": entry.get("duration") or 0.0,
+                        "next_up": False})
+
+        if len(out) >= limit:
+            break
+    return out
+
+
 class Library:
     """Holds an immutable snapshot of the scanned media, refreshed in the background."""
 

@@ -87,7 +87,10 @@
     quality: 'auto',
     qualities: [],
     audioOffset: 0,
-    lastPointerMove: 0
+    lastPointerMove: 0,
+    continueWatching: [],
+    upNextTimer: null,
+    upNextRemaining: 0
   };
 
   const $ = (sel, root) => (root || document).querySelector(sel);
@@ -222,6 +225,8 @@
       const data = await getJSON(API.library);
       state.videos = Array.isArray(data.videos) ? data.videos : [];
       state.progress = data.progress || {};
+      state.continueWatching = Array.isArray(data.continue_watching)
+        ? data.continue_watching : [];
       state.ffmpegAvailable = !!data.ffmpeg_available;
       renderCategoryChips();
       applyFilters();
@@ -478,13 +483,15 @@
     return Math.min(1, Math.max(0, entry.position / entry.duration));
   }
 
-  function buildCard(video) {
+  function buildCard(video, episodeStyle) {
     const card = cardTemplate.content.firstElementChild.cloneNode(true);
     card.dataset.id = video.id;
     card.setAttribute('aria-label', 'Play ' + video.name);
     card.title = video.filename;
 
-    const inSeries = !!state.seriesId;
+    // Inside a series the heading can drop the show name; anywhere else it
+    // would leave "Episode 2" with no idea which show that is.
+    const inSeries = episodeStyle === undefined ? !!state.seriesId : episodeStyle;
     const heading = inSeries ? (video.episode_title || video.title || video.name) : video.name;
     $('.card-title', card).textContent = heading;
     $('.card-letter', card).textContent = (heading || '?').charAt(0).toUpperCase();
@@ -656,15 +663,11 @@
   }
 
   function renderContinueWatching() {
-    const entries = Object.keys(state.progress)
-      .map(key => state.progress[key])
-      .filter(entry => entry && !entry.finished && entry.position > 15 && entry.duration > 0)
-      .sort((a, b) => b.updated_at - a.updated_at)
-      .slice(0, 12);
-
+    // The server decides what belongs here: one row per series, and the next
+    // episode once the last one was finished.
     const byId = new Map(state.videos.map(video => [video.id, video]));
-    const items = entries
-      .map(entry => ({ video: byId.get(entry.video_id), entry: entry }))
+    const items = state.continueWatching
+      .map(entry => ({ video: byId.get(entry.id), entry: entry }))
       .filter(item => item.video);
 
     if (!items.length) {
@@ -675,12 +678,19 @@
 
     const fragment = document.createDocumentFragment();
     items.forEach(item => {
-      const card = buildCard(item.video);
+      const card = buildCard(item.video, false);
       card.classList.add('rail-card');
       const meta = $('.card-meta', card);
-      const remaining = document.createElement('span');
-      remaining.textContent = formatTime(Math.max(0, item.entry.duration - item.entry.position)) + ' left';
-      meta.replaceChildren(remaining);
+      const label = document.createElement('span');
+      if (item.entry.next_up) {
+        label.textContent = 'Next episode';
+      } else {
+        const left = Math.max(0, item.entry.duration - item.entry.position);
+        label.textContent = item.entry.duration
+          ? formatTime(left) + ' left'
+          : 'Resume';
+      }
+      meta.replaceChildren(label);
       fragment.appendChild(card);
     });
     el.continueRow.replaceChildren(fragment);
@@ -719,6 +729,7 @@
     const video = state.videos.find(item => item.id === videoId);
     if (!video) return;
 
+    cancelUpNext();
     el.osdTitle.textContent = video.name;
     el.osdBadge.textContent = 'Loading...';
     showPlayerView();
@@ -735,6 +746,53 @@
       showToast('Cannot play this file: ' + err.message, 5000);
       exitPlayer();
     }
+  }
+
+  // --- Up next ---------------------------------------------------------
+
+  const UP_NEXT_SECONDS = 10;
+
+  function showUpNext(video) {
+    hideOSD();
+    el.video.pause();
+    el.upNextTitle.textContent = video.title || video.name;
+    const code = episodeCode(video);
+    const parts = [];
+    if (code) parts.push(code);
+    if (video.episode_title) parts.push(video.episode_title);
+    el.upNextSub.textContent = parts.join(' \u00b7 ');
+
+    state.upNextRemaining = UP_NEXT_SECONDS;
+    renderUpNextCountdown();
+    el.upNext.classList.remove('hidden');
+    el.upNextPlay.focus();
+
+    clearInterval(state.upNextTimer);
+    state.upNextTimer = setInterval(() => {
+      state.upNextRemaining -= 1;
+      renderUpNextCountdown();
+      if (state.upNextRemaining <= 0) playUpNext(video.id);
+    }, 1000);
+  }
+
+  function renderUpNextCountdown() {
+    el.upNextCountdown.textContent = state.upNextRemaining > 0
+      ? '(' + state.upNextRemaining + ')' : '';
+  }
+
+  function cancelUpNext() {
+    clearInterval(state.upNextTimer);
+    state.upNextTimer = null;
+    el.upNext.classList.add('hidden');
+  }
+
+  function playUpNext(videoId) {
+    cancelUpNext();
+    openVideo(videoId);
+  }
+
+  function pendingUpNext() {
+    return !el.upNext.classList.contains('hidden');
   }
 
   function codecLabel(name) {
@@ -842,7 +900,15 @@
 
     video.load();
     const started = video.play();
-    if (started && started.catch) started.catch(() => { /* autoplay may need a gesture */ });
+    if (started && started.catch) {
+      // Auto-advance calls play() without a fresh gesture, which a browser may
+      // refuse. Say so rather than leaving a black screen.
+      started.catch(() => {
+        el.pauseIndicator.classList.remove('hidden');
+        showOSD(true);
+        showToast('Press play to start', 4000);
+      });
+    }
 
     // Cues are absolute, but a restarted pipe starts at the offset, so re-base them.
     if (!plan.native_seek) attachSubtitleTracks(state.offset);
@@ -899,6 +965,7 @@
   }
 
   function exitPlayer(skipHistory) {
+    cancelUpNext();
     saveProgress(true);
     clearTimeout(state.seekTimer);
     state.pendingSeek = null;
@@ -923,7 +990,8 @@
     closeMenus();
     releaseWakeLock();
     renderGrid();
-    renderContinueWatching();
+    // The resume rail is built server-side, so refresh it rather than guessing.
+    loadLibrary({ silent: true });
 
     if (!skipHistory && history.state && history.state.view === 'PLAYER') {
       history.back();
@@ -1578,6 +1646,23 @@
     // 10009 (Tizen) and 461 (webOS) are the remote's Back button.
     const isBackKey = event.keyCode === 10009 || event.keyCode === 461;
 
+    // Up next owns the remote while it is showing: seeking a finished video
+    // would be meaningless, and Back should stop the countdown, not the app.
+    if (pendingUpNext()) {
+      if (event.key === 'Escape' || event.key === 'Backspace' || isBackKey) {
+        event.preventDefault();
+        cancelUpNext();
+        exitPlayer();
+        return;
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        (document.activeElement === el.upNextPlay ? el.upNextCancel : el.upNextPlay).focus();
+        return;
+      }
+      return;  // Enter and Space activate the focused button natively.
+    }
+
     if (menusOpen() &&
         (event.key === 'Escape' || event.key === 'Backspace' || isBackKey)) {
       event.preventDefault();
@@ -1668,6 +1753,12 @@
     el.btnSpeed = $('#btn-speed');
     el.btnAspect = $('#btn-aspect');
     el.pauseIndicator = $('#pause-indicator');
+    el.upNext = $('#up-next');
+    el.upNextTitle = $('#up-next-heading');
+    el.upNextSub = $('#up-next-sub');
+    el.upNextPlay = $('#up-next-play');
+    el.upNextCancel = $('#up-next-cancel');
+    el.upNextCountdown = $('#up-next-countdown');
     el.toast = $('#toast');
     cardTemplate = $('#card-template');
   }
@@ -1736,6 +1827,14 @@
     const video = el.video;
 
     $('#player-back-btn').addEventListener('click', () => exitPlayer());
+    el.upNextCancel.addEventListener('click', () => {
+      cancelUpNext();
+      exitPlayer();
+    });
+    el.upNextPlay.addEventListener('click', () => {
+      const nextId = state.playback && state.playback.next_id;
+      if (nextId) playUpNext(nextId);
+    });
     $('#player-fs-btn').addEventListener('click', toggleFullscreen);
     $('#btn-play-pause').addEventListener('click', togglePlayPause);
     $('#btn-rewind').addEventListener('click', () => seekBy(-SEEK_SMALL));
@@ -1856,12 +1955,19 @@
         return;
       }
       const id = state.playback.id;
+      const nextId = state.playback.next_id;
       postJSON(API.progress, { id: id, position: 0, duration: duration, finished: true })
         .catch(() => {});
       state.progress[id] = {
         video_id: id, position: 0, duration: duration,
         finished: true, updated_at: Date.now() / 1000
       };
+
+      const following = nextId && state.videos.find(item => item.id === nextId);
+      if (following) {
+        showUpNext(following);
+        return;
+      }
       showToast('Playback finished', 2500);
       exitPlayer();
     });

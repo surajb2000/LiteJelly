@@ -26,7 +26,7 @@ from . import logs as log_setup
 from . import settings as user_settings
 from .config import load_config
 from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
-from .library import Library
+from .library import Library, build_continue_watching, next_episode
 from .store import ProgressStore
 from .subtitles import SubtitleService, discover as discover_subtitles
 from .thumbnails import ThumbnailService
@@ -261,10 +261,12 @@ class Routes:
 
     @staticmethod
     def library(h, query):
-        videos = [v.to_dict() for v in h.app.library.videos]
+        entries = h.app.library.videos
+        progress = h.app.progress.all()
         h.send_json({
-            "videos": videos,
-            "progress": h.app.progress.all(),
+            "videos": [v.to_dict() for v in entries],
+            "progress": progress,
+            "continue_watching": build_continue_watching(entries, progress),
             "status": h.app.library.status,
             "ffmpeg_available": h.app.tools.available,
         })
@@ -716,6 +718,8 @@ class Routes:
             "url": url,
             "subtitles": [t.to_dict() for t in tracks],
             "resume": app.progress.get(video.id) or {},
+            "next_id": (following.id if (following := next_episode(app.library.videos, video))
+                        else ""),
         })
 
     @staticmethod

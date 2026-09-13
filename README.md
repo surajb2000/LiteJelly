@@ -71,9 +71,9 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 - **Dynamic Cue Shifting**: Dynamically re-bases subtitle timestamps when playback resumes midway through a stream.
 - **Bitmap Burn-in**: Detects image-based subtitles (PGS / VobSub) and offers clean hardware-assisted video burn-in.
 
-### 4. TV Remote & 10-Foot User Interface
-- **D-pad Spatial Navigation**: Full keyboard / TV remote arrow key control with grid row/column math.
-- **"Continue Watching" Rail**: Automatic progress tracking with visual completion bars on video cards.
+### 4. TV Remote & 10-Foot User Interface- **D-pad Spatial Navigation**: Full keyboard / TV remote arrow key control with grid row/column math.
+- **"Continue Watching" Rail**: One row per series rather than one per episode, showing the next episode once you finish one.
+- **Up Next**: When an episode ends, the following one is offered with a ten second countdown, or Back to library to stop.
 - **Rescan & Search**: Instant real-time video search, category format filters (`All`, `MP4`, `MKV`, `Other`), and multi-attribute sorting.
 - **Display WakeLock**: Leverages the Screen Wake Lock API to prevent smart TV screens and phones from sleeping during playback.
 
@@ -123,6 +123,7 @@ lucid-fermi/
 │   ├── test_grouping.py    # Categories, series identity, episode ordering
 │   ├── test_http.py        # Live-server tests over a real socket
 │   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
+│   ├── test_nextup.py      # Next episode selection and the resume rail
 │   └── test_thumbnails.py  # Background generation, caching, failure handling
 │
 ├── logs/                   # Rotating log files (gitignored)
@@ -327,17 +328,20 @@ old files to keep live under **Advanced → Log file** and need a restart.
 - [x] **Phase 0.1: Admin Page & Settings**
   - Separate `/admin` page, tagged media directories, live-applied settings.
   - Admin API limited to the local machine unless an `admin_token` is set.
-- [ ] **Phase 1: Media Library Grouping & Default Sorting**
-  - Default sorting by Episode number (`S01E01`, `S01E02`...).
-  - Hierarchical grouping: Shows, Movies, Anime categories + Season & Episode grouping.
-- [ ] **Phase 2: Playback Flow & Next Episode Auto-Play**
-  - "Up Next" prompt and auto-play transition to the next episode.
-  - Multi-audio stream switcher (e.g., Japanese audio vs. English dub).
+- [x] **Phase 1: Media Library Grouping & Default Sorting**
+  - Episodes collapse into series cards, ordered by season and episode.
+  - Shows / Movies / Anime categories from folder content types.
+- [x] **Phase 2: Playback Flow & Next Episode**
+  - "Up next" countdown at the end of an episode, with auto-play and cancel.
+  - Continue watching shows one row per series, advancing to the next episode.
 - [ ] **Phase 3: Metadata Enrichment & Intro Skipping**
   - Local `.nfo` parsing & open API integration (TMDb / TVMaze) for posters, plot summaries, and episode names.
-  - Intro / Outro skipping integration (AniSkip / chapter markers).
+  - Intro / Outro skipping integration (chapter markers, AniSkip).
 - [ ] **Phase 4: Hardware Acceleration**
   - Auto-detection for hardware encoders (NVENC, QuickSync, AMF) to achieve near-0% CPU usage during transcoding.
+- [ ] **Phase 5: Audio Tracks & HLS**
+  - Multi-audio stream switcher (e.g. Japanese audio vs. English dub).
+  - HLS or pre-remuxed MP4 for clients that struggle with piped output.
 
 ---
 
