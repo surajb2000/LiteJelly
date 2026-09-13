@@ -57,6 +57,7 @@ class Config:
     scan_interval: int = 60
     thumbnail_workers: int = 2
     allow_hevc_direct: bool = False
+    online_metadata: bool = False
     stream_buffer_mb: int = 8
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
@@ -109,6 +110,7 @@ class Config:
             "scan_interval": self.scan_interval,
             "thumbnail_workers": self.thumbnail_workers,
             "allow_hevc_direct": self.allow_hevc_direct,
+            "online_metadata": self.online_metadata,
             "stream_buffer_mb": self.stream_buffer_mb,
             "ffmpeg_path": self.ffmpeg_path,
             "ffprobe_path": self.ffprobe_path,
@@ -163,6 +165,7 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
     cfg.scan_interval = max(5, _coerce_int(raw.get("scan_interval"), 60))
     cfg.thumbnail_workers = max(1, _coerce_int(raw.get("thumbnail_workers"), 2))
     cfg.allow_hevc_direct = bool(raw.get("allow_hevc_direct", False))
+    cfg.online_metadata = bool(raw.get("online_metadata", False))
     cfg.stream_buffer_mb = max(1, _coerce_int(raw.get("stream_buffer_mb"), 8))
     cfg.ffmpeg_path = str(raw.get("ffmpeg_path") or "")
     cfg.ffprobe_path = str(raw.get("ffprobe_path") or "")

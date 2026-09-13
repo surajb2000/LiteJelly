@@ -93,6 +93,34 @@ only contains a plot will not wipe an episode number the filename got right.
 Where there is no artwork, a frame from the video is still generated as before.
 Plots are fetched per item rather than shipped with the whole library, which
 would otherwise dwarf the payload.
+
+### Online metadata (optional)
+
+Turn on **Library → Online metadata** to fill the gaps for media with no `.nfo`
+or poster beside it. It is **off by default**, because it sends your show
+titles to a third party, which is your decision rather than the default.
+
+| Source | Used for | Account needed |
+| :--- | :--- | :--- |
+| [TVmaze](https://www.tvmaze.com) | Television: episode names, plots, ratings, posters, IMDb id | No |
+| [AniList](https://anilist.co) | Anime: titles, scores, cover art | No |
+| [AniSkip](https://www.aniskip.com) | Anime opening and ending times | No |
+
+Anything found locally still wins: a `.nfo` and a `poster.jpg` were put there
+deliberately, and a fuzzy title match should not override them.
+
+Lookups run in the background and are cached on disk for a month. Nothing in a
+request ever waits on these services, so if one is slow or down the artwork
+simply arrives later. Posters are downloaded and served locally rather than
+hotlinked, both because the page's CSP is `img-src 'self'` and so the library
+keeps working offline.
+
+Two honest gaps. **Films** have no keyless source, so only television and anime
+are enriched. And **IMDb ratings** are not available without an API key: TVmaze
+supplies the IMDb *id*, and the rating shown is TVmaze's or AniList's own.
+
+> Show data is provided by [TVmaze](https://www.tvmaze.com), used under
+> [CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/).
 - **Rescan & Search**: Instant real-time video search, category format filters (`All`, `MP4`, `MKV`, `Other`), and multi-attribute sorting.
 - **Display WakeLock**: Leverages the Screen Wake Lock API to prevent smart TV screens and phones from sleeping during playback.
 
@@ -115,11 +143,13 @@ lucid-fermi/
 │   ├── auth.py             # Password hashing, credential storage, sessions, lockout
 │   ├── chapters.py         # Chapter markers and the Skip intro / credits segments
 │   ├── config.py           # Configuration loading, validation, and CLI overrides
+│   ├── enrich.py           # Background metadata lookups, kept out of every request
 │   ├── ffmpeg.py           # Media probe, playback planner, quality ladders, transcode commands
 │   ├── library.py          # Media scanner, title cleanup, series grouping, SxxExx parser
 │   ├── logs.py             # Verbosity, rotating log file, and reading it back
 │   ├── metadata.py         # Kodi .nfo sidecars and local artwork discovery
 │   ├── paths.py            # Realpath containment and symlink traversal guards
+│   ├── providers.py        # TVmaze, AniList and AniSkip clients with an on-disk cache
 │   ├── settings.py         # settings.json load/save and admin input validation
 │   ├── store.py            # SQLite WAL progress store and continue watching
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
@@ -147,6 +177,7 @@ lucid-fermi/
 │   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
 │   ├── test_metadata.py    # .nfo parsing and artwork discovery
 │   ├── test_nextup.py      # Next episode selection and the resume rail
+│   ├── test_providers.py   # Online metadata parsing, caching and failure handling
 │   └── test_thumbnails.py  # Background generation, caching, failure handling
 │
 ├── logs/                   # Rotating log files (gitignored)
@@ -264,7 +295,7 @@ rare ones:
 
 | Tab | Contains |
 | :--- | :--- |
-| **Library** | Media folders and their content types, scan interval, manual rescan |
+| **Library** | Media folders and their content types, scan interval, online metadata, manual rescan |
 | **Playback** | HEVC direct play, default transcode quality |
 | **General** | Server name, port and bind address, admin account, status |
 | **Logs** | Detail level and a viewer for the recent log |

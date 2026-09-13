@@ -26,11 +26,13 @@ from . import logs as log_setup
 from . import settings as user_settings
 from .chapters import read_chapters, skippable
 from .config import load_config
+from .enrich import Enricher
 from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
 from .library import (
     Library, build_continue_watching, next_episode, previous_episode,
 )
 from .paths import is_within
+from .providers import MetadataProviders
 from .store import ProgressStore
 from .subtitles import SubtitleService, discover as discover_subtitles
 from .thumbnails import ThumbnailService
@@ -135,12 +137,39 @@ def _drive_roots() -> list[dict]:
     return roots
 
 
+def _build_metadata(config):
+    """Online lookups are opt-in: they send your titles to a third party."""
+    if not getattr(config, "online_metadata", False):
+        return None, None
+    providers = MetadataProviders(config.cache_dir)
+    return providers, Enricher(providers)
+
+
+def _skip_segments(app, video, path, duration: float) -> list[dict]:
+    """Chapters first; an online answer only when the file has none.
+
+    Chapters belong to this exact file. A shared database describes somebody
+    else's copy, which may be cut differently.
+    """
+    segments = skippable(read_chapters(app.tools.ffprobe, path), duration)
+    if segments or app.metadata is None or not video.mal_id or not video.episode:
+        return segments
+
+    # Cache only: a request must never wait on a third-party service.
+    cached = app.metadata.cached_skip_times(video.mal_id, video.episode, duration)
+    if not cached and app.enricher is not None:
+        app.enricher.enqueue_skip(video.mal_id, video.episode)
+    return cached
+
+
 class Application:
     """Holds every service and maps request paths to handlers."""
     def __init__(self, config):
         self.config = config
         self._config_lock = threading.RLock()
-        self.library = Library(config.media_dirs, config.scan_interval)
+        self.metadata, self.enricher = _build_metadata(config)
+        self.library = Library(config.media_dirs, config.scan_interval,
+                               metadata=self.metadata, enricher=self.enricher)
         self.tools = FFmpegTools(
             config.app_dir,
             transcode_slots=config.transcode.max_concurrent,
@@ -157,6 +186,8 @@ class Application:
         self.sessions = admin_accounts.SessionStore()
         self.throttle = admin_accounts.LoginThrottle()
         self.credentials = admin_accounts.load_credentials(config.app_dir)
+        if self.enricher is not None:
+            self.enricher.on_updated = lambda: self.library.request_scan(force=True)
 
         self.routes = {
             ("GET", "/"): Routes.index,
@@ -207,13 +238,21 @@ class Application:
                 ffprobe_path=new_config.ffprobe_path,
             )
             old_thumbnails = self.thumbnails
+            old_enricher = self.enricher
+            metadata, enricher = _build_metadata(new_config)
             self.config = new_config
             self.tools = tools
+            self.metadata = metadata
+            self.enricher = enricher
             self.subtitles = SubtitleService(tools, new_config.cache_dir)
             self.thumbnails = ThumbnailService(tools, new_config.cache_dir,
                                                new_config.thumbnail_workers)
             self.static_dir = new_config.static_dir.resolve()
+            self.library.metadata = metadata
+            self.library.enricher = enricher
             old_thumbnails.close()
+            if old_enricher is not None:
+                old_enricher.stop()
             del old_tools
 
         # Verbosity applies to the live handlers; the file settings only take
@@ -243,6 +282,8 @@ class Application:
 
     def shutdown(self) -> None:
         self.library.stop()
+        if self.enricher is not None:
+            self.enricher.stop()
         self.thumbnails.close()
         self.progress.close()
 
@@ -286,7 +327,9 @@ class Routes:
 
     @staticmethod
     def rescan(h, query):
-        h.app.library.request_scan()
+        # Forced: the button says rescan, so it should not quietly do nothing
+        # when the folder fingerprint happens to be unchanged.
+        h.app.library.request_scan(force=True)
         h.send_json({"ok": True, "status": h.app.library.status})
 
     # -- admin ------------------------------------------------------------
@@ -735,8 +778,7 @@ class Routes:
                         else ""),
             "prev_id": (earlier.id if (earlier := previous_episode(app.library.videos, video))
                         else ""),
-            "skip_segments": skippable(
-                read_chapters(app.tools.ffprobe, path), info.duration),
+            "skip_segments": _skip_segments(app, video, path, info.duration),
         })
 
     @staticmethod
@@ -842,10 +884,15 @@ class Routes:
 
         # The path came from a scan, but a symlinked image could still point
         # outside the library, so check containment rather than trusting it.
-        root = h.app.media_root(video)
+        # Downloaded artwork lives in the cache, which is equally trusted.
         target = Path(source)
-        if root is None or not is_within(root, target) or not target.is_file():
-            log.warning("Refusing artwork outside the media folder: %s", source)
+        roots = [h.app.config.cache_dir]
+        media_root = h.app.media_root(video)
+        if media_root is not None:
+            roots.append(media_root)
+        if not any(is_within(root, target) for root in roots) or not target.is_file():
+            log.warning("Refusing artwork outside the media and cache folders: %s",
+                        source)
             h.send_api_error(HTTPStatus.NOT_FOUND, "No artwork")
             return
 

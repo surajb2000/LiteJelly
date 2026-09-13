@@ -201,6 +201,7 @@ class Video:
     episode: int | None = None
     rating: float | None = None
     has_poster: bool = False
+    mal_id: int | None = None
     # Kept in memory for /api/details and artwork serving. Plots run to
     # thousands of characters, so they must not ride along in the listing.
     meta: dict | None = None
@@ -209,7 +210,7 @@ class Video:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        for internal in ("meta", "poster_path", "backdrop_path"):
+        for internal in ("meta", "poster_path", "backdrop_path", "mal_id"):
             data.pop(internal, None)
         return data
 
@@ -299,9 +300,13 @@ def build_continue_watching(videos, progress: dict, limit: int = 12) -> list[dic
 class Library:
     """Holds an immutable snapshot of the scanned media, refreshed in the background."""
 
-    def __init__(self, media_dirs, scan_interval: int = 60):
+    def __init__(self, media_dirs, scan_interval: int = 60,
+                 metadata=None, enricher=None):
         self.media_dirs = list(media_dirs)
         self.scan_interval = scan_interval
+        # Both optional: without them the library works entirely from local files.
+        self.metadata = metadata
+        self.enricher = enricher
         self._videos: list[Video] = []
         self._by_id: dict[str, Video] = {}
         self._signature: dict[str, tuple] = {}
@@ -345,7 +350,6 @@ class Library:
             self._signature = {}
             self._dirs_version += 1
         self.request_scan()
-
     def absolute_path(self, video: Video) -> Path | None:
         from .paths import resolve_within
 
@@ -355,7 +359,15 @@ class Library:
             return None
         return resolve_within(Path(dirs[video.dir_index].path), video.path)
 
-    def request_scan(self) -> None:
+    def request_scan(self, force: bool = False) -> None:
+        """Wake the scanner. ``force`` also re-reads unchanged folders.
+
+        The fingerprint only notices file changes, so metadata arriving from a
+        lookup needs the force flag or the scan would skip the re-read.
+        """
+        if force:
+            with self._lock:
+                self._signature = {}
         self._wake.set()
 
     def start(self) -> None:
@@ -379,6 +391,55 @@ class Library:
                 self.scan()
             except Exception:
                 log.exception("Library scan failed")
+
+    def _apply_online(self, video: Video) -> None:
+        """Fill gaps from the cached online lookup, and queue a missing one.
+
+        Anything found locally wins: a .nfo and a poster.jpg were put there
+        deliberately, and a fuzzy title match should not override them.
+        """
+        if self.metadata is None or not video.series_id:
+            return
+
+        anime = video.category == "anime"
+        info = self.metadata.cached_series(video.title, anime)
+        if info is None:
+            if self.enricher is not None and not self.metadata.has_looked_up(
+                    video.title, anime):
+                self.enricher.enqueue_series(video.title, anime)
+            return
+
+        episode = info.episodes.get(f"s{video.season or 0}e{video.episode or 0}") or {}
+
+        if not video.episode_title and episode.get("title"):
+            video.episode_title = episode["title"]
+            video.name = display_name({
+                "title": video.title,
+                "episode": {"season": video.season, "episode": video.episode},
+                "episode_title": video.episode_title,
+            })
+        if video.rating is None:
+            video.rating = episode.get("rating") or info.rating
+
+        if not video.poster_path and info.poster_url:
+            downloaded = self.metadata.artwork_path(info.poster_url)
+            if downloaded is not None:
+                video.poster_path = str(downloaded)
+                video.has_poster = True
+
+        merged = dict(video.meta or {})
+        merged.setdefault("plot", episode.get("summary") or info.summary)
+        merged.setdefault("genres", info.genres)
+        merged.setdefault("aired", episode.get("airdate") or "")
+        merged["source"] = info.source
+        merged["imdb_id"] = info.imdb_id
+        merged["series_plot"] = info.summary
+        video.meta = merged
+
+        if anime and info.mal_id:
+            video.mal_id = info.mal_id
+            if self.enricher is not None and video.episode:
+                self.enricher.enqueue_skip(info.mal_id, video.episode)
 
     def _directory_signature(self, dirs) -> dict[str, tuple]:
         """Cheap fingerprint of each tree, used to skip unnecessary rescans."""
@@ -463,7 +524,7 @@ class Library:
                         backdrop = artwork.find(full, "backdrop")
                         modified = datetime.datetime.fromtimestamp(
                             stat.st_mtime, tz=datetime.timezone.utc)
-                        videos.append(Video(
+                        video = Video(
                             id=_make_id(index, rel),
                             name=display_name(parsed),
                             title=parsed["title"],
@@ -489,7 +550,9 @@ class Library:
                             backdrop_path=str(backdrop) if backdrop else "",
                             season=ep.get("season"),
                             episode=ep.get("episode"),
-                        ))
+                        )
+                        self._apply_online(video)
+                        videos.append(video)
             except OSError as exc:
                 log.warning("Could not scan %s: %s", root_dir, exc)
         return videos

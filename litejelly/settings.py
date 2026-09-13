@@ -207,6 +207,9 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
     if "allow_hevc_direct" in payload:
         clean["allow_hevc_direct"] = bool(payload["allow_hevc_direct"])
 
+    if "online_metadata" in payload:
+        clean["online_metadata"] = bool(payload["online_metadata"])
+
     for key in ("ffmpeg_path", "ffprobe_path"):
         if key in payload:
             text = str(payload[key] or "").strip()

@@ -142,6 +142,7 @@
     $('thumbnail_workers').value = settings.thumbnail_workers || '';
     $('stream_buffer_mb').value = settings.stream_buffer_mb || '';
     $('allow_hevc_direct').checked = !!settings.allow_hevc_direct;
+    $('online_metadata').checked = !!settings.online_metadata;
     $('ffmpeg_path').value = settings.ffmpeg_path || '';
     $('ffprobe_path').value = settings.ffprobe_path || '';
     $('log_verbosity').value = settings.log_verbosity || 'info';
@@ -195,6 +196,7 @@
       host: $('host').value.trim(),
       media_dirs: readDirs(),
       allow_hevc_direct: $('allow_hevc_direct').checked,
+      online_metadata: $('online_metadata').checked,
       ffmpeg_path: $('ffmpeg_path').value.trim(),
       ffprobe_path: $('ffprobe_path').value.trim(),
       log_verbosity: $('log_verbosity').value,
