@@ -47,6 +47,8 @@
     seekpoint: '/api/seekpoint',
     progress: '/api/progress',
     thumbnail: '/api/thumbnail',
+    artwork: '/api/artwork',
+    details: '/api/details',
     subtitle: '/api/subtitle'
   };
 
@@ -90,7 +92,8 @@
     lastPointerMove: 0,
     continueWatching: [],
     upNextTimer: null,
-    upNextRemaining: 0
+    upNextRemaining: 0,
+    skipSegment: null
   };
 
   const $ = (sel, root) => (root || document).querySelector(sel);
@@ -427,6 +430,8 @@
     if (!group) {
       el.sectionTitle.textContent = 'Media Library';
       el.sectionSubtitle.textContent = 'Local streaming optimized for TV & mobile';
+      el.seriesPlot.textContent = '';
+      el.seriesPlot.classList.add('hidden');
       renderCategoryChips();
       return;
     }
@@ -439,6 +444,7 @@
       parts.push(seasons.length + ' seasons');
     }
     el.sectionSubtitle.textContent = parts.join(' · ');
+    showSeriesPlot(group);
 
     if (seasons.length > 1) {
       const fragment = document.createDocumentFragment();
@@ -449,6 +455,22 @@
       el.seasonChips.replaceChildren(fragment);
       el.seasonChips.classList.remove('hidden');
     }
+  }
+
+  // Plots are too long to ship with every item, so fetch the one on screen.
+  function showSeriesPlot(group) {
+    el.seriesPlot.textContent = '';
+    el.seriesPlot.classList.add('hidden');
+    const first = group.episodes.slice().sort(compareByEpisode)[0];
+    if (!first) return;
+
+    getJSON(API.details + '?id=' + encodeURIComponent(first.id)).then(data => {
+      if (state.seriesId !== group.id) return;  // Moved on while it loaded.
+      const meta = (data && data.metadata) || {};
+      if (!meta.plot) return;
+      el.seriesPlot.textContent = meta.plot;
+      el.seriesPlot.classList.remove('hidden');
+    }).catch(() => { /* metadata is optional */ });
   }
 
   function seasonChip(value, label) {
@@ -492,7 +514,7 @@
     // Inside a series the heading can drop the show name; anywhere else it
     // would leave "Episode 2" with no idea which show that is.
     const inSeries = episodeStyle === undefined ? !!state.seriesId : episodeStyle;
-    const heading = inSeries ? (video.episode_title || video.title || video.name) : video.name;
+    const heading = inSeries ? episodeHeading(video) : video.name;
     $('.card-title', card).textContent = heading;
     $('.card-letter', card).textContent = (heading || '?').charAt(0).toUpperCase();
     $('.card-size', card).textContent = video.size_human || '';
@@ -517,11 +539,26 @@
     }
 
     const img = $('.thumb-img', card);
-    img.dataset.src = API.thumbnail + '?id=' + encodeURIComponent(video.id);
+    img.dataset.src = artworkUrl(video);
     if (thumbObserver) thumbObserver.observe(card);
     else loadThumbnail(img);
 
     return card;
+  }
+
+  // A poster shipped with the media beats a frame grabbed from the video.
+  function artworkUrl(video) {
+    return video.has_poster
+      ? API.artwork + '?id=' + encodeURIComponent(video.id)
+      : API.thumbnail + '?id=' + encodeURIComponent(video.id);
+  }
+
+  // Without an episode name, repeating the show title on every row says
+  // nothing; the number at least identifies the episode.
+  function episodeHeading(video) {
+    if (video.episode_title) return video.episode_title;
+    if (video.episode != null) return 'Episode ' + video.episode;
+    return video.title || video.name;
   }
 
   function buildSeriesCard(group) {
@@ -558,7 +595,7 @@
     const poster = group.episodes.slice().sort(compareByEpisode)[0] || group.newest;
     const img = $('.thumb-img', card);
     if (poster) {
-      img.dataset.src = API.thumbnail + '?id=' + encodeURIComponent(poster.id);
+      img.dataset.src = artworkUrl(poster);
       if (thumbObserver) thumbObserver.observe(card);
       else loadThumbnail(img);
     }
@@ -752,6 +789,60 @@
 
   const UP_NEXT_SECONDS = 10;
 
+  function playSibling(key) {
+    const target = state.playback && state.playback[key];
+    if (!target) return;
+    // Record where we got to before moving on, or the jump loses the position.
+    saveProgress(true);
+    openVideo(target);
+  }
+
+  function syncEpisodeButtons(plan) {
+    el.btnPrevEpisode.classList.toggle('hidden', !(plan && plan.prev_id));
+    el.btnNextEpisode.classList.toggle('hidden', !(plan && plan.next_id));
+  }
+
+  // --- Skip intro / credits --------------------------------------------
+
+  function currentSkipSegment() {
+    const plan = state.playback;
+    if (!plan || !plan.skip_segments || !plan.skip_segments.length) return null;
+    const now = displayTime();
+    for (let i = 0; i < plan.skip_segments.length; i++) {
+      const segment = plan.skip_segments[i];
+      // Stop offering it in the last couple of seconds, or the button flickers
+      // away just as someone reaches for it.
+      if (now >= segment.start && now < segment.end - 1) return segment;
+    }
+    return null;
+  }
+
+  function syncSkipButton() {
+    if (state.view !== 'PLAYER' || pendingUpNext()) {
+      el.skipSegment.classList.add('hidden');
+      return;
+    }
+    const segment = currentSkipSegment();
+    if (!segment) {
+      el.skipSegment.classList.add('hidden');
+      state.skipSegment = null;
+      return;
+    }
+    if (state.skipSegment !== segment) {
+      state.skipSegment = segment;
+      el.skipSegment.textContent = segment.label;
+    }
+    el.skipSegment.classList.remove('hidden');
+  }
+
+  function skipCurrentSegment() {
+    const segment = state.skipSegment;
+    if (!segment) return;
+    el.skipSegment.classList.add('hidden');
+    state.skipSegment = null;
+    seekTo(segment.end);
+  }
+
   function showUpNext(video) {
     hideOSD();
     el.video.pause();
@@ -847,6 +938,7 @@
     el.osdBadge.title = describePipeline(plan);
     updateQualityLabel();
     renderQualityMenu();
+    syncEpisodeButtons(plan);
 
     // A restart passes an explicit time; only a fresh play picks a default.
     buildSubtitleMenu(plan, typeof startAt !== 'number');
@@ -966,6 +1058,8 @@
 
   function exitPlayer(skipHistory) {
     cancelUpNext();
+    el.skipSegment.classList.add('hidden');
+    state.skipSegment = null;
     saveProgress(true);
     clearTimeout(state.seekTimer);
     state.pendingSeek = null;
@@ -1491,6 +1585,7 @@
 
   function updateOSD() {
     if (!state.playback) return;
+    syncSkipButton();
     const duration = displayDuration();
     const current = state.pendingSeek !== null ? state.pendingSeek : displayTime();
     renderProgress(current, duration, state.pendingSeek !== null);
@@ -1692,6 +1787,9 @@
       case 'c': toggleSubtitleMenu(); break;
       case 'q': toggleQualityMenu(); break;
       case 'a': toggleAudioSyncMenu(); break;
+      case 'n': playSibling('next_id'); break;
+      case 'p': playSibling('prev_id'); break;
+      case 's': skipCurrentSegment(); break;
       case '+':
       case '=': applyVolume(el.video.volume + 0.1); break;
       case '-': applyVolume(el.video.volume - 0.1); break;
@@ -1717,6 +1815,7 @@
     el.grid = $('#video-grid');
     el.sectionTitle = $('#section-title');
     el.sectionSubtitle = $('#section-subtitle');
+    el.seriesPlot = $('#series-plot');
     el.seriesBack = $('#series-back');
     el.categoryChips = $('#category-chips');
     el.seasonChips = $('#season-chips');
@@ -1753,6 +1852,9 @@
     el.btnSpeed = $('#btn-speed');
     el.btnAspect = $('#btn-aspect');
     el.pauseIndicator = $('#pause-indicator');
+    el.btnPrevEpisode = $('#btn-prev-episode');
+    el.btnNextEpisode = $('#btn-next-episode');
+    el.skipSegment = $('#skip-segment');
     el.upNext = $('#up-next');
     el.upNextTitle = $('#up-next-heading');
     el.upNextSub = $('#up-next-sub');
@@ -1827,6 +1929,9 @@
     const video = el.video;
 
     $('#player-back-btn').addEventListener('click', () => exitPlayer());
+    el.btnPrevEpisode.addEventListener('click', () => playSibling('prev_id'));
+    el.btnNextEpisode.addEventListener('click', () => playSibling('next_id'));
+    el.skipSegment.addEventListener('click', skipCurrentSegment);
     el.upNextCancel.addEventListener('click', () => {
       cancelUpNext();
       exitPlayer();

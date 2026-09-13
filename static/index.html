@@ -55,6 +55,7 @@
         </button>
         <h1 id="section-title" class="section-title">Media Library</h1>
         <p id="section-subtitle" class="section-subtitle">Local streaming optimized for TV &amp; mobile</p>
+        <p id="series-plot" class="series-plot hidden"></p>
       </div>
       <div class="library-tools">
         <div id="category-chips" class="filter-chips hidden" role="group" aria-label="Filter by type">
@@ -115,8 +116,9 @@
       </div>
     </div>
 
-    <div id="up-next" class="up-next hidden" role="dialog" aria-labelledby="up-next-heading">
-      <div class="up-next-card">
+    <button type="button" id="skip-segment" class="skip-segment hidden"></button>
+
+    <div id="up-next" class="up-next hidden" role="dialog" aria-labelledby="up-next-heading">      <div class="up-next-card">
         <p class="up-next-label">Up next</p>
         <h2 id="up-next-heading" class="up-next-title"></h2>
         <p id="up-next-sub" class="up-next-sub"></p>
@@ -154,9 +156,15 @@
 
         <div class="osd-controls-row">
           <div class="controls-left">
+            <button id="btn-prev-episode" class="control-icon-btn hidden" title="Previous episode" aria-label="Previous episode">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="19 20 9 12 19 4 19 20"/><rect x="5" y="4" width="2" height="16"/></svg>
+            </button>
             <button id="btn-play-pause" class="control-icon-btn" title="Play/Pause" aria-label="Play or pause">
               <svg id="icon-play" class="hidden" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               <svg id="icon-pause" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <button id="btn-next-episode" class="control-icon-btn hidden" title="Next episode" aria-label="Next episode">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="2" height="16"/></svg>
             </button>
             <button id="btn-rewind" class="control-icon-btn" title="Rewind 10 seconds" aria-label="Rewind 10 seconds">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>

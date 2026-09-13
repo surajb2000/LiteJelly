@@ -24,9 +24,13 @@ from . import admin as admin_auth
 from . import auth as admin_accounts
 from . import logs as log_setup
 from . import settings as user_settings
+from .chapters import read_chapters, skippable
 from .config import load_config
 from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
-from .library import Library, build_continue_watching, next_episode
+from .library import (
+    Library, build_continue_watching, next_episode, previous_episode,
+)
+from .paths import is_within
 from .store import ProgressStore
 from .subtitles import SubtitleService, discover as discover_subtitles
 from .thumbnails import ThumbnailService
@@ -166,6 +170,8 @@ class Application:
             ("GET", "/api/playback"): Routes.playback,
             ("GET", "/api/seekpoint"): Routes.seekpoint,
             ("GET", "/api/thumbnail"): Routes.thumbnail,
+            ("GET", "/api/artwork"): Routes.artwork,
+            ("GET", "/api/details"): Routes.details,
             ("GET", "/api/subtitle"): Routes.subtitle,
             ("GET", "/api/progress"): Routes.progress_get,
             ("POST", "/api/progress"): Routes.progress_post,
@@ -227,6 +233,13 @@ class Application:
         if path is None or not path.is_file():
             return video, None
         return video, path
+
+    def media_root(self, video) -> Path | None:
+        """The configured folder a video was found under."""
+        dirs = self.library.media_dirs
+        if not 0 <= video.dir_index < len(dirs):
+            return None
+        return Path(dirs[video.dir_index].path)
 
     def shutdown(self) -> None:
         self.library.stop()
@@ -720,6 +733,10 @@ class Routes:
             "resume": app.progress.get(video.id) or {},
             "next_id": (following.id if (following := next_episode(app.library.videos, video))
                         else ""),
+            "prev_id": (earlier.id if (earlier := previous_episode(app.library.videos, video))
+                        else ""),
+            "skip_segments": skippable(
+                read_chapters(app.tools.ffprobe, path), info.duration),
         })
 
     @staticmethod
@@ -808,6 +825,45 @@ class Routes:
             h.send_json({"status": "generating"}, status=HTTPStatus.ACCEPTED)
         else:
             h.send_api_error(HTTPStatus.NOT_FOUND, "No thumbnail available")
+
+    @staticmethod
+    def artwork(h, query):
+        """Serve a poster or backdrop found next to the media."""
+        video, path = h.app.resolve_video(query)
+        if video is None or path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+
+        kind = query.get("kind", ["poster"])[0]
+        source = video.backdrop_path if kind == "backdrop" else video.poster_path
+        if not source:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No artwork")
+            return
+
+        # The path came from a scan, but a symlinked image could still point
+        # outside the library, so check containment rather than trusting it.
+        root = h.app.media_root(video)
+        target = Path(source)
+        if root is None or not is_within(root, target) or not target.is_file():
+            log.warning("Refusing artwork outside the media folder: %s", source)
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No artwork")
+            return
+
+        h.serve_static_file(target, cache_control="public, max-age=604800")
+
+    @staticmethod
+    def details(h, query):
+        """Everything about one item that is too bulky for the library list."""
+        video, _path = h.app.resolve_video(query)
+        if video is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+        h.send_json({
+            "id": video.id,
+            "metadata": video.meta or {},
+            "has_poster": bool(video.poster_path),
+            "has_backdrop": bool(video.backdrop_path),
+        })
 
     @staticmethod
     def subtitle(h, query):

@@ -11,6 +11,8 @@ import threading
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from .metadata import ArtworkIndex, read_nfo
+
 log = logging.getLogger("litejelly.library")
 
 VIDEO_EXTENSIONS = {
@@ -137,6 +139,33 @@ def series_key(category: str, title: str) -> str:
     return digest[:16]
 
 
+def _merge_nfo(parsed: dict, nfo) -> dict:
+    """Let a .nfo override what the filename guessed, field by field.
+
+    Only fields the file actually supplies are replaced: a .nfo with just a
+    plot should not wipe an episode number the filename got right.
+    """
+    merged = dict(parsed)
+    episode = dict(merged.get("episode") or {})
+
+    if nfo.season is not None:
+        episode["season"] = nfo.season
+    if nfo.episode is not None:
+        episode["episode"] = nfo.episode
+    if episode.get("season") is not None and episode.get("episode") is not None:
+        merged["episode"] = episode
+
+    if nfo.title:
+        # For an episode the <title> is the episode name, not the series.
+        if merged.get("episode"):
+            merged["episode_title"] = nfo.title
+        else:
+            merged["title"] = nfo.title
+    if nfo.year is not None:
+        merged["year"] = nfo.year
+    return merged
+
+
 def display_name(parsed: dict) -> str:
     """Flat label for search results and the player, where there is no series
     heading to give an episode its context."""
@@ -170,9 +199,19 @@ class Video:
     year: int | None = None
     season: int | None = None
     episode: int | None = None
+    rating: float | None = None
+    has_poster: bool = False
+    # Kept in memory for /api/details and artwork serving. Plots run to
+    # thousands of characters, so they must not ride along in the listing.
+    meta: dict | None = None
+    poster_path: str = ""
+    backdrop_path: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        for internal in ("meta", "poster_path", "backdrop_path"):
+            data.pop(internal, None)
+        return data
 
 
 def _make_id(dir_index: int, rel_path: str) -> str:
@@ -185,11 +224,12 @@ def episode_order(video: Video) -> tuple:
     return (video.season or 0, video.episode or 0, video.filename.lower())
 
 
-def next_episode(videos, current: Video) -> Video | None:
-    """The episode that follows ``current`` within its series.
+def _sibling_episode(videos, current: Video | None, step: int) -> Video | None:
+    """The episode ``step`` places from ``current`` inside its series.
 
-    Lives on the server because the edge cases deserve tests: the last episode
-    of a show, numbering with gaps, and films, which have no next at all.
+    Lives on the server because the edge cases deserve tests: the first and
+    last episodes of a show, numbering with gaps, and films, which have no
+    neighbours at all.
     """
     if current is None or not current.series_id:
         return None
@@ -197,8 +237,17 @@ def next_episode(videos, current: Video) -> Video | None:
                       key=episode_order)
     for index, video in enumerate(siblings):
         if video.id == current.id:
-            return siblings[index + 1] if index + 1 < len(siblings) else None
+            target = index + step
+            return siblings[target] if 0 <= target < len(siblings) else None
     return None
+
+
+def next_episode(videos, current: Video) -> Video | None:
+    return _sibling_episode(videos, current, 1)
+
+
+def previous_episode(videos, current: Video) -> Video | None:
+    return _sibling_episode(videos, current, -1)
 
 
 def build_continue_watching(videos, progress: dict, limit: int = 12) -> list[dict]:
@@ -384,6 +433,7 @@ class Library:
 
     def _walk(self, dirs) -> list[Video]:
         videos: list[Video] = []
+        artwork = ArtworkIndex()
         for index, entry in enumerate(dirs):
             root_dir = entry.path
             base = Path(root_dir)
@@ -403,8 +453,14 @@ class Library:
                             continue
                         rel = full.relative_to(base).as_posix()
                         parsed = parse_title(filename)
+                        # A hand-written .nfo beats anything guessed from a filename.
+                        nfo = read_nfo(full)
+                        if nfo is not None:
+                            parsed = _merge_nfo(parsed, nfo)
                         ep = parsed["episode"] or {}
                         category = resolve_category(entry.content_type, bool(ep))
+                        poster = artwork.find(full, "poster")
+                        backdrop = artwork.find(full, "backdrop")
                         modified = datetime.datetime.fromtimestamp(
                             stat.st_mtime, tz=datetime.timezone.utc)
                         videos.append(Video(
@@ -426,6 +482,11 @@ class Library:
                             extension=full.suffix.lstrip(".").lower(),
                             episode_title=parsed["episode_title"],
                             year=parsed["year"],
+                            rating=nfo.rating if nfo else None,
+                            has_poster=poster is not None,
+                            meta=nfo.to_dict() if nfo else None,
+                            poster_path=str(poster) if poster else "",
+                            backdrop_path=str(backdrop) if backdrop else "",
                             season=ep.get("season"),
                             episode=ep.get("episode"),
                         ))

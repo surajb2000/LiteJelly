@@ -17,7 +17,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly.config import MediaDir
-from litejelly.library import Library, build_continue_watching, next_episode
+from litejelly.library import (
+    Library, build_continue_watching, next_episode, previous_episode,
+)
 
 logging.getLogger("litejelly.library").setLevel(logging.CRITICAL)
 
@@ -109,6 +111,30 @@ class NextEpisodeTests(_Fixture):
             seen.append(current.filename)
         self.assertEqual(seen, ["Mentalist.S01E01.mkv", "Mentalist.S01E02.mkv",
                                 "Mentalist.S01E10.mkv", "Mentalist.S02E01.mkv"])
+
+
+class PreviousEpisodeTests(_Fixture):
+    def test_returns_the_preceding_episode(self):
+        earlier = previous_episode(self.videos, self.video("Mentalist.S01E02.mkv"))
+        self.assertEqual(earlier.filename, "Mentalist.S01E01.mkv")
+
+    def test_crosses_a_season_boundary_backwards(self):
+        earlier = previous_episode(self.videos, self.video("Mentalist.S02E01.mkv"))
+        self.assertEqual(earlier.filename, "Mentalist.S01E10.mkv")
+
+    def test_first_episode_has_no_previous(self):
+        self.assertIsNone(previous_episode(self.videos, self.video("Mentalist.S01E01.mkv")))
+
+    def test_a_film_has_no_previous(self):
+        self.assertIsNone(previous_episode(self.videos, self.video("Arrival.2016.mkv")))
+
+    def test_none_is_handled(self):
+        self.assertIsNone(previous_episode(self.videos, None))
+
+    def test_previous_undoes_next(self):
+        start = self.video("Mentalist.S01E02.mkv")
+        following = next_episode(self.videos, start)
+        self.assertEqual(previous_episode(self.videos, following).id, start.id)
 
 
 class ContinueWatchingTests(_Fixture):

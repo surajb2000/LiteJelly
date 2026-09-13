@@ -74,6 +74,25 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 ### 4. TV Remote & 10-Foot User Interface- **D-pad Spatial Navigation**: Full keyboard / TV remote arrow key control with grid row/column math.
 - **"Continue Watching" Rail**: One row per series rather than one per episode, showing the next episode once you finish one.
 - **Up Next**: When an episode ends, the following one is offered with a ten second countdown, or Back to library to stop.
+- **Skip Intro / Skip Credits**: Offered from the file's own chapter markers, so it needs no network lookup.
+
+### Metadata and artwork
+
+LiteJelly reads what is already beside your media, with no API key and no
+network:
+
+| File | Used for |
+| :--- | :--- |
+| `Episode.S01E01.nfo` | Episode title, plot, rating, air date, season/episode numbers |
+| `poster.jpg`, `folder.jpg`, `cover.jpg` | Card artwork, taken from the episode's folder or the show's |
+| `Episode.S01E01-thumb.jpg` | Artwork for that one episode |
+| `fanart.jpg`, `backdrop.jpg` | Background artwork |
+
+A `.nfo` overrides what the filename guessed, field by field, so a file that
+only contains a plot will not wipe an episode number the filename got right.
+Where there is no artwork, a frame from the video is still generated as before.
+Plots are fetched per item rather than shipped with the whole library, which
+would otherwise dwarf the payload.
 - **Rescan & Search**: Instant real-time video search, category format filters (`All`, `MP4`, `MKV`, `Other`), and multi-attribute sorting.
 - **Display WakeLock**: Leverages the Screen Wake Lock API to prevent smart TV screens and phones from sleeping during playback.
 
@@ -94,10 +113,12 @@ lucid-fermi/
 │   ├── __init__.py         # Version info
 │   ├── admin.py            # Admin access control: session cookies, CSRF guard
 │   ├── auth.py             # Password hashing, credential storage, sessions, lockout
+│   ├── chapters.py         # Chapter markers and the Skip intro / credits segments
 │   ├── config.py           # Configuration loading, validation, and CLI overrides
 │   ├── ffmpeg.py           # Media probe, playback planner, quality ladders, transcode commands
 │   ├── library.py          # Media scanner, title cleanup, series grouping, SxxExx parser
 │   ├── logs.py             # Verbosity, rotating log file, and reading it back
+│   ├── metadata.py         # Kodi .nfo sidecars and local artwork discovery
 │   ├── paths.py            # Realpath containment and symlink traversal guards
 │   ├── settings.py         # settings.json load/save and admin input validation
 │   ├── store.py            # SQLite WAL progress store and continue watching
@@ -120,9 +141,11 @@ lucid-fermi/
 │   ├── test_admin.py       # Settings validation, admin access control, library rebuild
 │   ├── test_auth.py        # Password hashing, credential storage, sessions, lockout
 │   ├── test_avsync.py      # Regression tests for the seeking and A/V sync fixes
+│   ├── test_chapters.py    # Chapter parsing and skip-segment selection
 │   ├── test_grouping.py    # Categories, series identity, episode ordering
 │   ├── test_http.py        # Live-server tests over a real socket
 │   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
+│   ├── test_metadata.py    # .nfo parsing and artwork discovery
 │   ├── test_nextup.py      # Next episode selection and the resume rail
 │   └── test_thumbnails.py  # Background generation, caching, failure handling
 │
@@ -334,9 +357,11 @@ old files to keep live under **Advanced → Log file** and need a restart.
 - [x] **Phase 2: Playback Flow & Next Episode**
   - "Up next" countdown at the end of an episode, with auto-play and cancel.
   - Continue watching shows one row per series, advancing to the next episode.
-- [ ] **Phase 3: Metadata Enrichment & Intro Skipping**
-  - Local `.nfo` parsing & open API integration (TMDb / TVMaze) for posters, plot summaries, and episode names.
-  - Intro / Outro skipping integration (chapter markers, AniSkip).
+  - Previous and next episode buttons in the player.
+- [x] **Phase 3: Metadata Enrichment & Intro Skipping**
+  - Kodi-style `.nfo` sidecars for titles, plots, ratings and episode names.
+  - Local artwork (`poster.jpg`, `folder.jpg`, `fanart.jpg`) used in place of generated frames.
+  - Skip intro and Skip credits from the file's own chapter markers.
 - [ ] **Phase 4: Hardware Acceleration**
   - Auto-detection for hardware encoders (NVENC, QuickSync, AMF) to achieve near-0% CPU usage during transcoding.
 - [ ] **Phase 5: Audio Tracks & HLS**
