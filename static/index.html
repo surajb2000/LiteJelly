@@ -237,10 +237,9 @@
               <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="19 20 9 12 19 4 19 20"/><rect x="5" y="4" width="2" height="16"/></svg>
               <span class="btn-label">Previous</span>
             </button>
-            <button id="btn-subtitles" class="control-icon-btn" title="Subtitles" aria-label="Subtitles"
-                    aria-haspopup="menu" aria-expanded="false">
-              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6.5 13.5h4M13.5 13.5h4" stroke-linecap="round"/></svg>
-              <span class="btn-label">Subtitles</span>
+            <button id="btn-next-episode" class="control-icon-btn hidden" title="Next episode" aria-label="Next episode">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="2" height="16"/></svg>
+              <span class="btn-label">Next</span>
             </button>
             <div class="volume-control">
               <button id="btn-mute" class="control-icon-btn" title="Mute" aria-label="Mute">
@@ -263,14 +262,15 @@
               <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2.5"/><path d="M8 9.5h8M8 14.5h5" stroke-linecap="round"/></svg>
               <span id="quality-label" class="btn-label">Auto</span>
             </button>
+            <button id="btn-subtitles" class="control-icon-btn" title="Subtitles" aria-label="Subtitles"
+                    aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6.5 13.5h4M13.5 13.5h4" stroke-linecap="round"/></svg>
+              <span class="btn-label">Subtitles</span>
+            </button>
             <button id="btn-options" class="control-icon-btn" title="Options" aria-label="Playback options"
                     aria-haspopup="menu" aria-expanded="false">
               <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
               <span class="btn-label">Options</span>
-            </button>
-            <button id="btn-next-episode" class="control-icon-btn hidden" title="Next episode" aria-label="Next episode">
-              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="2" height="16"/></svg>
-              <span class="btn-label">Next</span>
             </button>
             <button id="player-fs-btn" class="control-icon-btn" title="Fullscreen" aria-label="Toggle fullscreen">
               <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
