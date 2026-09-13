@@ -44,6 +44,13 @@ class Enricher:
             return False
         return self._enqueue(("skip", int(mal_id), int(episode)))
 
+    def enqueue_intro(self, imdb_id: str, season=None, episode=None,
+                      duration: float = 0.0) -> bool:
+        if not imdb_id:
+            return False
+        return self._enqueue(("intro", str(imdb_id), season, episode,
+                              round(duration)))
+
     def stop(self) -> None:
         self._stop.set()
         with self._lock:
@@ -125,3 +132,8 @@ class Enricher:
             _, mal_id, episode = job
             if self.providers.skip_times(mal_id, episode):
                 self._pending_updates = True
+        elif kind == "intro":
+            _, imdb_id, season, episode, duration = job
+            found = self.providers.intro_times(imdb_id, season, episode, duration)
+            log.debug("TheIntroDB: %d segment(s) for %s s%se%s",
+                      len(found), imdb_id, season, episode)

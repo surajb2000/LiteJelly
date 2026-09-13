@@ -147,21 +147,72 @@ def _build_metadata(config):
     return providers, Enricher(providers)
 
 
-def _skip_segments(app, video, path, duration: float) -> list[dict]:
+def _skip_segments(app, video, path, duration: float) -> tuple[list[dict], bool]:
     """Chapters first; an online answer only when the file has none.
 
     Chapters belong to this exact file. A shared database describes somebody
     else's copy, which may be cut differently.
+
+    Returns the segments and whether a lookup was queued, so the client knows
+    to ask again rather than concluding this episode simply has no intro.
     """
     segments = skippable(read_chapters(app.tools.ffprobe, path), duration)
-    if segments or app.metadata is None or not video.mal_id or not video.episode:
-        return segments
+    if segments or app.metadata is None:
+        return segments, False
 
     # Cache only: a request must never wait on a third-party service.
-    cached = app.metadata.cached_skip_times(video.mal_id, video.episode, duration)
-    if not cached and app.enricher is not None:
+    cached, pending = _cached_skip(app, video, duration)
+    if pending and app.enricher is not None:
+        _enqueue_skip(app, video, duration)
+    return cached, pending
+
+
+def _cached_skip(app, video, duration: float) -> tuple[list[dict], bool]:
+    """What is already on disk, and whether anything is still worth asking.
+
+    AniSkip is tried first for anime because it is scoped to exactly that;
+    TheIntroDB covers everything else, and backs AniSkip up when it has
+    nothing.
+    """
+    meta = app.metadata
+    imdb_id = (video.meta or {}).get("imdb_id") or ""
+    season, episode = _skip_episode(video)
+    pending = False
+
+    if video.mal_id and video.episode:
+        cached = meta.cached_skip_times(video.mal_id, video.episode, duration)
+        if cached:
+            return cached, False
+        pending = not meta.has_looked_up_skip(video.mal_id, video.episode)
+
+    if imdb_id:
+        cached = meta.cached_intro_times(imdb_id, season, episode, duration)
+        if cached:
+            return cached, False
+        pending = pending or not meta.has_looked_up_intro(imdb_id, season,
+                                                          episode)
+
+    return [], pending
+
+
+def _enqueue_skip(app, video, duration: float) -> None:
+    if video.mal_id and video.episode:
         app.enricher.enqueue_skip(video.mal_id, video.episode)
-    return cached
+    imdb_id = (video.meta or {}).get("imdb_id") or ""
+    if imdb_id:
+        season, episode = _skip_episode(video)
+        app.enricher.enqueue_intro(imdb_id, season, episode, duration)
+
+
+def _skip_payload(segments: list[dict], pending: bool) -> dict:
+    return {"skip_segments": segments, "skip_pending": bool(pending)}
+
+
+def _skip_episode(video):
+    """A film is looked up by id alone; an episode needs its place in the run."""
+    if not video.episode:
+        return None, None
+    return (video.season if video.season is not None else 1), video.episode
 
 
 class Application:
@@ -202,6 +253,7 @@ class Application:
             ("POST", "/api/rescan"): Routes.rescan,
             ("GET", "/api/playback"): Routes.playback,
             ("GET", "/api/seekpoint"): Routes.seekpoint,
+            ("GET", "/api/skip"): Routes.skip,
             ("GET", "/api/thumbnail"): Routes.thumbnail,
             ("GET", "/api/artwork"): Routes.artwork,
             ("GET", "/api/details"): Routes.details,
@@ -780,8 +832,26 @@ class Routes:
                         else ""),
             "prev_id": (earlier.id if (earlier := previous_episode(app.library.videos, video))
                         else ""),
-            "skip_segments": _skip_segments(app, video, path, info.duration),
+            **_skip_payload(*_skip_segments(app, video, path, info.duration)),
         })
+
+    @staticmethod
+    def skip(h, query):
+        """Re-ask for skip times once a queued lookup has had time to land.
+
+        Playback must not wait on a third party, so the first answer can be
+        empty while the lookup is still in flight.
+        """
+        app = h.app
+        video, path = app.resolve_video(query)
+        if path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+        duration = app.tools.probe(path).duration
+        if app.metadata is None:
+            h.send_json(_skip_payload([], False))
+            return
+        h.send_json(_skip_payload(*_cached_skip(app, video, duration)))
 
     @staticmethod
     def seekpoint(h, query):

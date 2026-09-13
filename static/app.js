@@ -45,6 +45,7 @@
     rescan: '/api/rescan',
     playback: '/api/playback',
     seekpoint: '/api/seekpoint',
+    skip: '/api/skip',
     progress: '/api/progress',
     thumbnail: '/api/thumbnail',
     artwork: '/api/artwork',
@@ -93,7 +94,8 @@
     continueWatching: [],
     upNextTimer: null,
     upNextRemaining: 0,
-    skipSegment: null
+    skipSegment: null,
+    skipRetry: null
   };
 
   const $ = (sel, root) => (root || document).querySelector(sel);
@@ -843,6 +845,63 @@
     seekTo(segment.end);
   }
 
+  // A lookup that was still in flight when playback began; ask again rather
+  // than let the episode play as though it had no intro.
+  const SKIP_RETRY_DELAYS = [2500, 6000, 15000];
+
+  function cancelSkipRetry() {
+    if (state.skipRetry) clearTimeout(state.skipRetry);
+    state.skipRetry = null;
+  }
+
+  function scheduleSkipRetry(plan, attempt) {
+    cancelSkipRetry();
+    if (!plan.skip_pending || attempt >= SKIP_RETRY_DELAYS.length) return;
+    state.skipRetry = setTimeout(async () => {
+      state.skipRetry = null;
+      if (state.playback !== plan) return;
+      try {
+        const data = await getJSON(API.skip + '?id=' + encodeURIComponent(plan.id));
+        if (state.playback !== plan) return;
+        if (data.skip_segments && data.skip_segments.length) {
+          plan.skip_segments = data.skip_segments;
+          plan.skip_pending = false;
+          renderSegmentMarkers(plan);
+          syncSkipButton();
+          return;
+        }
+        plan.skip_pending = !!data.skip_pending;
+      } catch (err) {
+        // Offline or the lookup failed; the episode just has no skip button.
+      }
+      scheduleSkipRetry(plan, attempt + 1);
+    }, SKIP_RETRY_DELAYS[attempt]);
+  }
+
+  function renderSegmentMarkers(plan) {
+    const bar = el.segmentMarkers;
+    if (!bar) return;
+    while (bar.firstChild) bar.removeChild(bar.firstChild);
+
+    const duration = plan && plan.duration;
+    const segments = (plan && plan.skip_segments) || [];
+    if (!duration || !segments.length) return;
+
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      const start = Math.max(0, Math.min(1, segment.start / duration));
+      const end = Math.max(0, Math.min(1, segment.end / duration));
+      if (end <= start) continue;
+      const mark = document.createElement('span');
+      mark.className = 'segment-mark segment-' + (segment.kind || 'intro');
+      mark.style.left = (start * 100).toFixed(3) + '%';
+      // Always wide enough to see, however short the segment is.
+      mark.style.width = Math.max(0.6, (end - start) * 100).toFixed(3) + '%';
+      mark.title = segment.label;
+      bar.appendChild(mark);
+    }
+  }
+
   function showUpNext(video) {
     hideOSD();
     el.video.pause();
@@ -939,6 +998,8 @@
     updateQualityLabel();
     renderQualityMenu();
     syncEpisodeButtons(plan);
+    renderSegmentMarkers(plan);
+    scheduleSkipRetry(plan, 0);
 
     // A restart passes an explicit time; only a fresh play picks a default.
     buildSubtitleMenu(plan, typeof startAt !== 'number');
@@ -1058,6 +1119,7 @@
 
   function exitPlayer(skipHistory) {
     cancelUpNext();
+    cancelSkipRetry();
     el.skipSegment.classList.add('hidden');
     state.skipSegment = null;
     saveProgress(true);
@@ -1836,6 +1898,7 @@
     el.progressWrap = $('#progress-container');
     el.progressFill = $('#progress-fill');
     el.progressBuffered = $('#progress-buffered');
+    el.segmentMarkers = $('#segment-markers');
     el.seekRange = $('#seek-range');
     el.currentTime = $('#current-time');
     el.totalTime = $('#total-time');

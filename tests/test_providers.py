@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly.providers import (
     MetadataCache, MetadataProviders, SeriesInfo, episode_key, parse_anilist,
-    parse_aniskip, parse_omdb, parse_tmdb, parse_tvmaze, redact, strip_html,
+    parse_aniskip, parse_introdb, parse_omdb, parse_tmdb, parse_tvmaze, redact,
+    strip_html,
 )
 
 logging.getLogger("litejelly.providers").setLevel(logging.CRITICAL)
@@ -75,6 +76,24 @@ TMDB_MOVIE = {"page": 1, "results": [{
 # OMDb's documented response shape.
 OMDB = {"Title": "Fight Club", "Year": "1999", "imdbRating": "8.8",
         "imdbID": "tt0137523", "Response": "True"}
+
+# Recorded live from api.theintrodb.org: Breaking Bad s2e1 (tt0903747).
+INTRODB_TV = {
+    "tmdb_id": 1396,
+    "type": "tv",
+    "season": 2,
+    "episode": 1,
+    "intro": [{"start_ms": 77000, "end_ms": 123369}],
+    "credits": [{"start_ms": 2785000, "end_ms": None}],
+}
+
+# Recorded live: Fight Club (tt0137523). Note the null intro start.
+INTRODB_MOVIE = {
+    "tmdb_id": 550,
+    "type": "movie",
+    "intro": [{"start_ms": None, "end_ms": 119000}],
+    "credits": [{"start_ms": 8177000, "end_ms": 8348000}],
+}
 
 
 class StripHtmlTests(unittest.TestCase):
@@ -512,6 +531,157 @@ class KeyedProviderTests(unittest.TestCase):
         self.assertIn("api_key=s3cret", fetcher.calls[0])
         for path in self.root.rglob("*.json"):
             self.assertNotIn("s3cret", path.read_text(encoding="utf-8"))
+
+
+class IntroDbParsingTests(unittest.TestCase):
+    """Fixtures recorded from live api.theintrodb.org responses."""
+
+    def test_breaking_bad_episode(self):
+        segments = parse_introdb(INTRODB_TV, duration=2820.0)
+        self.assertEqual([s["kind"] for s in segments], ["intro", "credits"])
+        intro = segments[0]
+        self.assertAlmostEqual(intro["start"], 77.0)
+        self.assertAlmostEqual(intro["end"], 123.369)
+        self.assertEqual(intro["label"], "Skip intro")
+
+    def test_null_end_means_the_end_of_the_file(self):
+        credits = parse_introdb(INTRODB_TV, duration=2820.0)[1]
+        self.assertAlmostEqual(credits["start"], 2785.0)
+        self.assertAlmostEqual(credits["end"], 2820.0)
+
+    def test_null_end_is_unusable_without_a_duration(self):
+        # Nothing to resolve "to the end" against, so it must not be guessed.
+        segments = parse_introdb(INTRODB_TV, duration=0.0)
+        self.assertEqual([s["kind"] for s in segments], ["intro"])
+
+    def test_null_start_means_the_beginning(self):
+        segments = parse_introdb(INTRODB_MOVIE, duration=8400.0)
+        self.assertAlmostEqual(segments[0]["start"], 0.0)
+        self.assertAlmostEqual(segments[0]["end"], 119.0)
+
+    def test_movie_credits_with_both_ends(self):
+        credits = parse_introdb(INTRODB_MOVIE, duration=8400.0)[1]
+        self.assertAlmostEqual(credits["start"], 8177.0)
+        self.assertAlmostEqual(credits["end"], 8348.0)
+
+    def test_absent_segment_types_are_simply_missing(self):
+        payload = {"credits": [{"start_ms": 2666000, "end_ms": None}]}
+        segments = parse_introdb(payload, duration=2700.0)
+        self.assertEqual([s["kind"] for s in segments], ["credits"])
+
+    def test_empty_and_junk_payloads(self):
+        self.assertEqual(parse_introdb({}, 100.0), [])
+        self.assertEqual(parse_introdb(None, 100.0), [])
+        self.assertEqual(parse_introdb({"intro": "nonsense"}, 100.0), [])
+        self.assertEqual(parse_introdb({"intro": [None, 7]}, 100.0), [])
+
+    def test_segments_shorter_than_five_seconds_are_dropped(self):
+        payload = {"intro": [{"start_ms": 1000, "end_ms": 4000}]}
+        self.assertEqual(parse_introdb(payload, 600.0), [])
+
+    def test_times_past_the_end_mean_a_different_cut(self):
+        # Clamping would turn "skip the intro" into "skip the episode".
+        payload = {"intro": [{"start_ms": 700000, "end_ms": 760000}]}
+        self.assertEqual(parse_introdb(payload, 600.0), [])
+
+    def test_an_end_just_past_the_file_is_tolerated(self):
+        payload = {"intro": [{"start_ms": 500000, "end_ms": 602000}]}
+        segment = parse_introdb(payload, 600.0)[0]
+        self.assertAlmostEqual(segment["end"], 600.0)
+
+    def test_reversed_times_are_dropped(self):
+        payload = {"intro": [{"start_ms": 90000, "end_ms": 10000}]}
+        self.assertEqual(parse_introdb(payload, 600.0), [])
+
+    def test_unparsable_times_are_dropped(self):
+        payload = {"intro": [{"start_ms": "soon", "end_ms": 90000}]}
+        self.assertEqual(parse_introdb(payload, 600.0), [])
+
+    def test_segments_come_back_in_playback_order(self):
+        payload = {
+            "credits": [{"start_ms": 500000, "end_ms": 560000}],
+            "intro": [{"start_ms": 10000, "end_ms": 70000}],
+            "recap": [{"start_ms": 80000, "end_ms": 140000}],
+        }
+        order = [s["kind"] for s in parse_introdb(payload, 600.0)]
+        self.assertEqual(order, ["intro", "recap", "credits"])
+
+    def test_every_segment_carries_a_kind_and_a_label(self):
+        for segment in parse_introdb(INTRODB_MOVIE, 8400.0):
+            self.assertIn(segment["kind"], ("intro", "recap", "credits", "preview"))
+            self.assertTrue(segment["label"].startswith("Skip "))
+
+
+class IntroDbLookupTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_episode_lookup(self):
+        fetcher = _FakeFetcher({"theintrodb": INTRODB_TV})
+        providers = MetadataProviders(self.root, fetcher)
+        segments = providers.intro_times("tt0903747", 2, 1, 2820.0)
+        self.assertEqual(len(segments), 2)
+        self.assertIn("imdb_id=tt0903747", fetcher.calls[0])
+        self.assertIn("season=2", fetcher.calls[0])
+        self.assertIn("episode=1", fetcher.calls[0])
+
+    def test_duration_is_sent_to_identify_the_release(self):
+        fetcher = _FakeFetcher({"theintrodb": INTRODB_TV})
+        MetadataProviders(self.root, fetcher).intro_times("tt0903747", 2, 1, 2820.0)
+        self.assertIn("duration_ms=2820000", fetcher.calls[0])
+
+    def test_film_lookup_sends_no_episode(self):
+        fetcher = _FakeFetcher({"theintrodb": INTRODB_MOVIE})
+        providers = MetadataProviders(self.root, fetcher)
+        self.assertEqual(len(providers.intro_times("tt0137523", None, None, 8400.0)), 2)
+        self.assertNotIn("season=", fetcher.calls[0])
+
+    def test_the_answer_is_cached(self):
+        fetcher = _FakeFetcher({"theintrodb": INTRODB_TV})
+        providers = MetadataProviders(self.root, fetcher)
+        providers.intro_times("tt0903747", 2, 1, 2820.0)
+        providers.intro_times("tt0903747", 2, 1, 2820.0)
+        self.assertEqual(len(fetcher.calls), 1)
+
+    def test_cached_answer_needs_no_network(self):
+        MetadataProviders(self.root, _FakeFetcher({"theintrodb": INTRODB_TV})) \
+            .intro_times("tt0903747", 2, 1, 2820.0)
+        offline = MetadataProviders(self.root, _FakeFetcher(raise_on_call=True))
+        self.assertEqual(len(offline.cached_intro_times("tt0903747", 2, 1, 2820.0)), 2)
+
+    def test_a_miss_is_remembered_so_it_is_not_re_asked(self):
+        fetcher = _FakeFetcher({"theintrodb": {}})
+        providers = MetadataProviders(self.root, fetcher)
+        self.assertEqual(providers.intro_times("tt0903747", 9, 9, 2820.0), [])
+        self.assertTrue(providers.has_looked_up_intro("tt0903747", 9, 9))
+        providers.intro_times("tt0903747", 9, 9, 2820.0)
+        self.assertEqual(len(fetcher.calls), 1)
+
+    def test_unasked_episodes_are_not_marked_as_looked_up(self):
+        providers = MetadataProviders(self.root, _FakeFetcher(raise_on_call=True))
+        self.assertFalse(providers.has_looked_up_intro("tt0903747", 1, 1))
+
+    def test_episodes_are_cached_separately(self):
+        fetcher = _FakeFetcher({"theintrodb": INTRODB_TV})
+        providers = MetadataProviders(self.root, fetcher)
+        providers.intro_times("tt0903747", 2, 1, 2820.0)
+        providers.intro_times("tt0903747", 2, 2, 2820.0)
+        self.assertEqual(len(fetcher.calls), 2)
+
+    def test_a_bad_imdb_id_never_reaches_the_network(self):
+        providers = MetadataProviders(self.root, _FakeFetcher(raise_on_call=True))
+        for bad in ("", "550", "tt", "nope", "tt12", "'; DROP TABLE --"):
+            self.assertEqual(providers.intro_times(bad, 1, 1, 100.0), [], bad)
+            self.assertEqual(providers.cached_intro_times(bad, 1, 1), [], bad)
+
+    def test_uppercase_imdb_ids_are_accepted(self):
+        fetcher = _FakeFetcher({"theintrodb": INTRODB_MOVIE})
+        providers = MetadataProviders(self.root, fetcher)
+        self.assertTrue(providers.intro_times("TT0137523", None, None, 8400.0))
 
 
 if __name__ == "__main__":

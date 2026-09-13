@@ -83,14 +83,14 @@ def skippable(chapters: list[Chapter], duration: float = 0.0) -> list[dict]:
             if chapter.duration > MAX_INTRO_SECONDS:
                 continue
             segments.append({"start": chapter.start, "end": chapter.end,
-                             "label": "Skip intro"})
+                             "label": "Skip intro", "kind": "intro"})
         elif CREDIT_WORDS.search(chapter.title):
             # Only the closing credits are worth a button; a mid-file chapter
             # called "ED" in an anime rip is usually the ending theme.
             if duration and chapter.start < duration * 0.5:
                 continue
             segments.append({"start": chapter.start, "end": chapter.end,
-                             "label": "Skip credits"})
+                             "label": "Skip credits", "kind": "credits"})
     return segments
 
 

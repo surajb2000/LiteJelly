@@ -36,6 +36,7 @@ USER_AGENT = "LiteJelly/0.2 (+https://github.com/surajb2000/LiteJelly)"
 TVMAZE_ROOT = "https://api.tvmaze.com"
 ANILIST_URL = "https://graphql.anilist.co"
 ANISKIP_ROOT = "https://api.aniskip.com"
+INTRODB_ROOT = "https://api.theintrodb.org/v3"
 TMDB_ROOT = "https://api.themoviedb.org/3"
 TMDB_IMAGE = "https://image.tmdb.org/t/p/w500"
 OMDB_ROOT = "https://www.omdbapi.com/"
@@ -59,6 +60,17 @@ MISS_TTL = 3 * 24 * 3600
 # How far past the end of the file a skip segment may reach before the data is
 # assumed to describe a different cut.
 END_TOLERANCE = 5.0
+
+# Shortest segment worth offering a button for.
+MIN_SKIP_SECONDS = 5.0
+
+# Ordered: a marker drawn earlier sits left of a later one on the seek bar.
+SKIP_LABELS = {
+    "intro": "Skip intro",
+    "recap": "Skip recap",
+    "credits": "Skip credits",
+    "preview": "Skip preview",
+}
 
 _TAGS = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\s+")
@@ -323,7 +335,7 @@ def parse_omdb(payload: dict) -> tuple[float | None, str]:
 def parse_aniskip(payload: dict, duration: float = 0.0) -> list[dict]:
     if not payload or not payload.get("found"):
         return []
-    labels = {"op": "Skip intro", "ed": "Skip credits"}
+    kinds = {"op": "intro", "ed": "credits"}
     segments = []
     for result in payload.get("results") or []:
         if not isinstance(result, dict):
@@ -334,10 +346,10 @@ def parse_aniskip(payload: dict, duration: float = 0.0) -> list[dict]:
             end = float(interval.get("endTime"))
         except (TypeError, ValueError):
             continue
-        if end <= start or end - start < 5:
+        if end <= start or end - start < MIN_SKIP_SECONDS:
             continue
-        label = labels.get(str(result.get("skipType") or "").lower())
-        if not label:
+        kind = kinds.get(str(result.get("skipType") or "").lower())
+        if not kind:
             continue
         # These times describe AniSkip's copy of the episode. If they run past
         # the end of this file it is a different cut, and clamping would turn
@@ -345,9 +357,68 @@ def parse_aniskip(payload: dict, duration: float = 0.0) -> list[dict]:
         if duration and (start >= duration or end > duration + END_TOLERANCE):
             continue
         segments.append({"start": start, "end": min(end, duration or end),
-                         "label": label})
+                         "label": SKIP_LABELS[kind], "kind": kind})
     segments.sort(key=lambda item: item["start"])
     return segments
+
+
+def parse_introdb(payload: dict, duration: float = 0.0) -> list[dict]:
+    """TheIntroDB reports milliseconds, and uses null for the obvious edges.
+
+    A null start means the segment opens the file; a null end means it runs to
+    the end of it. The second case needs a real duration to be usable at all,
+    so without one those segments are dropped rather than guessed at.
+    """
+    if not isinstance(payload, dict):
+        return []
+
+    segments = []
+    for kind, label in SKIP_LABELS.items():
+        for entry in payload.get(kind) or []:
+            if not isinstance(entry, dict):
+                continue
+            # A null start is the beginning of the file, which is always
+            # known. A null end is the end of it, which is only known if the
+            # file has been probed, so those are dropped rather than guessed.
+            start = _introdb_seconds(entry.get("start_ms"), 0.0)
+            end = _introdb_seconds(entry.get("end_ms"), duration)
+            if start is None or end is None or end <= 0:
+                continue
+            if end <= start or end - start < MIN_SKIP_SECONDS:
+                continue
+            # The database describes some release of this title. If the times
+            # overshoot this file it is a different cut, and trimming them
+            # would turn "skip the intro" into "skip the episode".
+            if duration and (start >= duration or end > duration + END_TOLERANCE):
+                continue
+            segments.append({"start": start, "end": min(end, duration or end),
+                             "label": label, "kind": kind})
+
+    segments.sort(key=lambda item: item["start"])
+    return segments
+
+
+def _introdb_seconds(value, fallback: float) -> float | None:
+    """None means "the natural edge": 0 for a start, the duration for an end."""
+    if value is None:
+        return fallback
+    try:
+        return max(0.0, float(value) / 1000.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _introdb_key(imdb_id: str, season=None, episode=None) -> str:
+    """A film is keyed by id alone; an episode needs its place in the run."""
+    imdb_id = str(imdb_id or "").strip().lower()
+    if not re.fullmatch(r"tt\d{7,9}", imdb_id):
+        return ""
+    if season is None or episode is None:
+        return imdb_id
+    try:
+        return f"{imdb_id}-s{int(season)}e{int(episode)}"
+    except (TypeError, ValueError):
+        return ""
 
 
 class MetadataProviders:
@@ -384,6 +455,27 @@ class MetadataProviders:
             return []
         cached = self.cache.get("aniskip", f"{mal_id}-{episode}")
         return parse_aniskip(cached, duration) if cached else []
+
+    def has_looked_up_skip(self, mal_id: int, episode: int) -> bool:
+        """True once asked, hit or miss, so a client knows to stop waiting."""
+        if not mal_id or not episode:
+            return False
+        return self.cache.get("aniskip", f"{mal_id}-{episode}") is not None
+
+    def cached_intro_times(self, imdb_id: str, season=None, episode=None,
+                           duration: float = 0.0) -> list[dict]:
+        key = _introdb_key(imdb_id, season, episode)
+        if not key:
+            return []
+        cached = self.cache.get("introdb", key)
+        return parse_introdb(cached, duration) if cached else []
+
+    def has_looked_up_intro(self, imdb_id: str, season=None,
+                            episode=None) -> bool:
+        key = _introdb_key(imdb_id, season, episode)
+        if not key:
+            return False
+        return self.cache.get("introdb", key) is not None
 
     def artwork_path(self, url: str) -> Path | None:
         """Where a poster would be, if it has already been downloaded."""
@@ -509,6 +601,35 @@ class MetadataProviders:
             return []
         self.cache.put("aniskip", key, payload)
         return parse_aniskip(payload, duration)
+
+    def intro_times(self, imdb_id: str, season=None, episode=None,
+                    duration: float = 0.0) -> list[dict]:
+        """TheIntroDB: live-action intros, recaps and credits. No key needed.
+
+        Looked up by the IMDb id TVmaze already gave us, so this costs no
+        extra provider and cannot match the wrong show by title.
+        """
+        key = _introdb_key(imdb_id, season, episode)
+        if not key:
+            return []
+        cached = self.cache.get("introdb", key)
+        if cached is not None:
+            return parse_introdb(cached, duration) if cached else []
+
+        params = {"imdb_id": imdb_id}
+        if season is not None and episode is not None:
+            params["season"] = int(season)
+            params["episode"] = int(episode)
+        if duration:
+            params["duration_ms"] = int(duration * 1000)
+        url = f"{INTRODB_ROOT}/media?" + urllib.parse.urlencode(params)
+
+        payload = self.fetcher.fetch_json(url)
+        if not payload or not any(payload.get(kind) for kind in SKIP_LABELS):
+            self.cache.put("introdb", key, None, miss=True)
+            return []
+        self.cache.put("introdb", key, payload)
+        return parse_introdb(payload, duration)
 
     # -- artwork ----------------------------------------------------------
     def artwork(self, url: str) -> Path | None:

@@ -74,7 +74,7 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 ### 4. TV Remote & 10-Foot User Interface- **D-pad Spatial Navigation**: Full keyboard / TV remote arrow key control with grid row/column math.
 - **"Continue Watching" Rail**: One row per series rather than one per episode, showing the next episode once you finish one.
 - **Up Next**: When an episode ends, the following one is offered with a ten second countdown, or Back to library to stop.
-- **Skip Intro / Skip Credits**: Offered from the file's own chapter markers, so it needs no network lookup.
+- **Skip Intro / Skip Credits**: Taken from the file's own chapter markers when it has them, and from a shared database when it does not. The segments are also drawn on the seek bar, so you can see where the intro and the credits are before you reach them.
 
 ### Metadata and artwork
 
@@ -105,10 +105,11 @@ titles to a third party, which is your decision rather than the default.
 | [TVmaze](https://www.tvmaze.com) | Television: episode names, plots, ratings, posters, IMDb id | No |
 | [AniList](https://anilist.co) | Anime: titles, scores, cover art | No |
 | [AniSkip](https://www.aniskip.com) | Anime opening and ending times | No |
+| [TheIntroDB](https://theintrodb.org) | Intros, recaps and credits for everything else | No |
 | [TMDb](https://www.themoviedb.org) | Films, and shows TVmaze does not have | Free key |
 | [OMDb](https://www.omdbapi.com) | The actual IMDb rating | Free key |
 
-The first three work out of the box. The last two are the same pair Jellyfin
+The first four work out of the box. The last two are the same pair Jellyfin
 ships with, and both need a free key, which you paste into **Library → Online
 metadata**:
 
@@ -158,7 +159,7 @@ lucid-fermi/
 │   ├── logs.py             # Verbosity, rotating log file, and reading it back
 │   ├── metadata.py         # Kodi .nfo sidecars and local artwork discovery
 │   ├── paths.py            # Realpath containment and symlink traversal guards
-│   ├── providers.py        # TVmaze, AniList and AniSkip clients with an on-disk cache
+│   ├── providers.py        # TVmaze, AniList, AniSkip and TheIntroDB clients with an on-disk cache
 │   ├── settings.py         # settings.json load/save and admin input validation
 │   ├── store.py            # SQLite WAL progress store and continue watching
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
@@ -402,6 +403,10 @@ old files to keep live under **Advanced → Log file** and need a restart.
   - Kodi-style `.nfo` sidecars for titles, plots, ratings and episode names.
   - Local artwork (`poster.jpg`, `folder.jpg`, `fanart.jpg`) used in place of generated frames.
   - Skip intro and Skip credits from the file's own chapter markers.
+- [x] **Phase 3.5: Online metadata and shared skip times**
+  - TVmaze, AniList, TMDb and OMDb for names, plots, ratings and artwork.
+  - AniSkip and TheIntroDB for intros, recaps and credits when the file has no chapters.
+  - Skip segments marked on the seek bar.
 - [ ] **Phase 4: Hardware Acceleration**
   - Auto-detection for hardware encoders (NVENC, QuickSync, AMF) to achieve near-0% CPU usage during transcoding.
 - [ ] **Phase 5: Audio Tracks & HLS**
