@@ -215,6 +215,11 @@ class Video:
         data["has_backdrop"] = bool(self.backdrop_path)
         for internal in ("meta", "poster_path", "backdrop_path", "mal_id"):
             data.pop(internal, None)
+        # Nothing in the client reads these, and the listing is unauthenticated:
+        # sending absolute paths hands every device on the network a map of the
+        # filesystem. Media is addressed by opaque id everywhere else.
+        for private in ("path", "dir_index", "content_type"):
+            data.pop(private, None)
         return data
 
 
@@ -529,6 +534,13 @@ class Library:
                 self._signature = signature
                 self._last_scan = datetime.datetime.now().timestamp()
             log.info("Indexed %d videos", len(videos))
+            if self.metadata is not None:
+                # A scan is the one moment we know what the library still
+                # contains, so it is when unused pictures can go.
+                try:
+                    self.metadata.prune_artwork()
+                except Exception as exc:  # never let housekeeping fail a scan
+                    log.debug("Artwork prune skipped: %s", exc)
             return videos
         finally:
             with self._lock:

@@ -470,6 +470,26 @@ def artwork_digest(url: str) -> str:
     return hashlib.sha1((url or "").encode("utf-8")).hexdigest()[:20]
 
 
+ARTWORK_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _collect_urls(node, found: set[str]) -> None:
+    """Every http(s) string anywhere in a cached record, as artwork digests.
+
+    Walking the whole structure rather than naming fields keeps this correct
+    when a provider gains a new picture: a missed field would mean deleting
+    an image that is still in use.
+    """
+    if isinstance(node, dict):
+        for value in node.values():
+            _collect_urls(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_urls(value, found)
+    elif isinstance(node, str) and node[:8].lower().startswith(("http://", "https:/")):
+        found.add(artwork_digest(node))
+
+
 class MetadataProviders:
     """Looks things up once, remembers the answer, and never blocks a request."""
 
@@ -548,7 +568,7 @@ class MetadataProviders:
         """
         if not re.fullmatch(r"[0-9a-f]{20}", str(digest or "")):
             return None
-        for suffix in (".jpg", ".jpeg", ".png", ".webp"):
+        for suffix in ARTWORK_SUFFIXES:
             target = self.artwork_dir / f"{digest}{suffix}"
             try:
                 if target.is_file() and target.stat().st_size:
@@ -556,6 +576,55 @@ class MetadataProviders:
             except OSError:
                 continue
         return None
+
+    def prune_artwork(self) -> int:
+        """Delete downloaded images no cached record mentions any more.
+
+        Posters and portraits were only ever added. Replacing a record - a
+        show matched to a better title, a provider changing its URLs - left
+        the old picture on disk for good.
+        """
+        if not self.cache.root.is_dir() or not self.artwork_dir.is_dir():
+            return 0
+
+        try:
+            records = list(self.cache.root.rglob("*.json"))
+        except OSError:
+            return 0
+
+        wanted: set[str] = set()
+        parsed = 0
+        for path in records:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            parsed += 1
+            _collect_urls(payload, wanted)
+
+        # Records that exist but cannot be read mean a disk problem, not a
+        # cache full of orphans. Deleting on that reading would be wrong.
+        if records and not parsed:
+            return 0
+
+        removed = 0
+        for image in self.artwork_dir.glob("*"):
+            if image.suffix.lower() not in ARTWORK_SUFFIXES:
+                continue
+            # Only files this cache named itself are ours to delete.
+            if not re.fullmatch(r"[0-9a-f]{20}", image.stem):
+                continue
+            if image.stem in wanted:
+                continue
+            try:
+                image.unlink()
+                removed += 1
+            except OSError:
+                pass
+        if removed:
+            log.info("Removed %d unused artwork file%s",
+                     removed, "" if removed == 1 else "s")
+        return removed
 
     def series(self, title: str, anime: bool = False) -> SeriesInfo | None:
         if not title.strip():

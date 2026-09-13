@@ -10,7 +10,7 @@ Heavy media servers like Plex, Jellyfin, or Emby often struggle on low-spec hard
 
 **LiteJelly** is built from the ground up to solve this:
 - **Zero Dependencies**: Pure Python standard library backend (no `pip install` required).
-- **Featherweight Frontend**: 178 KB of HTML, CSS and vanilla JavaScript, with no frameworks and no build step. A further 445 KB of self-hosted font is fetched once and then cached for a year, so a return visit is the 178 KB alone. For comparison, the clients this replaces ship 10–30 MB of JavaScript before any of it runs.
+- **Featherweight Frontend**: 193 KB of HTML, CSS and vanilla JavaScript for the whole player and library, with no frameworks and no build step. A further 445 KB of self-hosted font is fetched once and then cached for a year, so a return visit is the 193 KB alone. For comparison, the clients this replaces ship 10–30 MB of JavaScript before any of it runs.
 - **Smart Transcoding & Remuxing**: Offloads codec heavy-lifting (HEVC/x265, AC-3, DTS, 10-bit) to the host server via portable FFmpeg.
 - **10-Foot TV Experience**: The interface sizes itself to the screen it is on, judged by what the device can do rather than by what its user agent claims to be.
 - **Local Synchronization**: SQLite-backed playback progress (WAL mode) shared instantly across all devices on your local network.
@@ -62,13 +62,15 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 ### 2. Accurate Seeking & A/V Sync
 - **Seek Landing Prediction**: Open-GOP encodes (x265's default) flag CRA frames as keyframes even though they are not valid entry points. FFprobe performs the same seek FFmpeg will, so the player is told where the stream *actually* begins rather than where it was asked to begin.
 - **Matched Stream Entry**: FFmpeg's accurate seek trims audio to the exact timestamp, but copied video can only start on a keyframe, leaving the two seconds apart. `-noaccurate_seek` is used for stream copies so both begin at the same point; re-encoded video keeps accurate seek.
-- **In-Player Audio Delay Adjuster**: Fine-tune audio synchronisation from the player OSD (-400 ms to +400 ms), applied server-side so it survives seeking.
+- **Timing adjuster**: One panel for both streams, a millisecond at a time if you want it. The step size cycles through 1, 10, 50, 250 and 1000 ms, so a small correction and a large one both take a few presses. Subtitles shift instantly in the browser; audio delay is applied by FFmpeg and so takes effect once you stop pressing.
+- **Hover readout on the seek bar**: The time under the pointer is shown before you click, rather than after you have landed somewhere else.
 
 ### 3. Comprehensive Subtitle Engine
 - **External Sidecar Subtitles**: Automatic discovery of `.srt`, `.vtt`, `.ass` files in media folders or `subs/` directories.
 - **Pure-Python SRT Converter**: Converts SubRip (`.srt`) to WebVTT in-process with multi-encoding fallback (`utf-8-sig`, `utf-16`, `cp1252`, `latin-1`), functioning even if FFmpeg is not installed.
 - **Embedded Subtitles**: Automatically extracts embedded text subtitles on-the-fly and caches them as WebVTT.
 - **Dynamic Cue Shifting**: Dynamically re-bases subtitle timestamps when playback resumes midway through a stream.
+- **Adjustable subtitle delay**: Cues are selected in the browser rather than left to the video element, so the offset can be nudged without refetching anything. Useful when the file itself drifts, which no server-side fix can repair.
 - **Bitmap Burn-in**: Detects image-based subtitles (PGS / VobSub) and offers clean hardware-assisted video burn-in.
 
 ### 4. TV Remote & 10-Foot User Interface
@@ -79,7 +81,9 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 - **Home screen**: A suggestion with full-width artwork, then one rail per category. A flat alphabetical grid is a file browser, not a library.
 - **Series pages**: Poster beside backdrop, season tabs, and one row per episode carrying its own still, synopsis, runtime and air date.
 - **"Continue Watching" Rail**: One row per series rather than one per episode, showing the next episode once you finish one.
-- **Up Next**: When an episode ends, the following one is offered with a ten second countdown, or Back to library to stop.
+- **Up Next**: The next episode is offered in the corner before the current one ends - at the credits where their position is known, otherwise thirty seconds out - so the picture never goes black first. The episode keeps playing behind it, and dismissing it leaves it dismissed.
+- **Mark as watched**: A toggle on every episode row, for the one you watched somewhere else or abandoned halfway.
+- **Player controls grouped by purpose**: Previous and next together, picture and sound settings together. Only the two controls that report a value carry a word; the rest are icons, with the chosen subtitle track named on the button and cut to fit.
 - **Skip Intro / Skip Credits**: Taken from the file's own chapter markers when it has them, and from a shared database when it does not. The segments are also drawn on the seek bar, so you can see where the intro and the credits are before you reach them.
 - **Artwork in its own shape**: Posters are portrait, episode stills are landscape. Forcing both into one box is what cropped posters to a slice and made every episode of a show look identical.
 - **Offline typography**: Inter is served from the machine itself. Static weights, not the variable file, because variable fonts need a newer engine than the target television has.
@@ -133,7 +137,9 @@ Lookups run in the background and are cached on disk for a month. Nothing in a
 request ever waits on these services, so if one is slow or down the artwork
 simply arrives later. Posters are downloaded and served locally rather than
 hotlinked, both because the page's CSP is `img-src 'self'` and so the library
-keeps working offline.
+keeps working offline. Cached records carry a schema version, so an upgrade
+that reads a new field refetches rather than serving a record that predates
+it. Images no record mentions any more are removed on the next scan.
 
 > Show data is provided by [TVmaze](https://www.tvmaze.com), used under
 > [CC BY-SA](https://creativecommons.org/licenses/by-sa/4.0/). Film data is
@@ -191,6 +197,7 @@ lucid-fermi/
 │   ├── test_auth.py        # Password hashing, credential storage, sessions, lockout
 │   ├── test_avsync.py      # Regression tests for the seeking and A/V sync fixes
 │   ├── test_chapters.py    # Chapter parsing and skip-segment selection
+│   ├── test_frontend.py    # Browser code: undefined calls, missing ids, browser floor
 │   ├── test_grouping.py    # Categories, series identity, episode ordering
 │   ├── test_http.py        # Live-server tests over a real socket
 │   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
@@ -386,13 +393,16 @@ old files to keep live under **Advanced → Log file** and need a restart.
 | :--- | :--- | :--- |
 | **◀ Left** | Focus the nearest control to the left | Seek backward 10 seconds |
 | **▶ Right** | Focus the nearest control to the right | Seek forward 10 seconds |
-| **▲ Up** | Focus the nearest control above | Seek forward 60 seconds |
-| **▼ Down** | Focus the nearest control below | Seek backward 60 seconds |
+| **▲ Up** | Focus the nearest control above | Volume up |
+| **▼ Down** | Focus the nearest control below | Volume down |
 | **OK / Enter** | Open & play selected video | Toggle Play / Pause |
 | **Back / Escape** | Clear search / exit | Return to library view |
 | **Space** | Play selected video | Toggle Play / Pause |
 | **N / P** | — | Next / previous episode |
 | **S** | — | Skip intro or credits when offered |
+| **C / Q / A** | — | Subtitles / quality / timing |
+| **M** | — | Mute |
+| **F** | — | Fullscreen |
 
 Focus moves to whichever control is nearest in the direction pressed, measured
 from where things actually are on screen. The home view mixes a hero, rails of
@@ -430,15 +440,10 @@ because on a phone-hosted server those are usually in tension.
 
 ### Library
 
-- **Mark watched and unwatched.** The progress store already records a
-  `finished` flag and the API already accepts it; there is simply no control
-  for it. Small, and removes the need to scrub to the end of something you
-  have already seen.
 - **Paging or streaming the library payload.** The whole library is sent in one
   response. That is fine for hundreds of files and will not be for thousands,
-  on a device with this much memory.
-- **Prune orphaned artwork.** Downloaded posters, backdrops and portraits are
-  never removed, so art for deleted media lingers in the cache forever.
+  on a device with this much memory. Absolute paths no longer go out with it,
+  but the size does.
 - **Cast as a way in.** Portraits are shown but do nothing. The data to filter
   a library by actor is already fetched and cached.
 - **Better search.** Matching is a plain substring test, so accents, initials
@@ -446,15 +451,14 @@ because on a phone-hosted server those are usually in tension.
 
 ### Interface
 
-- **Test the browser code.** `app.js` is around 2,500 lines with no automated
-  coverage at all, and a call to a function that did not exist reached a real
-  user because a `ReferenceError` only fires when the button is pressed. A
-  headless smoke test of the main journeys would have caught it.
-- **Subtitle timing offset.** Audio delay can be nudged from the player;
-  subtitles cannot, and a badly muxed file often needs exactly that.
+- **Drive the browser code in a real browser.** The static checks catch missing
+  functions, renamed elements and anything past the browser floor, but nothing
+  exercises a journey end to end. That still needs a headless run.
 - **A real suggestion.** The home hero currently picks the best-looking
   unstarted title and rotates daily. It is a spotlight, not a recommendation.
   Genres and watch history are both already available to do better.
+- **A coarse seek on the remote.** Up and down are volume now, so there is no
+  one-press minute jump. Holding left or right is the workaround.
 
 ### Operations
 
@@ -475,6 +479,14 @@ Run the automated test suite:
 ```bash
 python -m unittest discover -s tests
 ```
+
+No test touches the network, and none needs media beyond what it generates
+itself. `tests/test_frontend.py` covers the browser code, which has no build
+step to catch anything: it checks that every function called is defined, that
+every element id looked up exists in the markup, that nothing newer than the
+target television's engine is used without a fallback, and that no asset is
+fetched from the internet. These are textual checks and cannot prove the
+interface works - they catch the mistakes that have actually happened.
 
 Run the A/V synchronization diagnostic tool:
 ```bash

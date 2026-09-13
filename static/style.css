@@ -678,73 +678,82 @@ body.playing {
   cursor: pointer;
 }
 
-/* Center Playback Indicator (Big Icon) */
-.center-playback-indicator {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 20;
-  pointer-events: none;
-}
-
-/* Up next */
+/* Up next: a card in the corner, because the episode is still playing. */
 .up-next {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  right: 40px;
+  bottom: 140px;
   z-index: 40;
-  background: rgba(2, 6, 12, 0.86);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  max-width: 460px;
 }
 
 .up-next-card {
-  max-width: 620px;
+  display: flex;
+  align-items: stretch;
+  background: rgba(10, 15, 22, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--border-radius-md);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
+
+.up-next-still {
+  flex: 0 0 150px;
+  position: relative;
+  background: #0d1219;
+}
+
+.up-next-still img {
+  display: block;
   width: 100%;
-  text-align: center;
+  height: 100%;
+  object-fit: cover;
+}
+
+.up-next-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 14px 16px;
 }
 
 .up-next-label {
-  margin: 0 0 10px;
+  margin: 0 0 6px;
   color: var(--accent);
-  font-size: 0.95rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .up-next-title {
-  margin: 0 0 8px;
-  font-size: 2rem;
+  margin: 0 0 4px;
+  font-size: 1.1rem;
   font-weight: 700;
   color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .up-next-sub {
-  margin: 0 0 28px;
+  margin: 0 0 12px;
   color: rgba(255, 255, 255, 0.72);
-  font-size: 1.05rem;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.up-next-actions {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-.up-next-actions > * { margin: 6px; }
+.up-next-actions { display: flex; }
+.up-next-actions > * + * { margin-left: 8px; }
 
 .up-next .btn-primary,
 .up-next .btn-secondary {
   font: inherit;
-  font-size: 1.05rem;
+  font-size: 0.9rem;
   font-weight: 600;
-  padding: 14px 28px;
-  border-radius: 10px;
+  padding: 9px 16px;
+  border-radius: 9px;
   cursor: pointer;
   border: 2px solid transparent;
 }
@@ -770,7 +779,28 @@ body.playing {
 .up-next-countdown {
   opacity: 0.75;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-transform: none;
 }
+
+[data-profile="tv"] .up-next {
+  right: var(--safe-x);
+  bottom: 200px;
+  max-width: 620px;
+}
+[data-profile="tv"] .up-next-still { flex-basis: 200px; }
+[data-profile="tv"] .up-next-title { font-size: 1.5rem; }
+[data-profile="tv"] .up-next-sub { font-size: 1.05rem; }
+[data-profile="tv"] .up-next .btn-primary,
+[data-profile="tv"] .up-next .btn-secondary { font-size: 1.05rem; padding: 12px 22px; }
+
+[data-profile="phone"] .up-next {
+  right: 16px;
+  left: 16px;
+  bottom: 120px;
+  max-width: none;
+}
+[data-profile="phone"] .up-next-still { flex-basis: 96px; }
 
 /* Skip intro / credits */
 .skip-segment {
@@ -795,26 +825,6 @@ body.playing {
   border-color: var(--accent);
   background: var(--accent);
   color: #04121f;
-}
-
-.center-btn {
-  width: 80px;
-  height: 80px;
-  border-radius: 50%;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(12px);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
-  animation: pulseScale 0.25s ease-out;
-}
-
-@keyframes pulseScale {
-  0% { transform: scale(0.7); opacity: 0.5; }
-  100% { transform: scale(1); opacity: 1; }
 }
 
 /* OSD Overlay */
@@ -1468,9 +1478,8 @@ select:focus:not(:focus-visible) {
   letter-spacing: 0.05em;
 }
 
-.sync-btn .btn-subtext {
-  font-size: 0.6rem;
-  opacity: 0.8;
+.timing-btn-open.adjusted .popup-item-hint {
+  color: var(--accent);
 }
 
 .control-icon-btn.adjusted {
@@ -2290,11 +2299,19 @@ body.no-hero #topbar {
 .episode-list > * + * { margin-top: 18px; }
 
 /* A row, not a tile: at this size the still, the title and the synopsis can
-   all be read at once, which a grid of cards cannot do. */
+   all be read at once, which a grid of cards cannot do. The row is a wrapper
+   holding two controls, because a button may not contain another button. */
 .episode-row {
   display: flex;
   align-items: stretch;
   width: 100%;
+}
+
+.episode-main {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
   text-align: left;
   font: inherit;
   color: inherit;
@@ -2307,14 +2324,14 @@ body.no-hero #topbar {
   transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), border-color 0.2s ease;
 }
 
-.episode-row > * + * { margin-left: 20px; }
+.episode-main > * + * { margin-left: 20px; }
 
-.episode-row:hover {
+.episode-main:hover {
   border-color: rgba(255, 255, 255, 0.2);
   background: var(--card-hover);
 }
 
-.episode-row:focus {
+.episode-main:focus {
   outline: none;
   border-color: var(--accent);
   transform: scale(1.01);
@@ -2548,13 +2565,19 @@ body.no-hero #topbar {
 [data-profile="tv"] .osd-transport { gap: 40px; }
 [data-profile="tv"] .osd-transport > * + * { margin-left: 40px; }
 
-/* Secondary controls carry a word, because an icon alone is a guess from
-   three metres away. */
+/* Only the two controls that report a value still carry a word; the rest are
+   icons alone. The word sits beside the icon, not under it. */
 .btn-label {
-  margin-left: 10px;
+  margin-left: 8px;
   font-size: var(--fs-control);
   font-weight: 600;
   letter-spacing: 0.01em;
+  /* Track names come from the file and can run to a whole sentence. app.js
+     cuts them to 10 characters; this is the backstop for wide glyphs. */
+  max-width: 11ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .control-icon-btn {
@@ -2563,6 +2586,7 @@ body.no-hero #topbar {
   padding: 0 16px;
   height: 48px;
   border-radius: 12px;
+  flex-direction: row;
 }
 
 [data-profile="tv"] .control-icon-btn {
@@ -2618,13 +2642,31 @@ body.no-hero #topbar {
 #options-menu,
 #subtitle-menu,
 #quality-menu,
-#audiosync-menu {
+#timing-menu {
   z-index: 45;
 }
 
 .quality-btn .btn-label {
   min-width: 3.2em;
   text-align: left;
+}
+
+/* Buttons that are now icon-only should be square again, not pill-shaped. */
+#btn-prev-episode,
+#btn-next-episode,
+#btn-mute,
+#btn-options,
+#player-fs-btn {
+  padding: 0;
+  width: 48px;
+}
+
+[data-profile="tv"] #btn-prev-episode,
+[data-profile="tv"] #btn-next-episode,
+[data-profile="tv"] #btn-mute,
+[data-profile="tv"] #btn-options,
+[data-profile="tv"] #player-fs-btn {
+  width: 64px;
 }
 
 
@@ -2667,3 +2709,137 @@ body.no-hero #topbar {
 [data-profile="tv"] .hero-poster { flex-basis: 300px; }
 [data-profile="phone"] .hero-poster { flex-basis: 108px; }
 [data-profile="phone"] .hero-body > * + * { margin-left: 16px; }
+
+
+.episode-watch {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: 14px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.episode-watch:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.episode-watch.is-watched {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.episode-watch:focus {
+  outline: none;
+  box-shadow: 0 0 0 var(--focus-ring) var(--accent),
+              0 0 0 calc(var(--focus-ring) + 5px) var(--accent-glow);
+}
+
+[data-profile="tv"] .episode-watch { width: 64px; height: 64px; font-size: 1.4rem; }
+
+
+/* ==========================================================================
+   Timing panel and seek-bar hover readout
+   ========================================================================== */
+
+.timing-menu { min-width: 320px; }
+
+.timing-row { padding: 10px 4px 4px; }
+.timing-row + .timing-row { border-top: 1px solid rgba(255, 255, 255, 0.09); }
+
+.timing-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.timing-name {
+  font-size: var(--fs-control);
+  font-weight: 600;
+}
+
+.timing-value {
+  font-size: var(--fs-control);
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.timing-controls { display: flex; align-items: stretch; }
+.timing-controls > * + * { margin-left: 8px; }
+
+.timing-btn,
+.timing-step,
+.timing-reset {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 44px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.timing-btn { flex: 0 0 56px; font-size: 1.25rem; line-height: 1; }
+.timing-step { flex: 1 1 auto; font-variant-numeric: tabular-nums; }
+.timing-reset { flex: 0 0 auto; padding: 0 14px; font-size: 0.85rem; }
+
+.timing-btn:hover,
+.timing-step:hover,
+.timing-reset:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.timing-btn:focus,
+.timing-step:focus,
+.timing-reset:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 var(--focus-ring) var(--accent);
+}
+
+.timing-hint {
+  margin: 8px 0 2px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+[data-profile="tv"] .timing-menu { min-width: 420px; }
+[data-profile="tv"] .timing-btn { flex-basis: 72px; min-height: 56px; }
+[data-profile="tv"] .timing-step,
+[data-profile="tv"] .timing-reset { min-height: 56px; }
+
+/* The bubble is positioned from JS, which sets left in pixels. */
+.scrub-preview {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 10px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(8, 12, 18, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.scrub-preview.hidden { display: none; }
+
+[data-profile="tv"] .scrub-preview { font-size: 1.1rem; padding: 6px 14px; }

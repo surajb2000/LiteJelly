@@ -118,7 +118,7 @@
   };
 
   const SEEK_SMALL = 10;
-  const SEEK_LARGE = 60;
+  const VOLUME_STEP = 0.1;
   const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
   const PROGRESS_SAVE_INTERVAL = 10000;
   const SEEK_COMMIT_DELAY = 300;
@@ -156,6 +156,12 @@
     quality: 'auto',
     qualities: [],
     audioOffset: 0,
+    appliedAudioOffset: 0,
+    subtitleOffset: 0,
+    timingStep: { subtitle: 10, audio: 50 },
+    audioApplyTimer: null,
+    subtitleTimer: null,
+    lastCueKey: null,
     lastPointerMove: 0,
     continueWatching: [],
     upNextTimer: null,
@@ -837,14 +843,20 @@
   }
 
   function buildEpisodeRow(row) {
-    const node = document.createElement('button');
-    node.type = 'button';
+    // A wrapper rather than one big button: the row carries a second control,
+    // and a button may not contain another button.
+    const node = document.createElement('div');
     node.className = 'episode-row';
     node.dataset.id = row.id;
+    node.setAttribute('role', 'listitem');
+
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'episode-main';
     const code = episodeLabel(row);
     const heading = (row.episode != null ? row.episode + '. ' : '')
       + (row.title || 'Episode ' + (row.episode != null ? row.episode : ''));
-    node.setAttribute('aria-label', 'Play ' + (code ? code + ' ' : '') + heading);
+    main.setAttribute('aria-label', 'Play ' + (code ? code + ' ' : '') + heading);
 
     const still = document.createElement('span');
     still.className = 'episode-still';
@@ -866,7 +878,7 @@
       bar.appendChild(fill);
       still.appendChild(bar);
     }
-    node.appendChild(still);
+    main.appendChild(still);
 
     const body = document.createElement('span');
     body.className = 'episode-body';
@@ -890,18 +902,70 @@
     if (row.aired) subBits.push('Aired ' + formatDate(row.aired));
     sub.textContent = subBits.join(' \u00b7 ');
     body.appendChild(sub);
-    node.appendChild(body);
+    main.appendChild(body);
 
     const go = document.createElement('span');
     go.className = 'episode-go';
     go.setAttribute('aria-hidden', 'true');
     go.textContent = '\u25b6';
-    node.appendChild(go);
+    main.appendChild(go);
 
-    node.addEventListener('click', () => openVideo(row.id));
+    main.addEventListener('click', () => openVideo(row.id));
+    node.appendChild(main);
+    node.appendChild(watchedToggle(row));
+
     if (thumbObserver) thumbObserver.observe(node);
     else loadThumbnail(img);
     return node;
+  }
+
+  /* Marking something watched without sitting through it.
+   *
+   * The progress store has recorded a finished flag all along and the API has
+   * always accepted one; there was simply no control that set it.
+   */
+  function watchedToggle(row) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'episode-watch';
+    paintWatched(button, row.finished);
+    button.addEventListener('click', () => toggleWatched(row, button));
+    return button;
+  }
+
+  function paintWatched(button, finished) {
+    button.classList.toggle('is-watched', !!finished);
+    button.textContent = finished ? '\u2713' : '\u25cb';
+    button.title = finished ? 'Mark as unwatched' : 'Mark as watched';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', finished ? 'true' : 'false');
+  }
+
+  async function toggleWatched(row, button) {
+    const finished = !row.finished;
+    // Without a real duration the store cannot tell "finished" from "at the
+    // start", so fall back to the runtime the metadata gave us.
+    const duration = row.duration || (row.runtime ? row.runtime * 60 : 0);
+    try {
+      await postJSON(API.progress, {
+        id: row.id,
+        position: finished ? duration : 0,
+        duration: duration,
+        finished: finished
+      });
+    } catch (err) {
+      showToast('Could not update: ' + err.message, 4000);
+      return;
+    }
+
+    row.finished = finished;
+    row.position = finished ? duration : 0;
+    paintWatched(button, finished);
+    state.progress[row.id] = { position: row.position, duration: duration,
+                               finished: finished };
+    const bar = $('.episode-progress', button.parentElement);
+    if (bar) bar.remove();
+    showToast(finished ? 'Marked as watched' : 'Marked as unwatched', 2000);
   }
 
   function renderCast(cast) {
@@ -1311,7 +1375,9 @@
 
   // --- Up next ---------------------------------------------------------
 
-  const UP_NEXT_SECONDS = 10;
+  // How long before the end the next episode is offered, when the credits
+  // position is not known.
+  const UP_NEXT_LEAD = 30;
 
   function playSibling(key) {
     const target = state.playback && state.playback[key];
@@ -1424,9 +1490,37 @@
     }
   }
 
+  /* Up next appears before the episode ends, not after it.
+   *
+   * Waiting for 'ended' meant the picture went black first, which reads as
+   * the app having stopped. Where the credits are known the card comes up
+   * with them; otherwise it uses a fixed lead. The episode keeps playing
+   * underneath either way.
+   */
+  function upNextLeadIn(duration) {
+    const credits = ((state.playback && state.playback.skip_segments) || [])
+      .find(segment => segment.kind === 'credits');
+    if (credits && credits.start > 0 && credits.start < duration) {
+      return duration - credits.start;
+    }
+    return UP_NEXT_LEAD;
+  }
+
+  function maybeShowUpNext() {
+    const plan = state.playback;
+    if (!plan || state.upNextDismissed || pendingUpNext()) return;
+    if (!plan.next_id) return;
+
+    const duration = displayDuration();
+    if (!duration) return;
+    const remaining = duration - displayTime();
+    if (remaining <= 0 || remaining > upNextLeadIn(duration)) return;
+
+    const following = state.videos.find(item => item.id === plan.next_id);
+    if (following) showUpNext(following);
+  }
+
   function showUpNext(video) {
-    hideOSD();
-    el.video.pause();
     el.upNextTitle.textContent = video.title || video.name;
     const code = episodeCode(video);
     const parts = [];
@@ -1434,33 +1528,40 @@
     if (video.episode_title) parts.push(video.episode_title);
     el.upNextSub.textContent = parts.join(' \u00b7 ');
 
-    state.upNextRemaining = UP_NEXT_SECONDS;
-    renderUpNextCountdown();
+    el.upNextStill.src = API.thumbnail + '?id=' + encodeURIComponent(video.id);
+    el.upNext.dataset.videoId = video.id;
     el.upNext.classList.remove('hidden');
-    el.upNextPlay.focus();
+    renderUpNextCountdown();
 
     clearInterval(state.upNextTimer);
-    state.upNextTimer = setInterval(() => {
-      state.upNextRemaining -= 1;
-      renderUpNextCountdown();
-      if (state.upNextRemaining <= 0) playUpNext(video.id);
-    }, 1000);
+    state.upNextTimer = setInterval(renderUpNextCountdown, 500);
   }
 
   function renderUpNextCountdown() {
-    el.upNextCountdown.textContent = state.upNextRemaining > 0
-      ? '(' + state.upNextRemaining + ')' : '';
+    const duration = displayDuration();
+    const remaining = duration ? Math.max(0, Math.round(duration - displayTime())) : 0;
+    state.upNextRemaining = remaining;
+    el.upNextCountdown.textContent = remaining > 0 ? 'in ' + remaining + 's' : 'now';
   }
 
   function cancelUpNext() {
     clearInterval(state.upNextTimer);
     state.upNextTimer = null;
     el.upNext.classList.add('hidden');
+    el.upNext.removeAttribute('data-video-id');
+  }
+
+  function dismissUpNext() {
+    // Stay dismissed for the rest of this episode rather than reappearing on
+    // the next tick.
+    state.upNextDismissed = true;
+    cancelUpNext();
   }
 
   function playUpNext(videoId) {
+    const id = videoId || el.upNext.dataset.videoId;
     cancelUpNext();
-    openVideo(videoId);
+    if (id) openVideo(id);
   }
 
   function pendingUpNext() {
@@ -1509,7 +1610,14 @@
     state.pendingSeek = null;
     state.offset = 0;
     state.activeSubtitle = 'off';
+    state.lastCueKey = null;
+    // Every request that builds a plan sends the current delay, so whatever
+    // is playing now is running with it.
+    state.appliedAudioOffset = state.audioOffset;
     state.lastSavedPosition = -1;
+    state.upNextDismissed = false;
+    cancelUpNext();
+    startSubtitleTicker();
     state.qualities = Array.isArray(plan.qualities) ? plan.qualities : [];
     if (plan.quality) state.quality = plan.quality;
 
@@ -1579,14 +1687,14 @@
       // Auto-advance calls play() without a fresh gesture, which a browser may
       // refuse. Say so rather than leaving a black screen.
       started.catch(() => {
-        el.pauseIndicator.classList.remove('hidden');
         showOSD(true);
         showToast('Press play to start', 4000);
       });
     }
 
-    // Cues are absolute, but a restarted pipe starts at the offset, so re-base them.
-    if (!plan.native_seek) attachSubtitleTracks(state.offset);
+    // Cues are absolute, but a restarted pipe starts at the offset, so re-base
+    // them. Direct play keeps the original timeline.
+    attachSubtitleTracks(plan.native_seek ? 0 : state.offset);
   }
 
   function seekTo(seconds) {
@@ -1653,6 +1761,7 @@
     video.removeAttribute('src');
     video.load();
     clearSubtitleTracks();
+    stopSubtitleTicker();
     state.subtitleTracks = [];
     state.activeSubtitle = 'off';
 
@@ -1679,7 +1788,20 @@
   // --- Subtitles -------------------------------------------------------
   function clearSubtitleTracks() {
     $$('track', el.video).forEach(track => track.remove());
+    state.lastCueKey = null;
     el.subtitleLayer.replaceChildren();
+  }
+
+  /* Ten times a second is far finer than a viewer can notice and costs a
+     binary search each time, so it can run for the whole film. */
+  function startSubtitleTicker() {
+    if (state.subtitleTimer) return;
+    state.subtitleTimer = setInterval(renderSubtitleFrame, 100);
+  }
+
+  function stopSubtitleTicker() {
+    clearInterval(state.subtitleTimer);
+    state.subtitleTimer = null;
   }
 
   function attachSubtitleTracks(offset) {
@@ -1710,32 +1832,83 @@
     for (let i = 0; i < textTracks.length; i++) {
       const track = textTracks[i];
       const id = elements[i] ? elements[i].dataset.trackId : null;
-      // 'hidden' keeps cuechange firing while suppressing the browser's own
-      // rendering, which cannot be positioned above the control dock.
+      // 'hidden' parses the cues but suppresses the browser's own rendering,
+      // which cannot be positioned above the control dock and cannot be
+      // shifted by the delay control.
       track.mode = id === state.activeSubtitle ? 'hidden' : 'disabled';
-      if (!track.cueListenerAttached) {
-        track.cueListenerAttached = true;
-        track.addEventListener('cuechange', () => renderCues(track));
-      }
     }
-    const active = Array.from(textTracks).find(track => track.mode === 'hidden');
-    renderCues(active || null);
+    state.lastCueKey = null;
+    renderSubtitleFrame();
   }
 
-  function renderCues(track) {
-    if (!track || track.mode !== 'hidden' || !track.activeCues) {
-      el.subtitleLayer.replaceChildren();
+  function activeSubtitleTrack() {
+    const tracks = el.video.textTracks;
+    for (let i = 0; i < tracks.length; i++) {
+      if (tracks[i].mode === 'hidden') return tracks[i];
+    }
+    return null;
+  }
+
+  /* Cues are chosen here instead of by the browser.
+   *
+   * Letting 'cuechange' drive it would pin subtitles to the video clock, and
+   * the delay could then only be changed by refetching the whole file from
+   * the server. Polling the cue list costs nothing and makes the offset
+   * adjustable a millisecond at a time.
+   */
+  function renderSubtitleFrame() {
+    const track = activeSubtitleTrack();
+    const cues = track && track.cues;
+    if (!cues || !cues.length) {
+      if (state.lastCueKey !== '') {
+        state.lastCueKey = '';
+        el.subtitleLayer.replaceChildren();
+      }
       return;
     }
+    paintCues(cuesAt(cues, el.video.currentTime - state.subtitleOffset / 1000));
+  }
+
+  function cuesAt(cues, at) {
+    // Cue lists run to thousands of entries and this is polled, so find the
+    // last cue that has started by binary search.
+    let low = 0;
+    let high = cues.length - 1;
+    let index = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (cues[mid].startTime <= at) {
+        index = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    const found = [];
+    // A few cues back as well, because overlapping ones start out of order.
+    for (let i = Math.max(0, index - 8); i <= index; i++) {
+      const cue = cues[i];
+      if (cue && cue.startTime <= at && cue.endTime > at) found.push(cue);
+    }
+    return found;
+  }
+
+  function paintCues(cues) {
+    let key = '';
+    for (let i = 0; i < cues.length; i++) {
+      key += cues[i].startTime + '\u0001' + cues[i].text + '\u0002';
+    }
+    if (key === state.lastCueKey) return;
+    state.lastCueKey = key;
+
     const fragment = document.createDocumentFragment();
-    for (let i = 0; i < track.activeCues.length; i++) {
-      const cue = track.activeCues[i];
+    for (let i = 0; i < cues.length; i++) {
       const line = document.createElement('div');
       line.className = 'subtitle-cue';
-      if (typeof cue.getCueAsHTML === 'function') {
-        line.appendChild(cue.getCueAsHTML());
+      if (typeof cues[i].getCueAsHTML === 'function') {
+        line.appendChild(cues[i].getCueAsHTML());
       } else {
-        line.textContent = cue.text;
+        line.textContent = cues[i].text;
       }
       fragment.appendChild(line);
     }
@@ -1772,7 +1945,10 @@
       state.activeSubtitle = preferredSubtitle(state.subtitleTracks);
     }
 
-    attachSubtitleTracks(state.offset);
+    // Attaching happens in loadSource, once the stream's start time is known.
+    // Doing it here as well fetched every track twice, and the first copy was
+    // built for offset 0, so a resumed film showed the opening subtitles over
+    // the middle of the picture until the correct copy arrived.
 
     el.btnSubtitles.classList.toggle('unavailable', count === 0);
     el.btnSubtitles.setAttribute('aria-label',
@@ -1784,6 +1960,7 @@
   function renderSubtitleMenu() {
     const menu = el.subtitleMenu;
     menu.replaceChildren();
+    updateSubtitleLabel();
 
     const heading = document.createElement('div');
     heading.className = 'popup-heading';
@@ -1828,6 +2005,33 @@
         : (track.kind === 'external' ? 'File' : 'Embedded');
       makeItem(track.id, track.label, detail);
     });
+  }
+
+  /* The button reports the chosen track, not the word "Subtitles".
+   *
+   * Track names come from the file and can be a whole sentence, so cut them
+   * to something that fits beside the icon. The full name stays in the
+   * tooltip and in the menu.
+   */
+  function updateSubtitleLabel() {
+    if (!el.subtitleLabel) return;
+    let full;
+    if (!state.subtitleTracks.length) full = 'None';
+    else if (state.activeSubtitle === 'off') full = 'Off';
+    else {
+      const active = state.subtitleTracks.find(
+        item => item.id === state.activeSubtitle);
+      full = active ? active.label : 'Off';
+    }
+    el.subtitleLabel.textContent = trimLabel(full, 10);
+    el.btnSubtitles.title = 'Subtitles: ' + full;
+  }
+
+  function trimLabel(text, limit) {
+    const value = String(text || '');
+    return value.length > limit
+      ? value.slice(0, limit - 1).replace(/\s+$/, '') + '\u2026'
+      : value;
   }
 
   async function selectSubtitle(trackId) {
@@ -2016,13 +2220,13 @@
     return !el.subtitleMenu.classList.contains('hidden') ||
       !el.qualityMenu.classList.contains('hidden') ||
       !el.optionsMenu.classList.contains('hidden') ||
-      !el.audioSyncMenu.classList.contains('hidden');
+      !el.timingMenu.classList.contains('hidden');
   }
 
   function closeMenus() {
     closeSubtitleMenu();
     closeQualityMenu();
-    closeAudioSyncMenu();
+    closeTimingMenu();
     closeOptionsMenu();
   }
 
@@ -2046,106 +2250,122 @@
     el.btnOptions.setAttribute('aria-expanded', 'false');
   }
 
-  // --- Audio sync ------------------------------------------------------
-  const SYNC_STEPS = [-400, -300, -200, -150, -100, -50, 0, 50, 100, 150, 200, 300, 400];
+  // --- Timing ----------------------------------------------------------
+  const STEP_SIZES = [1, 10, 50, 250, 1000];
+  const TIMING_LIMIT = 60000;
+  // ffmpeg has to be restarted to change the audio delay, so wait until the
+  // nudging has stopped rather than restarting on every press.
+  const AUDIO_APPLY_DELAY = 900;
+
+  function timingValue(kind) {
+    return kind === 'audio' ? state.audioOffset : state.subtitleOffset;
+  }
+
+  function formatDelay(ms) {
+    return (ms > 0 ? '+' : '') + ms + ' ms';
+  }
 
   function updateSyncLabel() {
-    const value = state.audioOffset;
-    el.syncLabel.textContent = value === 0 ? '0' : (value > 0 ? '+' : '') + value;
-    el.btnAudioSync.classList.toggle('adjusted', value !== 0);
+    const parts = [];
+    if (state.subtitleOffset) parts.push('Subs ' + formatDelay(state.subtitleOffset));
+    if (state.audioOffset) parts.push('Audio ' + formatDelay(state.audioOffset));
+    el.timingSummary.textContent = parts.length ? parts.join(', ') : 'In sync';
+    el.btnTiming.classList.toggle('adjusted', parts.length > 0);
   }
 
-  function renderAudioSyncMenu() {
-    const menu = el.audioSyncMenu;
-    menu.replaceChildren();
-
-    const heading = document.createElement('div');
-    heading.className = 'popup-heading';
-    heading.textContent = 'Audio sync';
-    menu.appendChild(heading);
-
-    SYNC_STEPS.forEach(value => {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'popup-item';
-      item.setAttribute('role', 'menuitemradio');
-      item.setAttribute('aria-checked', String(state.audioOffset === value));
-      item.dataset.syncValue = String(value);
-
-      const text = document.createElement('span');
-      text.className = 'popup-item-label';
-      text.textContent = value === 0 ? 'In sync (0 ms)'
-        : (value > 0 ? '+' : '') + value + ' ms';
-      item.appendChild(text);
-
-      if (value !== 0) {
-        const hint = document.createElement('span');
-        hint.className = 'popup-item-hint';
-        hint.textContent = value > 0 ? 'audio later' : 'audio earlier';
-        item.appendChild(hint);
+  function renderTimingMenu() {
+    $$('.timing-row', el.timingMenu).forEach(row => {
+      const kind = row.dataset.track;
+      $('[data-role="value"]', row).textContent = formatDelay(timingValue(kind));
+      $('[data-role="step"]', row).textContent = state.timingStep[kind] + ' ms';
+      const hint = $('[data-role="audio-hint"]', row);
+      if (hint) {
+        hint.textContent = state.audioOffset === state.appliedAudioOffset
+          ? 'Restarts the stream.' : 'Applying...';
       }
-      menu.appendChild(item);
     });
-
-    const note = document.createElement('div');
-    note.className = 'popup-note';
-    const rows = ['Use this if speech does not match the lips.',
-      'Applied on the server, so it survives seeking.'];
-    rows.forEach(line => {
-      const row = document.createElement('div');
-      row.textContent = line;
-      note.appendChild(row);
-    });
-    menu.appendChild(note);
+    updateSyncLabel();
   }
 
-  async function selectAudioOffset(value) {
+  function cycleTimingStep(kind) {
+    const next = (STEP_SIZES.indexOf(state.timingStep[kind]) + 1) % STEP_SIZES.length;
+    state.timingStep[kind] = STEP_SIZES[next];
+    renderTimingMenu();
+  }
+
+  function nudgeTiming(kind, direction) {
+    const amount = direction * state.timingStep[kind];
+    const value = Math.max(-TIMING_LIMIT,
+      Math.min(TIMING_LIMIT, timingValue(kind) + amount));
+    setTiming(kind, value);
+  }
+
+  function setTiming(kind, value) {
+    if (kind === 'audio') {
+      state.audioOffset = value;
+      store('litejelly_audio_offset', String(value));
+      clearTimeout(state.audioApplyTimer);
+      state.audioApplyTimer = setTimeout(applyAudioOffset, AUDIO_APPLY_DELAY);
+    } else {
+      state.subtitleOffset = value;
+      store('litejelly_subtitle_offset', String(value));
+      // Nothing to refetch: the next poll picks the new cue up.
+      state.lastCueKey = null;
+      renderSubtitleFrame();
+    }
+    renderTimingMenu();
+  }
+
+  function store(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (err) { /* storage unavailable */ }
+  }
+
+  async function applyAudioOffset() {
     const plan = state.playback;
-    closeAudioSyncMenu();
-    if (!plan || value === state.audioOffset) return;
+    const value = state.audioOffset;
+    if (!plan || value === state.appliedAudioOffset) return;
 
     const at = displayTime();
     const previousSubtitle = state.activeSubtitle;
-    state.audioOffset = value;
-    try {
-      localStorage.setItem('litejelly_audio_offset', String(value));
-    } catch (err) { /* storage unavailable */ }
-    updateSyncLabel();
     el.buffering.classList.remove('hidden');
 
     try {
       const next = await getJSON(API.playback + '?id=' + encodeURIComponent(plan.id) +
         '&quality=' + encodeURIComponent(state.quality) +
         '&adelay=' + encodeURIComponent(value));
+      state.appliedAudioOffset = value;
       startPlayback(next, at);
       if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle);
-      showToast('Audio sync ' + (value > 0 ? '+' : '') + value + ' ms', 2500);
+      showToast('Audio ' + formatDelay(value), 2000);
     } catch (err) {
       el.buffering.classList.add('hidden');
-      showToast('Could not adjust audio sync: ' + err.message, 4000);
+      showToast('Could not adjust audio: ' + err.message, 4000);
     }
+    renderTimingMenu();
   }
 
-  function toggleAudioSyncMenu() {
-    if (el.audioSyncMenu.classList.contains('hidden')) {
+  function toggleTimingMenu() {
+    if (el.timingMenu.classList.contains('hidden')) {
       // Opened from inside Options, which has to close or the two overlap.
       // That leaves its own button hidden, so anchor to the one still on screen.
       closeMenus();
-      renderAudioSyncMenu();
-      el.audioSyncMenu.classList.remove('hidden');
-      anchorMenu(el.audioSyncMenu, el.btnOptions);
-      el.btnAudioSync.setAttribute('aria-expanded', 'true');
-      const current = $('.popup-item[aria-checked="true"]', el.audioSyncMenu);
-      (current || $('.popup-item', el.audioSyncMenu)).focus();
+      renderTimingMenu();
+      el.timingMenu.classList.remove('hidden');
+      anchorMenu(el.timingMenu, el.btnOptions);
+      el.btnTiming.setAttribute('aria-expanded', 'true');
+      const first = $('.timing-btn', el.timingMenu);
+      if (first) first.focus();
       showOSD(true);
     } else {
-      closeAudioSyncMenu();
+      closeTimingMenu();
     }
   }
 
-  function closeAudioSyncMenu() {
-    el.audioSyncMenu.classList.add('hidden');
-    el.btnAudioSync.setAttribute('aria-expanded', 'false');
+  function closeTimingMenu() {
+    el.timingMenu.classList.add('hidden');
+    el.btnTiming.setAttribute('aria-expanded', 'false');
   }
 
   // --- Progress persistence --------------------------------------------
@@ -2214,9 +2434,30 @@
     el.seekRange.setAttribute('aria-valuetext', formatTime(current) + ' of ' + formatTime(duration));
   }
 
+  function showScrubPreview(clientX) {
+    const duration = displayDuration();
+    if (!duration) return;
+    const rect = el.progressWrap.getBoundingClientRect();
+    if (!rect.width) return;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+
+    el.scrubPreview.textContent = formatTime(ratio * duration);
+    el.scrubPreview.classList.remove('hidden');
+    // Measured after the text is set, and kept inside the bar so the label
+    // is not clipped at either end.
+    const half = el.scrubPreview.offsetWidth / 2;
+    const x = Math.max(half, Math.min(rect.width - half, ratio * rect.width));
+    el.scrubPreview.style.left = x.toFixed(1) + 'px';
+  }
+
+  function hideScrubPreview() {
+    el.scrubPreview.classList.add('hidden');
+  }
+
   function updateOSD() {
     if (!state.playback) return;
     syncSkipButton();
+    maybeShowUpNext();
     const duration = displayDuration();
     const current = state.pendingSeek !== null ? state.pendingSeek : displayTime();
     renderProgress(current, duration, state.pendingSeek !== null);
@@ -2263,6 +2504,14 @@
     try {
       localStorage.setItem('litejelly_volume', String(el.video.volume));
     } catch (err) { /* storage unavailable */ }
+  }
+
+  /* Up and down are the volume keys, so they need to say what they did: the
+     slider is unreadable from across a room. */
+  function nudgeVolume(delta) {
+    applyVolume(el.video.volume + delta);
+    const level = Math.round(el.video.volume * 100);
+    showToast(level === 0 ? 'Muted' : 'Volume ' + level + '%', 900);
   }
 
   function syncMuteIcon() {
@@ -2361,7 +2610,8 @@
    */
   function navigableTargets() {
     const nodes = $$('.card', el.library)
-      .concat($$('.episode-row', el.library))
+      .concat($$('.episode-main', el.library))
+      .concat($$('.episode-watch', el.library))
       .concat($$('.rail-more', el.library))
       .concat($$('.chip', el.seasonChips))
       .concat([el.heroPlay, el.heroBrowse, el.seriesPlay, el.seriesBack]);
@@ -2406,23 +2656,6 @@
     // 10009 (Tizen) and 461 (webOS) are the remote's Back button.
     const isBackKey = event.keyCode === 10009 || event.keyCode === 461;
 
-    // Up next owns the remote while it is showing: seeking a finished video
-    // would be meaningless, and Back should stop the countdown, not the app.
-    if (pendingUpNext()) {
-      if (event.key === 'Escape' || event.key === 'Backspace' || isBackKey) {
-        event.preventDefault();
-        cancelUpNext();
-        exitPlayer();
-        return;
-      }
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-        event.preventDefault();
-        (document.activeElement === el.upNextPlay ? el.upNextCancel : el.upNextPlay).focus();
-        return;
-      }
-      return;  // Enter and Space activate the focused button natively.
-    }
-
     if (menusOpen() &&
         (event.key === 'Escape' || event.key === 'Backspace' || isBackKey)) {
       event.preventDefault();
@@ -2442,8 +2675,8 @@
     switch (event.key) {
       case 'ArrowRight': seekBy(SEEK_SMALL); break;
       case 'ArrowLeft': seekBy(-SEEK_SMALL); break;
-      case 'ArrowUp': seekBy(SEEK_LARGE); break;
-      case 'ArrowDown': seekBy(-SEEK_LARGE); break;
+      case 'ArrowUp': nudgeVolume(VOLUME_STEP); break;
+      case 'ArrowDown': nudgeVolume(-VOLUME_STEP); break;
       case ' ':
       case 'Enter':
       case 'k': togglePlayPause(); break;
@@ -2451,13 +2684,13 @@
       case 'm': applyVolume(el.video.muted || el.video.volume === 0 ? 1 : 0); break;
       case 'c': toggleSubtitleMenu(); break;
       case 'q': toggleQualityMenu(); break;
-      case 'a': toggleAudioSyncMenu(); break;
+      case 'a': toggleTimingMenu(); break;
       case 'n': playSibling('next_id'); break;
       case 'p': playSibling('prev_id'); break;
       case 's': skipCurrentSegment(); break;
       case '+':
-      case '=': applyVolume(el.video.volume + 0.1); break;
-      case '-': applyVolume(el.video.volume - 0.1); break;
+      case '=': nudgeVolume(VOLUME_STEP); break;
+      case '-': nudgeVolume(-VOLUME_STEP); break;
       case 'Escape':
       case 'Backspace':
       case 'BrowserBack': exitPlayer(); break;
@@ -2475,7 +2708,6 @@
     el.serverName = $('#server-name');
     el.searchInput = $('#search-input');
     el.mediaCount = $('#media-count');
-    el.clock = $('#clock');
     el.library = $('#library');
     el.libraryHeader = $('.library-header');
     el.mainNav = $('#main-nav');
@@ -2529,6 +2761,7 @@
     el.osdTitle = $('#osd-title');
     el.osdBadge = $('#osd-badge');
     el.progressWrap = $('#progress-container');
+    el.scrubPreview = $('#scrub-preview');
     el.progressFill = $('#progress-fill');
     el.progressBuffered = $('#progress-buffered');
     el.segmentMarkers = $('#segment-markers');
@@ -2537,19 +2770,19 @@
     el.totalTime = $('#total-time');
     el.btnSubtitles = $('#btn-subtitles');
     el.subtitleMenu = $('#subtitle-menu');
+    el.subtitleLabel = $('#subtitle-label');
     el.btnQuality = $('#btn-quality');
     el.qualityMenu = $('#quality-menu');
     el.qualityLabel = $('#quality-label');
-    el.btnAudioSync = $('#btn-audiosync');
-    el.audioSyncMenu = $('#audiosync-menu');
+    el.btnTiming = $('#btn-timing');
+    el.timingMenu = $('#timing-menu');
     el.optionsMenu = $('#options-menu');
     el.btnOptions = $('#btn-options');
-    el.syncLabel = $('#sync-label');
+    el.timingSummary = $('#timing-summary');
     el.btnMute = $('#btn-mute');
     el.volumeRange = $('#volume-range');
     el.btnSpeed = $('#btn-speed');
     el.btnAspect = $('#btn-aspect');
-    el.pauseIndicator = $('#pause-indicator');
     el.btnPrevEpisode = $('#btn-prev-episode');
     el.btnNextEpisode = $('#btn-next-episode');
     el.skipSegment = $('#skip-segment');
@@ -2559,6 +2792,7 @@
     el.upNextPlay = $('#up-next-play');
     el.upNextCancel = $('#up-next-cancel');
     el.upNextCountdown = $('#up-next-countdown');
+    el.upNextStill = $('#up-next-still');
     el.toast = $('#toast');
     cardTemplate = $('#card-template');
   }
@@ -2633,14 +2867,8 @@
     el.btnPrevEpisode.addEventListener('click', () => playSibling('prev_id'));
     el.btnNextEpisode.addEventListener('click', () => playSibling('next_id'));
     el.skipSegment.addEventListener('click', skipCurrentSegment);
-    el.upNextCancel.addEventListener('click', () => {
-      cancelUpNext();
-      exitPlayer();
-    });
-    el.upNextPlay.addEventListener('click', () => {
-      const nextId = state.playback && state.playback.next_id;
-      if (nextId) playUpNext(nextId);
-    });
+    el.upNextCancel.addEventListener('click', dismissUpNext);
+    el.upNextPlay.addEventListener('click', () => playUpNext());
     $('#player-fs-btn').addEventListener('click', toggleFullscreen);
     $('#btn-play-pause').addEventListener('click', togglePlayPause);
     $('#btn-rewind').addEventListener('click', () => seekBy(-SEEK_SMALL));
@@ -2673,13 +2901,19 @@
       if (item) selectQuality(item.dataset.qualityId);
     });
 
-    el.btnAudioSync.addEventListener('click', event => {
+    el.btnTiming.addEventListener('click', event => {
       event.stopPropagation();
-      toggleAudioSyncMenu();
+      toggleTimingMenu();
     });
-    el.audioSyncMenu.addEventListener('click', event => {
-      const item = event.target.closest('.popup-item');
-      if (item) selectAudioOffset(parseInt(item.dataset.syncValue, 10));
+    el.timingMenu.addEventListener('click', event => {
+      const row = event.target.closest('.timing-row');
+      if (!row) return;
+      const kind = row.dataset.track;
+      const button = event.target.closest('button');
+      if (!button) return;
+      if (button.classList.contains('timing-step')) cycleTimingStep(kind);
+      else if (button.classList.contains('timing-reset')) setTiming(kind, 0);
+      else if (button.dataset.delta) nudgeTiming(kind, parseInt(button.dataset.delta, 10));
     });
 
     $('#player-touch-area').addEventListener('click', () => {
@@ -2725,10 +2959,22 @@
       const duration = displayDuration();
       state.scrubbing = false;
       if (duration) seekTo((el.seekRange.value / 1000) * duration);
+      hideScrubPreview();
       showOSD();
     };
     el.seekRange.addEventListener('change', commitScrub);
     el.seekRange.addEventListener('pointerup', commitScrub);
+
+    // Where the cursor is pointing, so a click can be aimed before it is made.
+    el.progressWrap.addEventListener('mousemove', event => {
+      showScrubPreview(event.clientX);
+    });
+    el.progressWrap.addEventListener('mouseleave', () => {
+      if (!state.scrubbing) hideScrubPreview();
+    });
+    el.seekRange.addEventListener('pointermove', event => {
+      if (state.scrubbing) showScrubPreview(event.clientX);
+    });
 
     video.addEventListener('timeupdate', () => {
       updateOSD();
@@ -2744,14 +2990,14 @@
     video.addEventListener('play', () => {
       $('#icon-play').classList.add('hidden');
       $('#icon-pause').classList.remove('hidden');
-      el.pauseIndicator.classList.add('hidden');
       acquireWakeLock();
     });
 
     video.addEventListener('pause', () => {
       $('#icon-play').classList.remove('hidden');
       $('#icon-pause').classList.add('hidden');
-      if (state.playback) el.pauseIndicator.classList.remove('hidden');
+      // The centred transport already shows the state, so keep it on screen.
+      if (state.playback) showOSD(true);
       saveProgress(true);
       releaseWakeLock();
     });
@@ -2774,10 +3020,13 @@
       };
 
       const following = nextId && state.videos.find(item => item.id === nextId);
-      if (following) {
-        showUpNext(following);
+      // The card has normally been on screen through the credits already, so
+      // reaching the end is the cue to go, not to start a countdown.
+      if (following && !state.upNextDismissed) {
+        playUpNext(nextId);
         return;
       }
+      cancelUpNext();
       showToast('Playback finished', 2500);
       exitPlayer();
     });
@@ -2805,17 +3054,6 @@
     });
   }
 
-  function startClock() {
-    if (!el.clock) return;
-    const tick = () => {
-      el.clock.textContent = new Date().toLocaleTimeString(undefined, {
-        hour: 'numeric', minute: '2-digit'
-      });
-    };
-    tick();
-    setInterval(tick, 20000);
-  }
-
   // Flexbox gap landed well after grid gap; older TV browsers need margins.
   function detectFlexGap() {
     const probe = document.createElement('div');
@@ -2837,7 +3075,6 @@
     setupThumbObserver();
     bindLibraryEvents();
     bindPlayerEvents();
-    startClock();
     window.addEventListener('scroll', syncTopbar, { passive: true });
 
     window.addEventListener('error', event => {
@@ -2852,6 +3089,9 @@
       if (savedQuality) state.quality = savedQuality;
       const savedOffset = parseInt(localStorage.getItem('litejelly_audio_offset'), 10);
       if (!isNaN(savedOffset)) state.audioOffset = savedOffset;
+      state.appliedAudioOffset = state.audioOffset;
+      const savedSubs = parseInt(localStorage.getItem('litejelly_subtitle_offset'), 10);
+      if (!isNaN(savedSubs)) state.subtitleOffset = savedSubs;
     } catch (err) { /* storage unavailable */ }
     applyVolume(storedVolume);
     updateQualityLabel();

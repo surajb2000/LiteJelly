@@ -18,9 +18,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly.providers import (
-    MetadataCache, MetadataProviders, SeriesInfo, episode_key, parse_anilist,
-    parse_aniskip, parse_introdb, parse_omdb, parse_tmdb, parse_tvmaze, redact,
-    strip_html,
+    MetadataCache, MetadataProviders, SeriesInfo, artwork_digest, episode_key,
+    parse_anilist, parse_aniskip, parse_introdb, parse_omdb, parse_tmdb,
+    parse_tvmaze, redact, strip_html,
 )
 
 logging.getLogger("litejelly.providers").setLevel(logging.CRITICAL)
@@ -714,3 +714,97 @@ class IntroDbLookupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArtworkPruneTests(unittest.TestCase):
+    """Pruning deletes files, so the guards matter more than the happy path."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.providers = MetadataProviders(self.root)
+        self.providers.artwork_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _image(self, url):
+        path = self.providers.artwork_dir / f"{artwork_digest(url)}.jpg"
+        path.write_bytes(b"x")
+        return path
+
+    def _record(self, data):
+        self.providers.cache.put("tvmaze", "show", data)
+
+    def test_keeps_referenced_and_removes_orphans(self):
+        kept = self._image("https://example.test/poster.jpg")
+        orphan = self._image("https://example.test/gone.jpg")
+        self._record({"poster_url": "https://example.test/poster.jpg"})
+
+        self.assertEqual(self.providers.prune_artwork(), 1)
+        self.assertTrue(kept.exists())
+        self.assertFalse(orphan.exists())
+
+    def test_finds_urls_nested_in_lists(self):
+        """Cast portraits live several levels down; a field-by-field sweep
+        would have missed them and deleted every face."""
+        face = self._image("https://example.test/actor.jpg")
+        self._record({"cast": [{"name": "A", "image": "https://example.test/actor.jpg"}]})
+
+        self.assertEqual(self.providers.prune_artwork(), 0)
+        self.assertTrue(face.exists())
+
+    def test_does_nothing_when_metadata_was_never_written(self):
+        """No cache directory means nothing has been looked up yet, not that
+        every picture is an orphan."""
+        stray = self._image("https://example.test/poster.jpg")
+        self.assertFalse(self.providers.cache.root.exists())
+
+        self.assertEqual(self.providers.prune_artwork(), 0)
+        self.assertTrue(stray.exists())
+
+    def test_unreadable_records_stop_the_prune(self):
+        """A disk that cannot be read is not a cache full of orphans."""
+        stray = self._image("https://example.test/poster.jpg")
+        self._record({"poster_url": "https://example.test/poster.jpg"})
+        for path in self.providers.cache.root.rglob("*.json"):
+            path.write_text("{not json", encoding="utf-8")
+
+        self.assertEqual(self.providers.prune_artwork(), 0)
+        self.assertTrue(stray.exists())
+
+    def test_cleared_cache_removes_everything(self):
+        self._image("https://example.test/a.jpg")
+        self._image("https://example.test/b.jpg")
+        self._record({"poster_url": "https://example.test/a.jpg"})
+        self.providers.cache.clear()
+
+        self.assertEqual(self.providers.prune_artwork(), 2)
+
+    def test_leaves_files_it_did_not_name(self):
+        """Only sha1-named files are ours; anything else is someone's data."""
+        mine = self.providers.artwork_dir / "0123456789abcdef0123.jpg"
+        mine.write_bytes(b"x")
+        theirs = self.providers.artwork_dir / "holiday-photo.jpg"
+        theirs.write_bytes(b"x")
+        notes = self.providers.artwork_dir / "notes.txt"
+        notes.write_bytes(b"x")
+        self._record({"poster_url": "https://example.test/other.jpg"})
+
+        self.assertEqual(self.providers.prune_artwork(), 1)
+        self.assertFalse(mine.exists())
+        self.assertTrue(theirs.exists())
+        self.assertTrue(notes.exists())
+
+    def test_expired_record_still_protects_its_artwork(self):
+        """get() refuses a stale record, but the file is still on disk and the
+        poster is still on screen, so it must survive."""
+        kept = self._image("https://example.test/poster.jpg")
+        self._record({"poster_url": "https://example.test/poster.jpg"})
+        for path in self.providers.cache.root.rglob("*.json"):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["fetched_at"] = 0
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+        self.assertEqual(self.providers.prune_artwork(), 0)
+        self.assertTrue(kept.exists())
