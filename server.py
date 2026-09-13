@@ -12,9 +12,11 @@ import atexit
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 from litejelly import __version__
+from litejelly import auth
 from litejelly import logs as log_setup
 from litejelly.config import load_config
 from litejelly.web import Application, create_server, get_local_ip
@@ -59,8 +61,50 @@ def parse_args(argv=None):
                         help="Media directory, for first run only (repeatable)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Log debug detail for this run")
+    parser.add_argument("--reset-admin", action="store_true",
+                        help="Set the admin username and password, then exit")
     parser.add_argument("--version", action="version", version=f"LiteJelly {__version__}")
     return parser.parse_args(argv)
+
+
+def reset_admin(app_dir: Path) -> int:
+    """Recovery path for a forgotten password, run on the server itself."""
+    import getpass
+
+    existing = auth.load_credentials(app_dir)
+    if existing is not None:
+        print(f"Replacing the existing admin account '{existing.username}'.")
+
+    try:
+        username = input("Username: ").strip()
+        password = getpass.getpass("Password: ")
+        confirm = getpass.getpass("Confirm password: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return 1
+
+    if password != confirm:
+        print("The two passwords do not match.")
+        return 1
+
+    problems = auth.check_username(username) + auth.check_password_strength(password)
+    if problems:
+        for problem in problems:
+            print(problem)
+        return 1
+
+    try:
+        auth.save_credentials(app_dir, auth.Credentials(
+            username=username,
+            password_hash=auth.hash_password(password),
+            updated_at=time.time(),
+        ))
+    except OSError as exc:
+        print(f"Could not save the account: {exc}")
+        return 1
+
+    print(f"Admin account set to '{username}'.")
+    return 0
 
 
 def configure_logging(app_dir: Path, config=None, verbose: bool = False) -> list[str]:
@@ -102,8 +146,17 @@ def print_banner(config, app: Application, video_count: int) -> None:
             "No media folders yet. Open the admin page to add one:",
             f"  {admin_url}",
             "",
-            "The library stays empty until you do. The admin page is reachable",
-            "only from this device unless you set an admin token on it.",
+            "The library stays empty until you do.",
+        ]
+
+    if app.credentials is None:
+        lines += [
+            "",
+            "No admin account yet. Open the admin page on THIS machine to",
+            "choose a username and password:",
+            f"  {admin_url}",
+            "",
+            "Until then the settings cannot be changed from anywhere.",
         ]
 
     if not tools.available:
@@ -120,11 +173,17 @@ def print_banner(config, app: Application, video_count: int) -> None:
     for line in lines:
         print(f" {line}")
     print("=" * width)
+    # stdout is block-buffered when it is not a terminal, and this banner
+    # carries the setup URL, so it must not sit in a buffer.
+    sys.stdout.flush()
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
     app_dir = Path(__file__).resolve().parent
+
+    if args.reset_admin:
+        return reset_admin(app_dir)
 
     # Log to the console first so config problems are visible, then reconfigure
     # with the settings that were just read.

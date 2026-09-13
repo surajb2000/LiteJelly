@@ -11,9 +11,63 @@
 <header class="bar">
   <div class="bar-inner">
     <h1>LiteJelly Settings</h1>
-    <a class="link" href="/">Back to library</a>
+    <div class="bar-actions">
+      <span id="who" class="who" hidden></span>
+      <button type="button" class="btn" id="sign-out" hidden>Sign out</button>
+      <a class="link" href="/">Back to library</a>
+    </div>
   </div>
 </header>
+
+<div id="gate" class="wrap" hidden>
+  <section class="card gate-card">
+    <form id="setup-form" hidden>
+      <h2>Create the admin account</h2>
+      <p class="hint">
+        Choose the username and password used to reach these settings. Until
+        this is done the library works, but nothing here can be changed.
+      </p>
+      <div class="field">
+        <label for="setup-username">Username</label>
+        <input type="text" id="setup-username" autocomplete="username" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="setup-password">Password</label>
+        <input type="password" id="setup-password" autocomplete="new-password">
+        <p class="hint" id="setup-rule">At least 8 characters.</p>
+      </div>
+      <div class="field">
+        <label for="setup-confirm">Confirm password</label>
+        <input type="password" id="setup-confirm" autocomplete="new-password">
+      </div>
+      <button type="submit" class="btn primary">Create account</button>
+      <p id="setup-error" class="gate-error" role="alert" hidden></p>
+    </form>
+
+    <div id="setup-remote" hidden>
+      <h2>Finish setup on the server</h2>
+      <p class="hint">
+        No admin account exists yet. The first one has to be created on the
+        machine running LiteJelly, so that nobody else on the network can claim
+        it first. Open this page there and come back.
+      </p>
+    </div>
+
+    <form id="login-form" hidden>
+      <h2>Sign in</h2>
+      <div class="field">
+        <label for="login-username">Username</label>
+        <input type="text" id="login-username" autocomplete="username" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="login-password">Password</label>
+        <input type="password" id="login-password" autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn primary">Sign in</button>
+      <p id="login-error" class="gate-error" role="alert" hidden></p>
+    </form>
+  </section>
+</div>
 
 <main id="main" class="wrap" hidden>
 
@@ -116,25 +170,35 @@
       </section>
 
       <section class="card">
-        <h2>Remote access to this page</h2>
+        <h2>Admin account</h2>
         <p class="hint">
-          Settings are reachable only from the machine running LiteJelly. Set a
-          token to open this page from another device. The library itself is
-          always available on the network without one.
+          These settings are reachable from any device on the network, so they
+          are protected by this account rather than by where you are.
         </p>
-        <div class="field">
-          <label for="admin_token">Admin token</label>
-          <input type="text" id="admin_token" name="admin_token" spellcheck="false"
-                 placeholder="Empty: this device only" autocomplete="off">
-          <p class="hint">At least 8 characters, no spaces.</p>
-        </div>
-        <div class="actions">
-          <button type="button" class="btn" id="gen-token">Generate token</button>
-        </div>
-        <div class="field" id="remote-url-wrap" hidden>
-          <label for="remote-url">Open this on another device</label>
-          <input type="text" id="remote-url" readonly spellcheck="false">
-          <p class="hint">Save first. Treat this link like a password.</p>
+        <!-- Not a <form>: this panel already sits inside one, and nesting
+             forms makes the browser drop the inner element. -->
+        <div id="account-fields">
+          <div class="field">
+            <label for="acct-username">Username</label>
+            <input type="text" id="acct-username" autocomplete="username" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="acct-current">Current password</label>
+            <input type="password" id="acct-current" autocomplete="current-password">
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="acct-new">New password</label>
+              <input type="password" id="acct-new" autocomplete="new-password">
+            </div>
+            <div class="field">
+              <label for="acct-confirm">Confirm new password</label>
+              <input type="password" id="acct-confirm" autocomplete="new-password">
+            </div>
+          </div>
+          <button type="button" class="btn" id="acct-save">Update account</button>
+          <span id="acct-status" class="save-status" role="status"></span>
+          <p class="hint">Changing this signs out every other device.</p>
         </div>
       </section>
 
@@ -313,7 +377,7 @@
 
 <div id="denied" class="wrap" hidden>
   <section class="card">
-    <h2>Not available from this device</h2>
+    <h2>Not available</h2>
     <p id="denied-message"></p>
   </section>
 </div>

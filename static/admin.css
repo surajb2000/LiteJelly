@@ -48,6 +48,33 @@ h2 { font-size: 15px; margin: 0 0 14px; font-weight: 600; letter-spacing: .02em;
 .link { color: var(--accent); text-decoration: none; font-size: 14px; }
 .link:hover { text-decoration: underline; }
 
+.bar-actions {
+  display: flex;
+  align-items: center;
+}
+.bar-actions > * { margin-left: 14px; }
+
+.who {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.gate-card {
+  max-width: 460px;
+  margin: 40px auto 0;
+}
+.gate-card h2 { margin-bottom: 16px; }
+.gate-card .btn { width: 100%; margin-top: 4px; }
+
+.gate-error {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  color: #ffd9d9;
+  font-size: 14px;
+}
+
 .wrap { max-width: 940px; margin: 0 auto; padding: 20px; }
 
 .card {

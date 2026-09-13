@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import hmac
 import http.server
 import json
 import logging
@@ -13,12 +14,14 @@ import socketserver
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 from email.utils import formatdate
 from http import HTTPStatus
 from pathlib import Path
 
 from . import admin as admin_auth
+from . import auth as admin_accounts
 from . import logs as log_setup
 from . import settings as user_settings
 from .config import load_config
@@ -147,6 +150,10 @@ class Application:
                                            config.thumbnail_workers)
         self.static_dir = config.static_dir.resolve()
 
+        self.sessions = admin_accounts.SessionStore()
+        self.throttle = admin_accounts.LoginThrottle()
+        self.credentials = admin_accounts.load_credentials(config.app_dir)
+
         self.routes = {
             ("GET", "/"): Routes.index,
             ("GET", "/index.html"): Routes.index,
@@ -164,6 +171,11 @@ class Application:
             ("POST", "/api/progress"): Routes.progress_post,
             ("GET", "/api/admin/settings"): Routes.admin_settings_get,
             ("POST", "/api/admin/settings"): Routes.admin_settings_post,
+            ("GET", "/api/admin/session"): Routes.admin_session,
+            ("POST", "/api/admin/setup"): Routes.admin_setup,
+            ("POST", "/api/admin/login"): Routes.admin_login,
+            ("POST", "/api/admin/logout"): Routes.admin_logout,
+            ("POST", "/api/admin/password"): Routes.admin_password,
             ("GET", "/api/admin/browse"): Routes.admin_browse,
             ("GET", "/api/admin/logs"): Routes.admin_logs,
             ("POST", "/api/admin/logs/clear"): Routes.admin_logs_clear,
@@ -265,9 +277,176 @@ class Routes:
     # -- admin ------------------------------------------------------------
     @staticmethod
     def admin_page(h, query):
-        if not h.require_admin(query):
-            return
+        # The page itself is public; it decides what to show from the session
+        # state, and every endpoint behind it is guarded individually.
         h.serve_static_file(h.app.static_dir / "admin.html")
+
+    @staticmethod
+    def admin_session(h, query):
+        """What the admin page should show: setup, login, or the settings."""
+        app = h.app
+        client = h.client_address[0] if h.client_address else ""
+        if app.credentials is None:
+            h.send_json({
+                "state": "setup",
+                "can_set_up_here": admin_auth.is_loopback(client),
+                "min_password_length": admin_accounts.MIN_PASSWORD_LENGTH,
+            })
+            return
+
+        username = app.sessions.validate(admin_auth.session_token(h.headers))
+        if username is None:
+            locked = app.throttle.locked_for(client)
+            h.send_json({
+                "state": "login",
+                "locked_seconds": int(locked),
+            })
+            return
+        h.send_json({"state": "ready", "username": username})
+
+    @staticmethod
+    def admin_setup(h, query):
+        """Create the first admin account. Only from the machine itself.
+
+        Allowing this over the network would be a land grab: whoever reached a
+        freshly started server first would own it.
+        """
+        app = h.app
+        client = h.client_address[0] if h.client_address else ""
+        if app.credentials is not None:
+            h.send_api_error(HTTPStatus.CONFLICT, "An admin account already exists.")
+            return
+        if not admin_auth.is_loopback(client):
+            log.warning("Refused remote admin setup from %s", client)
+            h.send_api_error(
+                HTTPStatus.FORBIDDEN,
+                "The first admin account must be created on the machine "
+                "running LiteJelly.")
+            return
+        if not admin_auth.same_origin(h.headers, h.headers.get("Host", "")):
+            h.send_api_error(HTTPStatus.FORBIDDEN, "Cross-site request refused.")
+            return
+
+        body = h.read_json_body()
+        if body is None:
+            return
+        username = str(body.get("username") or "").strip()
+        password = str(body.get("password") or "")
+
+        errors = admin_accounts.check_username(username)
+        errors += admin_accounts.check_password_strength(password)
+        if errors:
+            h.send_json({"ok": False, "errors": errors}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        credentials = admin_accounts.Credentials(
+            username=username,
+            password_hash=admin_accounts.hash_password(password),
+            updated_at=time.time(),
+        )
+        try:
+            admin_accounts.save_credentials(h.app.config.app_dir, credentials)
+        except OSError as exc:
+            h.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR,
+                             f"Could not save the account: {exc}")
+            return
+
+        app.credentials = credentials
+        log.info("Admin account created for %s", username)
+        h.start_session(username)
+
+    @staticmethod
+    def admin_login(h, query):
+        app = h.app
+        client = h.client_address[0] if h.client_address else ""
+        if app.credentials is None:
+            h.send_api_error(HTTPStatus.CONFLICT, "No admin account exists yet.")
+            return
+        if not admin_auth.same_origin(h.headers, h.headers.get("Host", "")):
+            h.send_api_error(HTTPStatus.FORBIDDEN, "Cross-site request refused.")
+            return
+
+        locked = app.throttle.locked_for(client)
+        if locked > 0:
+            h.send_json(
+                {"ok": False, "errors": [f"Too many attempts. Try again in "
+                                         f"{int(locked // 60) + 1} minutes."]},
+                status=HTTPStatus.TOO_MANY_REQUESTS)
+            return
+
+        body = h.read_json_body()
+        if body is None:
+            return
+        username = str(body.get("username") or "").strip()
+        password = str(body.get("password") or "")
+
+        # Compare both, and always run the hash, so a wrong username is not
+        # measurably faster to reject than a wrong password.
+        name_ok = hmac.compare_digest(username, app.credentials.username)
+        password_ok = admin_accounts.verify_password(password,
+                                                     app.credentials.password_hash)
+        if not (name_ok and password_ok):
+            app.throttle.record_failure(client)
+            remaining = app.throttle.remaining_attempts(client)
+            log.warning("Failed admin sign-in from %s (%d attempts left)",
+                        client, remaining)
+            h.send_json({"ok": False, "errors": ["Incorrect username or password."],
+                         "remaining_attempts": remaining},
+                        status=HTTPStatus.UNAUTHORIZED)
+            return
+
+        app.throttle.record_success(client)
+        log.info("Admin signed in from %s", client)
+        h.start_session(username)
+
+    @staticmethod
+    def admin_logout(h, query):
+        token = admin_auth.session_token(h.headers)
+        h.app.sessions.revoke(token)
+        h.send_json({"ok": True}, extra_headers={"Set-Cookie": admin_auth.clear_cookie()})
+
+    @staticmethod
+    def admin_password(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        app = h.app
+        body = h.read_json_body()
+        if body is None:
+            return
+
+        current = str(body.get("current_password") or "")
+        new_password = str(body.get("new_password") or "")
+        username = str(body.get("username") or app.credentials.username).strip()
+
+        if not admin_accounts.verify_password(current, app.credentials.password_hash):
+            log.warning("Admin password change refused: current password wrong")
+            h.send_json({"ok": False, "errors": ["Current password is incorrect."]},
+                        status=HTTPStatus.UNAUTHORIZED)
+            return
+
+        errors = admin_accounts.check_username(username)
+        errors += admin_accounts.check_password_strength(new_password)
+        if errors:
+            h.send_json({"ok": False, "errors": errors}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        credentials = admin_accounts.Credentials(
+            username=username,
+            password_hash=admin_accounts.hash_password(new_password),
+            updated_at=time.time(),
+        )
+        try:
+            admin_accounts.save_credentials(app.config.app_dir, credentials)
+        except OSError as exc:
+            h.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR,
+                             f"Could not save the account: {exc}")
+            return
+
+        app.credentials = credentials
+        # Every other session was authorised by the old password.
+        app.sessions.revoke_all()
+        log.info("Admin password changed; all sessions signed out")
+        h.start_session(username)
 
     @staticmethod
     def admin_settings_get(h, query):
@@ -804,9 +983,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if not getattr(self, "_head_only", False):
             self._write(payload)
 
-    def send_json(self, data, status=HTTPStatus.OK):
+    def send_json(self, data, status=HTTPStatus.OK, extra_headers: dict | None = None):
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_bytes(payload, "application/json; charset=utf-8", status)
+        self.send_bytes(payload, "application/json; charset=utf-8", status,
+                        extra=extra_headers)
 
     def send_api_error(self, status, message: str):
         self.send_json({"error": message, "status": int(status)}, status=status)
@@ -835,16 +1015,26 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     # -- admin guard ------------------------------------------------------
     def require_admin(self, query, write: bool = False) -> bool:
         """Gate every admin route. Sends the error response when denied."""
-        client = self.client_address[0] if self.client_address else ""
-        allowed, reason = admin_auth.authorize(self.app.config, client, self.headers, query)
-        if not allowed:
-            log.warning("Denied admin request from %s: %s", client, reason)
-            self.send_api_error(HTTPStatus.FORBIDDEN, reason)
+        app = self.app
+        if app.credentials is None:
+            self.send_api_error(HTTPStatus.UNAUTHORIZED,
+                                "Admin setup has not been completed.")
+            return False
+
+        username = app.sessions.validate(admin_auth.session_token(self.headers))
+        if username is None:
+            self.send_api_error(HTTPStatus.UNAUTHORIZED, "Sign in to continue.")
             return False
         if write and not admin_auth.same_origin(self.headers, self.headers.get("Host", "")):
             self.send_api_error(HTTPStatus.FORBIDDEN, "Cross-site admin request refused.")
             return False
         return True
+
+    def start_session(self, username: str) -> None:
+        token = self.app.sessions.create(username)
+        cookie = admin_auth.build_cookie(token, int(self.app.sessions.lifetime))
+        self.send_json({"ok": True, "username": username},
+                       extra_headers={"Set-Cookie": cookie})
 
     def read_json_body(self):
         try:

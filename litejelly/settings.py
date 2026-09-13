@@ -229,15 +229,6 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
         else:
             clean["host"] = host
 
-    if "admin_token" in payload:
-        token = str(payload["admin_token"] or "").strip()
-        if token and len(token) < 8:
-            errors.append("admin_token must be at least 8 characters")
-        elif any(ch.isspace() for ch in token):
-            errors.append("admin_token cannot contain spaces")
-        else:
-            clean["admin_token"] = token
-
     if "log_verbosity" in payload:
         verbosity = str(payload["log_verbosity"] or "").strip().lower()
         if verbosity not in VERBOSITY:

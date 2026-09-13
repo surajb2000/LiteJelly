@@ -60,7 +60,6 @@ class Config:
     stream_buffer_mb: int = 8
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
-    admin_token: str = ""
     log_verbosity: str = "info"
     log_to_file: bool = True
     log_to_console: bool = False
@@ -113,9 +112,6 @@ class Config:
             "stream_buffer_mb": self.stream_buffer_mb,
             "ffmpeg_path": self.ffmpeg_path,
             "ffprobe_path": self.ffprobe_path,
-            # Echoed so the page can show a ready-made remote URL. Safe here:
-            # the caller already passed the admin guard to see this at all.
-            "admin_token": self.admin_token,
             "log_verbosity": self.log_verbosity,
             "log_to_file": self.log_to_file,
             "log_to_console": self.log_to_console,
@@ -170,7 +166,9 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
     cfg.stream_buffer_mb = max(1, _coerce_int(raw.get("stream_buffer_mb"), 8))
     cfg.ffmpeg_path = str(raw.get("ffmpeg_path") or "")
     cfg.ffprobe_path = str(raw.get("ffprobe_path") or "")
-    cfg.admin_token = str(raw.get("admin_token") or "")
+    if raw.get("admin_token"):
+        warnings.append("'admin_token' is no longer used; the admin page now "
+                        "has a username and password. You can remove it.")
     cfg.log_verbosity = str(raw.get("log_verbosity") or "info").lower()
     cfg.log_to_file = bool(raw.get("log_to_file", True))
     cfg.log_to_console = bool(raw.get("log_to_console", False))

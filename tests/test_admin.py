@@ -34,11 +34,6 @@ class _Headers:
         return self._values.get(name.lower().replace("_", "-"), default)
 
 
-class _Config:
-    def __init__(self, admin_token=""):
-        self.admin_token = admin_token
-
-
 class LoopbackTests(unittest.TestCase):
     def test_ipv4_loopback(self):
         self.assertTrue(admin.is_loopback("127.0.0.1"))
@@ -60,50 +55,26 @@ class LoopbackTests(unittest.TestCase):
             self.assertFalse(admin.is_loopback(address), address)
 
 
-class AdminAuthorizationTests(unittest.TestCase):
-    """The admin API can change which directories are served, so a remote
-    caller must never reach it by default."""
+class CookieTests(unittest.TestCase):
+    def test_reads_the_session_cookie(self):
+        headers = _Headers(Cookie="a=1; litejelly_admin=abc123; b=2")
+        self.assertEqual(admin.session_token(headers), "abc123")
 
-    def test_loopback_allowed_without_token(self):
-        allowed, _ = admin.authorize(_Config(), "127.0.0.1", _Headers(), {})
-        self.assertTrue(allowed)
+    def test_missing_cookie_is_empty(self):
+        self.assertEqual(admin.session_token(_Headers()), "")
+        self.assertEqual(admin.session_token(_Headers(Cookie="other=1")), "")
 
-    def test_remote_denied_without_token(self):
-        allowed, reason = admin.authorize(_Config(), "192.168.1.50", _Headers(), {})
-        self.assertFalse(allowed)
-        self.assertIn("token", reason)
+    def test_malformed_cookie_does_not_raise(self):
+        self.assertEqual(admin.session_token(_Headers(Cookie="=;;;")), "")
 
-    def test_remote_allowed_with_matching_header_token(self):
-        allowed, _ = admin.authorize(
-            _Config("s3cret"), "192.168.1.50",
-            _Headers(**{"X-Admin-Token": "s3cret"}), {})
-        self.assertTrue(allowed)
+    def test_cookie_is_http_only_and_same_site(self):
+        cookie = admin.build_cookie("tok", 3600)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Max-Age=3600", cookie)
 
-    def test_remote_allowed_with_matching_query_token(self):
-        allowed, _ = admin.authorize(
-            _Config("s3cret"), "192.168.1.50", _Headers(), {"token": ["s3cret"]})
-        self.assertTrue(allowed)
-
-    def test_remote_denied_with_wrong_token(self):
-        allowed, reason = admin.authorize(
-            _Config("s3cret"), "192.168.1.50",
-            _Headers(**{"X-Admin-Token": "guess"}), {})
-        self.assertFalse(allowed)
-        self.assertIn("token", reason)
-
-    def test_remote_denied_with_no_token_presented(self):
-        allowed, _ = admin.authorize(_Config("s3cret"), "192.168.1.50", _Headers(), {})
-        self.assertFalse(allowed)
-
-    def test_loopback_still_allowed_when_token_configured(self):
-        allowed, _ = admin.authorize(_Config("s3cret"), "127.0.0.1", _Headers(), {})
-        self.assertTrue(allowed)
-
-    def test_token_prefix_is_not_accepted(self):
-        allowed, _ = admin.authorize(
-            _Config("s3cret"), "192.168.1.50",
-            _Headers(**{"X-Admin-Token": "s3c"}), {})
-        self.assertFalse(allowed)
+    def test_clearing_expires_immediately(self):
+        self.assertIn("Max-Age=0", admin.clear_cookie())
 
 
 class CsrfTests(unittest.TestCase):
@@ -238,23 +209,10 @@ class SettingsValidationTests(unittest.TestCase):
         _, errors = settings.validate(["media_dirs"])
         self.assertTrue(errors)
 
-    def test_admin_token_minimum_length(self):
-        _, errors = settings.validate({"admin_token": "short"})
-        self.assertTrue(errors)
-
-    def test_admin_token_rejects_spaces(self):
-        _, errors = settings.validate({"admin_token": "has spaces here"})
-        self.assertTrue(errors)
-
-    def test_admin_token_accepted(self):
-        clean, errors = settings.validate({"admin_token": "a-long-enough-token"})
-        self.assertEqual(errors, [])
-        self.assertEqual(clean["admin_token"], "a-long-enough-token")
-
-    def test_admin_token_can_be_cleared(self):
-        clean, errors = settings.validate({"admin_token": ""})
-        self.assertEqual(errors, [])
-        self.assertEqual(clean["admin_token"], "")
+    def test_admin_token_is_no_longer_a_setting(self):
+        # Credentials live in their own file, never in settings.json.
+        clean, _ = settings.validate({"admin_token": "anything-at-all"})
+        self.assertNotIn("admin_token", clean)
 
 
 class RestartRequiredTests(unittest.TestCase):
@@ -423,7 +381,6 @@ class PublicConfigTests(unittest.TestCase):
         (self.root / "movies").mkdir()
         (self.root / "config.json").write_text(json.dumps({
             "media_dirs": [str(self.root / "movies")],
-            "admin_token": "s3cret",
             "ffmpeg_path": "",
         }), encoding="utf-8")
         self.config, _ = load_config(self.root)
@@ -434,19 +391,17 @@ class PublicConfigTests(unittest.TestCase):
     def test_public_dict_has_no_paths_or_secrets(self):
         public = self.config.to_public_dict()
         self.assertEqual(set(public), {"server_name", "version"})
-        blob = json.dumps(public)
-        self.assertNotIn("s3cret", blob)
-        self.assertNotIn(str(self.root), blob)
+        self.assertNotIn(str(self.root), json.dumps(public))
 
     def test_admin_dict_has_the_details(self):
         admin_view = self.config.to_admin_dict()
         self.assertIn("media_dirs", admin_view)
         self.assertIn("transcode", admin_view)
 
-    def test_admin_dict_echoes_the_token_for_the_remote_url(self):
-        # Only ever served behind require_admin, and the page needs it to show
-        # a working remote link.
-        self.assertEqual(self.config.to_admin_dict()["admin_token"], "s3cret")
+    def test_no_credentials_are_exposed_anywhere_in_config(self):
+        blob = json.dumps(self.config.to_admin_dict())
+        for field in ("password", "admin_token", "password_hash"):
+            self.assertNotIn(field, blob)
 
 
 class LibraryReconfigureTests(unittest.TestCase):

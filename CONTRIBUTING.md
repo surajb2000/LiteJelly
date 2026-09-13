@@ -57,8 +57,12 @@ This document outlines the architectural standards, code quality conventions, an
 ### 6. The Admin Trust Boundary
 - The library API is intentionally unauthenticated so any TV on the LAN can browse it. The admin API is **not**, and the two must never be blurred.
 - Anything that changes `media_dirs` changes which files the server will hand out. Treat every admin write as equivalent to granting filesystem access.
-- Guard every admin route with `RequestHandler.require_admin()`. It allows loopback callers, accepts a configured `admin_token` from remote ones, and requires a same-origin marker on writes.
-- `Config.to_public_dict()` feeds the unauthenticated `/api/config`. Never add filesystem paths, binary locations, tokens or bind addresses to it; those belong in `to_admin_dict()`.
+- Guard every admin route with `RequestHandler.require_admin()`. It requires a valid session and, on writes, a same-origin request.
+- Never store or log a password. `litejelly.auth` hashes with PBKDF2 and a per-password salt; compare with `hmac.compare_digest`, never `==`.
+- Verify the password once at sign-in and carry the result in a session. Hashing is deliberately slow, so doing it per request would make every page load expensive and turn the login endpoint into a CPU exhaustion vector.
+- First-account creation is loopback-only. Allowing it over the network makes ownership a race between the owner and anyone else who can reach the port.
+- Credentials live in `credentials.json`, never in `settings.json`, which is served to the admin page.
+- `Config.to_public_dict()` feeds the unauthenticated `/api/config`. Never add filesystem paths, binary locations, credentials or bind addresses to it; those belong in `to_admin_dict()`.
 - Validate admin input in `litejelly.settings.validate()`, not in the route. Unknown keys are ignored and enumerated values (content types, presets) are whitelisted rather than pattern-matched.
 - Persist user settings to `settings.json` beside `config.json`. Never write them into `.cache/`, which is disposable and safe to delete.
 

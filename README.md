@@ -85,13 +85,15 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 lucid-fermi/
 ├── config.json             # Server and transcoding configuration
 ├── settings.json           # Written by the admin page; overrides config.json (gitignored)
+├── credentials.json        # Admin username and password hash (gitignored)
 ├── server.py               # CLI entry point and server startup
 ├── ffmpeg.exe              # Optional portable FFmpeg binary
 ├── ffprobe.exe             # Optional portable FFprobe binary
 │
 ├── litejelly/              # Core Python package (Zero pip dependencies)
 │   ├── __init__.py         # Version info
-│   ├── admin.py            # Admin access control: loopback rule, token check, CSRF guard
+│   ├── admin.py            # Admin access control: session cookies, CSRF guard
+│   ├── auth.py             # Password hashing, credential storage, sessions, lockout
 │   ├── config.py           # Configuration loading, validation, and CLI overrides
 │   ├── ffmpeg.py           # Media probe, playback planner, quality ladders, transcode commands
 │   ├── library.py          # Media scanner, title cleanup, series grouping, SxxExx parser
@@ -116,10 +118,12 @@ lucid-fermi/
 ├── tests/                  # Automated test suite
 │   ├── test_litejelly.py   # Unit tests for containment, ranges, subtitles, and titles
 │   ├── test_admin.py       # Settings validation, admin access control, library rebuild
+│   ├── test_auth.py        # Password hashing, credential storage, sessions, lockout
 │   ├── test_avsync.py      # Regression tests for the seeking and A/V sync fixes
 │   ├── test_grouping.py    # Categories, series identity, episode ordering
 │   ├── test_http.py        # Live-server tests over a real socket
-│   └── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
+│   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
+│   └── test_thumbnails.py  # Background generation, caching, failure handling
 │
 ├── logs/                   # Rotating log files (gitignored)
 │
@@ -179,8 +183,7 @@ known before the server can start listening:
 ```json
 {
     "port": 8000,
-    "host": "0.0.0.0",
-    "admin_token": ""
+    "host": "0.0.0.0"
 }
 ```
 
@@ -239,30 +242,37 @@ rare ones:
 | :--- | :--- |
 | **Library** | Media folders and their content types, scan interval, manual rescan |
 | **Playback** | HEVC direct play, default transcode quality |
-| **General** | Server name, port and bind address, remote access, status |
+| **General** | Server name, port and bind address, admin account, status |
 | **Logs** | Detail level and a viewer for the recent log |
 | **Advanced** | x264 preset and CRF, bitrates, concurrency, stream buffer, log rotation, ffmpeg paths |
 
 Everything except `port` and `host` applies immediately; those two are saved
 and reported as needing a restart.
 
-### Reaching it from another device
+### Signing in
 
-By default the admin page answers only on the machine running LiteJelly, so
-opening `http://192.168.1.50:8000/admin` from your TV returns 403. To allow it:
+The first time you open `/admin`, LiteJelly asks you to create an admin
+username and password. **This can only be done on the machine running the
+server.** Otherwise whoever reached a freshly started server first would claim
+it, which is a race, not a security model.
 
-1. Open `/admin` on the server itself and go to **General → Remote access**.
-2. Press **Generate token** (or type your own, 8+ characters, no spaces) and **Save settings**.
-3. Use the link the page then shows you:
-   `http://<server-ip>:<port>/admin?token=<your-token>`
+After that the settings are reachable from any device on the network by
+signing in — a TV, a laptop, your phone. The library itself needs no sign-in
+and stays open to everyone on the LAN, as before.
 
-The token can also be set as `admin_token` in `config.json` if you have no
-desktop access to the machine. Treat that URL like a password: anyone with it
-can point the server at any folder on the host. The library itself stays
-available to the whole network without a token.
+Forgot the password? Run `python server.py --reset-admin` on the server to set
+a new one.
 
-**Why the restriction.** The admin API decides which directories the server
-hands files out of, so a request that can change it can make the server share
+**How it is protected.** Passwords are stored as a salted PBKDF2-SHA256 hash
+in `credentials.json`, never in plain text, and that file is written
+owner-readable only. Signing in issues an `HttpOnly`, `SameSite=Strict`
+session cookie so the slow hash runs once rather than on every request. Eight
+failed attempts lock an address out for fifteen minutes, which matters because
+the hash is deliberately expensive: unlimited guessing would also be a way to
+burn the server's CPU. Changing the password signs out every other device.
+
+**Why any of this.** The admin API decides which directories the server hands
+files out of, so a request that can change it can make the server share
 anything on the machine. Writes additionally require a same-origin request, so
 another website cannot post to it from your browser.
 

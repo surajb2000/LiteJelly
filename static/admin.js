@@ -59,17 +59,9 @@
     node.appendChild(document.createTextNode(value == null ? '' : String(value)));
   }
 
-  // Token support: /admin?token=... keeps working for remote access without
-  // storing the token anywhere it could leak to the library page.
-  function adminToken() {
-    var match = /[?&]token=([^&]+)/.exec(window.location.search);
-    return match ? decodeURIComponent(match[1]) : '';
-  }
-
+  // Auth rides on an HttpOnly session cookie, so there is nothing to keep here.
   function request(method, url, body) {
-    var token = adminToken();
     var headers = { 'X-LiteJelly-Admin': '1' };
-    if (token) { headers['X-Admin-Token'] = token; }
     var options = { method: method, headers: headers, credentials: 'same-origin' };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -152,7 +144,6 @@
     $('allow_hevc_direct').checked = !!settings.allow_hevc_direct;
     $('ffmpeg_path').value = settings.ffmpeg_path || '';
     $('ffprobe_path').value = settings.ffprobe_path || '';
-    $('admin_token').value = settings.admin_token || '';
     $('log_verbosity').value = settings.log_verbosity || 'info';
     $('log_to_file').checked = settings.log_to_file !== false;
     $('log_to_console').checked = settings.log_to_console === true;
@@ -174,7 +165,6 @@
 
     state.port = settings.port || state.port;
     $('setup').hidden = dirs.length > 0;
-    updateRemoteUrl();
   }
 
   // The select only lists common rungs; keep a custom value from config.json.
@@ -194,36 +184,6 @@
     select.value = value;
   }
 
-  function updateRemoteUrl() {
-    var token = $('admin_token').value.trim();
-    var wrap = $('remote-url-wrap');
-    if (!token || !state.localIp) {
-      wrap.hidden = true;
-      return;
-    }
-    $('remote-url').value = 'http://' + state.localIp + ':' + state.port +
-                            '/admin?token=' + encodeURIComponent(token);
-    wrap.hidden = false;
-  }
-
-  function generateToken() {
-    var alphabet = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    var out = '';
-    var i;
-    if (window.crypto && window.crypto.getRandomValues) {
-      var bytes = new Uint8Array(24);
-      window.crypto.getRandomValues(bytes);
-      for (i = 0; i < bytes.length; i++) {
-        out += alphabet.charAt(bytes[i] % alphabet.length);
-      }
-    } else {
-      for (i = 0; i < 24; i++) {
-        out += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
-      }
-    }
-    return out;
-  }
-
   function number(id) {
     var value = $(id).value.trim();
     return value === '' ? null : Number(value);
@@ -237,7 +197,6 @@
       allow_hevc_direct: $('allow_hevc_direct').checked,
       ffmpeg_path: $('ffmpeg_path').value.trim(),
       ffprobe_path: $('ffprobe_path').value.trim(),
-      admin_token: $('admin_token').value.trim(),
       log_verbosity: $('log_verbosity').value,
       log_to_file: $('log_to_file').checked,
       log_to_console: $('log_to_console').checked,
@@ -313,9 +272,6 @@
   function loadLogs() {
     var url = '/api/admin/logs?lines=' + encodeURIComponent($('log-lines').value) +
               '&level=' + encodeURIComponent($('log-filter').value);
-    var token = adminToken();
-    if (token) { url += '&token=' + encodeURIComponent(token); }
-
     return request('GET', url).then(function (result) {
       if (!result.ok) { return; }
       renderLogs(result.data);
@@ -381,7 +337,7 @@
 
   function clearLogs() {
     if (!window.confirm('Clear the log file?')) { return; }
-    request('POST', '/api/admin/logs/clear' + tokenQuery(), {}).then(function () {
+    request('POST', '/api/admin/logs/clear', {}).then(function () {
       loadLogs();
     });
   }
@@ -400,8 +356,6 @@
   function loadPicker(path) {
     var url = '/api/admin/browse';
     if (path) { url += '?path=' + encodeURIComponent(path); }
-    var token = adminToken();
-    if (token) { url += (path ? '&' : '?') + 'token=' + encodeURIComponent(token); }
 
     request('GET', url).then(function (result) {
       if (!result.ok) {
@@ -438,14 +392,151 @@
     picker.target = null;
   }
 
+  // -- session -------------------------------------------------------------
+
+  function showGate(which) {
+    $('gate').hidden = false;
+    $('main').hidden = true;
+    $('who').hidden = true;
+    $('sign-out').hidden = true;
+    $('setup-form').hidden = which !== 'setup';
+    $('setup-remote').hidden = which !== 'setup-remote';
+    $('login-form').hidden = which !== 'login';
+    var focus = which === 'setup' ? 'setup-username'
+              : which === 'login' ? 'login-username' : null;
+    if (focus) { $(focus).focus(); }
+  }
+
+  function showSettings(username) {
+    $('gate').hidden = true;
+    $('main').hidden = false;
+    text($('who'), username || '');
+    $('who').hidden = !username;
+    $('sign-out').hidden = false;
+    $('acct-username').value = username || '';
+  }
+
+  function refreshSession() {
+    return request('GET', '/api/admin/session').then(function (result) {
+      var data = result.data || {};
+      if (data.state === 'setup') {
+        if (data.min_password_length) {
+          text($('setup-rule'), 'At least ' + data.min_password_length + ' characters.');
+        }
+        showGate(data.can_set_up_here ? 'setup' : 'setup-remote');
+        return false;
+      }
+      if (data.state === 'login') {
+        showGate('login');
+        if (data.locked_seconds > 0) {
+          gateError('login-error', 'Too many attempts. Try again in ' +
+                    (Math.floor(data.locked_seconds / 60) + 1) + ' minutes.');
+        }
+        return false;
+      }
+      showSettings(data.username);
+      return true;
+    });
+  }
+
+  function gateError(id, message) {
+    var node = $(id);
+    if (!message) { node.hidden = true; return; }
+    text(node, message);
+    node.hidden = false;
+  }
+
+  function submitSetup(event) {
+    event.preventDefault();
+    gateError('setup-error', '');
+    var password = $('setup-password').value;
+    if (password !== $('setup-confirm').value) {
+      gateError('setup-error', 'The two passwords do not match.');
+      return;
+    }
+    request('POST', '/api/admin/setup', {
+      username: $('setup-username').value,
+      password: password
+    }).then(function (result) {
+      if (!result.ok) {
+        gateError('setup-error', errorText(result, 'Could not create the account.'));
+        return;
+      }
+      $('setup-password').value = '';
+      $('setup-confirm').value = '';
+      showSettings(result.data.username);
+      load();
+    });
+  }
+
+  function submitLogin(event) {
+    event.preventDefault();
+    gateError('login-error', '');
+    request('POST', '/api/admin/login', {
+      username: $('login-username').value,
+      password: $('login-password').value
+    }).then(function (result) {
+      $('login-password').value = '';
+      if (!result.ok) {
+        var message = errorText(result, 'Sign in failed.');
+        if (result.data && result.data.remaining_attempts != null) {
+          message += ' ' + result.data.remaining_attempts + ' attempts left.';
+        }
+        gateError('login-error', message);
+        return;
+      }
+      showSettings(result.data.username);
+      load();
+    });
+  }
+
+  function signOut() {
+    request('POST', '/api/admin/logout', {}).then(function () {
+      window.location.reload();
+    });
+  }
+
+  function submitPassword(event) {
+    if (event) { event.preventDefault(); }
+    var node = $('acct-status');
+    node.className = 'save-status';
+    var next = $('acct-new').value;
+    if (next !== $('acct-confirm').value) {
+      node.className = 'save-status error';
+      text(node, 'The two passwords do not match.');
+      return;
+    }
+    request('POST', '/api/admin/password', {
+      username: $('acct-username').value,
+      current_password: $('acct-current').value,
+      new_password: next
+    }).then(function (result) {
+      $('acct-current').value = '';
+      $('acct-new').value = '';
+      $('acct-confirm').value = '';
+      if (!result.ok) {
+        node.className = 'save-status error';
+        text(node, errorText(result, 'Could not update the account.'));
+        return;
+      }
+      node.className = 'save-status ok';
+      text(node, 'Updated');
+      showSettings(result.data.username);
+    });
+  }
+
+  function errorText(result, fallback) {
+    var data = result.data || {};
+    if (data.errors && data.errors.length) { return data.errors.join(' '); }
+    return data.error || fallback;
+  }
+
   // -- load and save -------------------------------------------------------
 
   function load() {
-    return request('GET', API + tokenQuery()).then(function (result) {
-      if (result.status === 403) {
-        $('main').hidden = true;
-        $('denied').hidden = false;
-        text($('denied-message'), result.data.error || 'Access denied.');
+    return request('GET', API).then(function (result) {
+      if (result.status === 401 || result.status === 403) {
+        refreshSession();
         return;
       }
       if (!result.ok) {
@@ -456,17 +547,11 @@
       state.presets = result.data.presets || [];
       state.restartFields = result.data.restart_required_fields || [];
       state.localIp = result.data.local_ip || '';
-      $('main').hidden = false;
       $('denied').hidden = true;
       fillStatus(result.data);
       fillForm(result.data.settings || {});
       setStatus('');
     });
-  }
-
-  function tokenQuery() {
-    var token = adminToken();
-    return token ? '?token=' + encodeURIComponent(token) : '';
   }
 
   function save(event) {
@@ -475,8 +560,12 @@
     showBanner('');
     $('save').disabled = true;
 
-    request('POST', API + tokenQuery(), collect()).then(function (result) {
+    request('POST', API, collect()).then(function (result) {
       $('save').disabled = false;
+      if (result.status === 401) {
+        refreshSession();
+        return;
+      }
       if (!result.ok) {
         var errors = result.data.errors || [result.data.error || 'Save failed.'];
         showBanner(errors.join(' · '), 'error');
@@ -513,21 +602,16 @@
       }
       closePicker();
     });
-    $('gen-token').addEventListener('click', function () {
-      $('admin_token').value = generateToken();
-      updateRemoteUrl();
-    });
+    $('setup-form').addEventListener('submit', submitSetup);
+    $('login-form').addEventListener('submit', submitLogin);
+    $('acct-save').addEventListener('click', submitPassword);
+    $('sign-out').addEventListener('click', signOut);
     $('log-refresh').addEventListener('click', loadLogs);
     $('log-clear').addEventListener('click', clearLogs);
     $('log-filter').addEventListener('change', loadLogs);
     $('log-lines').addEventListener('change', loadLogs);
     $('log-auto').addEventListener('change', function () {
       setAutoRefresh(this.checked && !$('panel-logs').hidden);
-    });
-    $('admin_token').addEventListener('input', updateRemoteUrl);
-    $('port').addEventListener('input', function () {
-      state.port = Number($('port').value) || state.port;
-      updateRemoteUrl();
     });
     $('rescan').addEventListener('click', function () {
       var node = $('rescan-status');
@@ -545,7 +629,10 @@
     document.addEventListener('keydown', function (event) {
       if (event.key === 'Escape' && !$('picker').hidden) { closePicker(); }
     });
-    load();
+
+    refreshSession().then(function (signedIn) {
+      if (signedIn) { load(); }
+    });
   }
 
   if (document.readyState === 'loading') {

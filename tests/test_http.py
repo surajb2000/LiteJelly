@@ -18,11 +18,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from litejelly import auth
 from litejelly.config import load_config
 from litejelly.web import Application, create_server
 
-for name in ("litejelly", "litejelly.web", "litejelly.library", "litejelly.admin"):
+for name in ("litejelly", "litejelly.web", "litejelly.library", "litejelly.admin",
+             "litejelly.auth", "litejelly.thumbnails"):
     logging.getLogger(name).setLevel(logging.CRITICAL)
+
+ADMIN_USER = "testadmin"
+ADMIN_PASSWORD = "test-password-123"
+WRITE_HEADERS = {"Content-Type": "application/json", "X-LiteJelly-Admin": "1"}
 
 
 class LiveServerTests(unittest.TestCase):
@@ -47,6 +53,12 @@ class LiveServerTests(unittest.TestCase):
         cls.app = Application(config)
         cls.app.library.scan(force=True)
 
+        # A real account, hashed cheaply so the suite stays quick.
+        cls.app.credentials = auth.Credentials(
+            username=ADMIN_USER,
+            password_hash=auth.hash_password(ADMIN_PASSWORD, iterations=1000),
+        )
+
         cls.httpd = create_server(cls.app)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -59,8 +71,29 @@ class LiveServerTests(unittest.TestCase):
         cls.app.shutdown()
         cls._tmp.cleanup()
 
+    def setUp(self):
+        self.app.throttle.record_success("127.0.0.1")
+
     def connect(self):
         return http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+
+    def sign_in(self, conn, password=ADMIN_PASSWORD, username=ADMIN_USER):
+        """Returns the session cookie header value, or None when refused."""
+        conn.request("POST", "/api/admin/login",
+                     body=json.dumps({"username": username, "password": password}),
+                     headers=WRITE_HEADERS)
+        response = conn.getresponse()
+        raw = response.getheader("Set-Cookie")
+        response.read()
+        if response.status != 200 or not raw:
+            return None
+        return raw.split(";")[0]
+
+    def authed(self):
+        conn = self.connect()
+        cookie = self.sign_in(conn)
+        self.assertIsNotNone(cookie, "sign-in failed")
+        return conn, cookie
 
     def test_library_is_served(self):
         conn = self.connect()
@@ -91,7 +124,7 @@ class LiveServerTests(unittest.TestCase):
                      body=json.dumps({"server_name": "Nope"}),
                      headers={"Content-Type": "application/json"})
         first = conn.getresponse()
-        self.assertEqual(first.status, 403)  # no same-origin marker
+        self.assertEqual(first.status, 401)  # not signed in
         first.read()
 
         conn.request("GET", "/api/config")
@@ -123,19 +156,109 @@ class LiveServerTests(unittest.TestCase):
         self.assertNotIn("admin_token", payload)
         conn.close()
 
-    def test_admin_is_reachable_over_loopback(self):
+    def test_admin_is_unreachable_without_a_session(self):
+        # Loopback is no longer enough; the account is the boundary now.
         conn = self.connect()
         conn.request("GET", "/api/admin/settings")
-        self.assertEqual(conn.getresponse().status, 200)
+        response = conn.getresponse()
+        self.assertEqual(response.status, 401)
+        response.read()
         conn.close()
 
-    def test_admin_write_needs_a_same_origin_marker(self):
+    def test_admin_is_reachable_once_signed_in(self):
+        conn, cookie = self.authed()
+        conn.request("GET", "/api/admin/settings", headers={"Cookie": cookie})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertIn("media_dirs", json.loads(response.read())["settings"])
+        conn.close()
+
+    def test_wrong_password_is_refused(self):
         conn = self.connect()
+        self.assertIsNone(self.sign_in(conn, password="not-the-password"))
+        conn.close()
+
+    def test_wrong_username_is_refused(self):
+        conn = self.connect()
+        self.assertIsNone(self.sign_in(conn, username="someone-else"))
+        conn.close()
+
+    def test_session_cookie_is_http_only(self):
+        conn = self.connect()
+        conn.request("POST", "/api/admin/login",
+                     body=json.dumps({"username": ADMIN_USER,
+                                      "password": ADMIN_PASSWORD}),
+                     headers=WRITE_HEADERS)
+        response = conn.getresponse()
+        raw = response.getheader("Set-Cookie")
+        response.read()
+        self.assertIn("HttpOnly", raw)
+        self.assertIn("SameSite=Strict", raw)
+        conn.close()
+
+    def test_forged_cookie_is_refused(self):
+        conn = self.connect()
+        conn.request("GET", "/api/admin/settings",
+                     headers={"Cookie": "litejelly_admin=made-up-token"})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 401)
+        response.read()
+        conn.close()
+
+    def test_signing_out_invalidates_the_session(self):
+        conn, cookie = self.authed()
+        conn.request("POST", "/api/admin/logout", body="{}",
+                     headers=dict(WRITE_HEADERS, Cookie=cookie))
+        conn.getresponse().read()
+
+        conn.request("GET", "/api/admin/settings", headers={"Cookie": cookie})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 401)
+        response.read()
+        conn.close()
+
+    def test_session_endpoint_reports_login_state(self):
+        conn = self.connect()
+        conn.request("GET", "/api/admin/session")
+        payload = json.loads(conn.getresponse().read())
+        self.assertEqual(payload["state"], "login")
+        self.assertNotIn("password_hash", json.dumps(payload))
+        conn.close()
+
+    def test_setup_is_refused_once_an_account_exists(self):
+        conn = self.connect()
+        conn.request("POST", "/api/admin/setup",
+                     body=json.dumps({"username": "intruder",
+                                      "password": "password123"}),
+                     headers=WRITE_HEADERS)
+        response = conn.getresponse()
+        self.assertEqual(response.status, 409)
+        response.read()
+        conn.close()
+        self.assertEqual(self.app.credentials.username, ADMIN_USER)
+
+    def test_admin_write_needs_a_same_origin_marker(self):
+        conn, cookie = self.authed()
         conn.request("POST", "/api/admin/settings",
                      body=json.dumps({"server_name": "Den"}),
                      headers={"Content-Type": "application/json",
+                              "Cookie": cookie,
                               "Origin": "http://evil.example"})
         self.assertEqual(conn.getresponse().status, 403)
+        conn.close()
+
+    def test_repeated_failures_lock_the_address_out(self):
+        conn = self.connect()
+        for _ in range(auth.MAX_FAILURES):
+            self.sign_in(conn, password="wrong")
+        conn.request("POST", "/api/admin/login",
+                     body=json.dumps({"username": ADMIN_USER,
+                                      "password": ADMIN_PASSWORD}),
+                     headers=WRITE_HEADERS)
+        response = conn.getresponse()
+        # Even the right password is refused while locked out.
+        self.assertEqual(response.status, 429)
+        response.read()
         conn.close()
 
     def test_unknown_route_is_a_json_404(self):
@@ -147,8 +270,8 @@ class LiveServerTests(unittest.TestCase):
         conn.close()
 
     def test_logs_endpoint_reports_the_current_verbosity(self):
-        conn = self.connect()
-        conn.request("GET", "/api/admin/logs?lines=10")
+        conn, cookie = self.authed()
+        conn.request("GET", "/api/admin/logs?lines=10", headers={"Cookie": cookie})
         payload = json.loads(conn.getresponse().read())
         self.assertIn("entries", payload)
         self.assertEqual(payload["verbosity_options"], ["info", "debug", "trace"])
@@ -156,30 +279,41 @@ class LiveServerTests(unittest.TestCase):
 
     def test_logs_endpoint_is_admin_guarded(self):
         # Log lines carry absolute paths, so they are not public.
-        self.assertIn(("GET", "/api/admin/logs"), self.app.routes)
-        self.assertIn(("POST", "/api/admin/logs/clear"), self.app.routes)
+        conn = self.connect()
+        conn.request("GET", "/api/admin/logs")
+        response = conn.getresponse()
+        self.assertEqual(response.status, 401)
+        response.read()
+        conn.close()
 
     def test_log_line_limit_is_capped(self):
-        conn = self.connect()
-        conn.request("GET", "/api/admin/logs?lines=999999")
+        conn, cookie = self.authed()
+        conn.request("GET", "/api/admin/logs?lines=999999", headers={"Cookie": cookie})
         payload = json.loads(conn.getresponse().read())
         self.assertLessEqual(len(payload["entries"]), 2000)
         conn.close()
 
     def test_bad_line_count_falls_back(self):
-        conn = self.connect()
-        conn.request("GET", "/api/admin/logs?lines=plenty")
+        conn, cookie = self.authed()
+        conn.request("GET", "/api/admin/logs?lines=plenty", headers={"Cookie": cookie})
         self.assertEqual(conn.getresponse().status, 200)
+        conn.close()
+
+    def test_directory_browser_is_admin_guarded(self):
+        # Otherwise it is a filesystem listing for anyone on the network.
+        conn = self.connect()
+        conn.request("GET", "/api/admin/browse")
+        response = conn.getresponse()
+        self.assertEqual(response.status, 401)
+        response.read()
         conn.close()
 
     def test_log_requests_are_not_themselves_logged(self):
         # Auto-refresh polls this endpoint; logging it would bury the content.
-        handler_path = "/api/admin/logs"
-        self.assertTrue(handler_path.startswith("/api/admin/logs"))
-        conn = self.connect()
-        conn.request("GET", "/api/admin/logs?lines=5")
+        conn, cookie = self.authed()
+        conn.request("GET", "/api/admin/logs?lines=5", headers={"Cookie": cookie})
         first = json.loads(conn.getresponse().read())["entries"]
-        conn.request("GET", "/api/admin/logs?lines=5")
+        conn.request("GET", "/api/admin/logs?lines=5", headers={"Cookie": cookie})
         second = json.loads(conn.getresponse().read())["entries"]
         conn.close()
         self.assertEqual(len(first), len(second))
