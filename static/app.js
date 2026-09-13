@@ -298,7 +298,6 @@
       state.ffmpegAvailable = !!data.ffmpeg_available;
       renderCategoryChips();
       applyFilters();
-      renderContinueWatching();
     } catch (err) {
       showToast('Could not load library: ' + err.message, 5000);
       el.emptyTitle.textContent = 'Library unavailable';
@@ -415,18 +414,15 @@
 
   function renderCategoryChips() {
     const counts = categoryCounts();
-    const present = Object.keys(counts).filter(key => counts[key] > 0);
-    // Only worth showing when the library actually spans more than one kind.
-    const useful = present.length > 1;
-    el.categoryChips.classList.toggle('hidden', !useful);
-    if (!useful) {
-      state.category = 'all';
-      return;
-    }
-    $$('.chip', el.categoryChips).forEach(chip => {
-      const key = chip.dataset.category;
-      chip.classList.toggle('hidden', key !== 'all' && !counts[key]);
+    // A section with nothing in it is a dead end, so it is not offered.
+    $$('.nav-link', el.mainNav).forEach(link => {
+      const key = link.dataset.category;
+      link.classList.toggle('hidden', key !== 'all' && !counts[key]);
     });
+    if (!counts[state.category] && state.category !== 'all') {
+      state.category = 'all';
+    }
+    syncNav();
   }
 
   function applyFilters() {
@@ -465,7 +461,203 @@
     state.filtered = sortVideos(list);
     // Searching is a hunt for one file, so show episodes rather than series.
     state.entries = state.query ? state.filtered : buildEntries(state.filtered);
+    renderHome();
     renderGrid();
+  }
+
+  /* The home view is a hero plus one rail per category. A flat grid is the
+   * right answer once you have filtered or searched, but as a front page it
+   * is a file browser rather than a library.
+   */
+  function isHomeView() {
+    return !state.seriesId && !state.query && state.category === 'all'
+      && state.filter === 'all';
+  }
+
+  function renderHome() {
+    const home = isHomeView() && state.videos.length > 0;
+    el.rails.classList.toggle('hidden', !home);
+    el.grid.classList.toggle('hidden', home);
+    // On home the hero is the heading and there is nothing to filter yet,
+    // so the whole browse toolbar stays out of the way.
+    el.libraryHeader.classList.toggle('hidden', home);
+    renderContinueWatching();
+    if (!home) {
+      el.hero.classList.add('hidden');
+      el.rails.replaceChildren();
+      syncTopbar();
+      return;
+    }
+
+    renderHero();
+    syncTopbar();
+
+    const fragment = document.createDocumentFragment();
+    RAILS.forEach(rail => {
+      const section = buildRail(rail);
+      if (section) fragment.appendChild(section);
+    });
+    el.rails.replaceChildren(fragment);
+    ensureThumbnailsRequested();
+  }
+
+  const RAILS = [
+    { category: 'shows', label: 'Shows' },
+    { category: 'anime', label: 'Anime' },
+    { category: 'movies', label: 'Films' }
+  ];
+
+  const RAIL_LIMIT = 20;
+
+  /* What the hero should be about: whatever you would actually press play on.
+   * A half-watched episode beats anything else; failing that, the newest
+   * thing added, because that is why you came.
+   */
+  function heroSubject() {
+    const byId = new Map(state.videos.map(video => [video.id, video]));
+    for (let i = 0; i < state.continueWatching.length; i++) {
+      const entry = state.continueWatching[i];
+      const video = byId.get(entry.id);
+      if (video) return { video: video, entry: entry };
+    }
+    const newest = sortVideos(state.videos)[0];
+    return newest ? { video: newest, entry: null } : null;
+  }
+
+  function renderHero() {
+    const subject = heroSubject();
+    if (!subject) {
+      el.hero.classList.add('hidden');
+      return;
+    }
+
+    const video = subject.video;
+    const entry = subject.entry;
+    const resuming = !!(entry && entry.position > 15);
+
+    el.hero.classList.remove('hidden');
+    el.heroEyebrow.textContent = resuming ? 'Continue watching'
+      : (video.series_id ? 'Latest episode' : 'Recently added');
+    el.heroTitle.textContent = video.title || video.name;
+
+    const bits = [];
+    if (video.imdb_rating != null) bits.push('\u2605 ' + video.imdb_rating);
+    else if (video.rating != null) bits.push('\u2605 ' + video.rating);
+    if (video.year) bits.push(video.year);
+    const code = episodeCode(video);
+    if (code) bits.push(code);
+    if (video.episode_title) bits.push(video.episode_title);
+    el.heroMeta.textContent = bits.join(' \u00b7 ');
+
+    el.heroPlot.textContent = '';
+    loadHeroPlot(video);
+
+    el.heroPlay.textContent = resuming ? '\u25b6  Resume' : '\u25b6  Play';
+    el.heroPlay.onclick = () => playVideo(video.id);
+
+    // Only a series has anywhere else to go.
+    el.heroBrowse.classList.toggle('hidden', !video.series_id);
+    el.heroBrowse.onclick = () => openSeries(video.series_id);
+
+    if (resuming && entry.duration) {
+      const fraction = Math.min(1, entry.position / entry.duration);
+      el.heroProgress.classList.remove('hidden');
+      el.heroProgressFill.style.width = (fraction * 100).toFixed(1) + '%';
+      el.heroRemaining.textContent =
+        formatTime(Math.max(0, entry.duration - entry.position)) + ' left';
+    } else {
+      el.heroProgress.classList.add('hidden');
+    }
+
+    // A backdrop is landscape by nature; an episode's own frame is the next
+    // best thing. A portrait poster would be stretched, so it is not used.
+    const src = video.has_backdrop
+      ? API.artwork + '?id=' + encodeURIComponent(video.id) + '&kind=backdrop'
+      : API.thumbnail + '?id=' + encodeURIComponent(video.id);
+    if (el.heroImage.dataset.src !== src) {
+      el.heroImage.dataset.src = src;
+      el.heroImage.classList.remove('loaded');
+      attemptThumbnail(el.heroImage, src);
+    }
+  }
+
+  async function loadHeroPlot(video) {
+    try {
+      const data = await getJSON(API.details + '?id=' + encodeURIComponent(video.id));
+      const meta = (data && data.metadata) || {};
+      const plot = meta.series_plot || meta.plot || '';
+      // The library may have moved on while this was in flight.
+      if (el.heroTitle.textContent === (video.title || video.name)) {
+        el.heroPlot.textContent = plot;
+      }
+    } catch (err) {
+      // No plot is not worth a message.
+    }
+  }
+
+  function buildRail(spec) {
+    const list = state.videos.filter(video => video.category === spec.category);
+    if (!list.length) return null;
+
+    const entries = buildEntries(sortVideos(list)).slice(0, RAIL_LIMIT);
+    if (!entries.length) return null;
+
+    const section = document.createElement('section');
+    section.className = 'rail-section';
+
+    const head = document.createElement('div');
+    head.className = 'rail-head';
+    const heading = document.createElement('h2');
+    heading.className = 'rail-title';
+    heading.textContent = spec.label;
+    head.appendChild(heading);
+
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'rail-more';
+    more.textContent = 'See all';
+    more.addEventListener('click', () => selectCategory(spec.category));
+    head.appendChild(more);
+    section.appendChild(head);
+
+    const row = document.createElement('div');
+    row.className = 'rail';
+    row.setAttribute('role', 'list');
+    entries.forEach(entry => {
+      const card = entry.isSeries ? buildSeriesCard(entry) : buildCard(entry, false);
+      card.classList.add('rail-card');
+      row.appendChild(card);
+    });
+    section.appendChild(row);
+    return section;
+  }
+
+  function syncTopbar() {
+    const hasHero = !el.hero.classList.contains('hidden');
+    document.body.classList.toggle('no-hero', !hasHero);
+    document.body.classList.toggle('at-top', hasHero && window.pageYOffset < 40);
+  }
+
+  function selectCategory(key) {
+    state.category = key;
+    state.query = '';
+    el.searchInput.value = '';
+    syncNav();
+    applyFilters();
+    window.scrollTo(0, 0);
+    focusFirstCard();
+  }
+
+  function syncNav() {
+    $$('.nav-link', el.mainNav).forEach(link => {
+      const on = link.dataset.category === state.category;
+      link.classList.toggle('active', on);
+      if (on) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    const label = { all: 'Media Library', shows: 'Shows', anime: 'Anime',
+                    movies: 'Films' }[state.category] || 'Media Library';
+    if (!state.seriesId) el.sectionTitle.textContent = label;
   }
 
   function openSeries(seriesId) {
@@ -493,7 +685,6 @@
     el.seasonChips.classList.add('hidden');
 
     if (!group) {
-      el.sectionTitle.textContent = 'Media Library';
       el.sectionSubtitle.textContent = 'Local streaming optimized for TV & mobile';
       el.seriesPlot.textContent = '';
       el.seriesPlot.classList.add('hidden');
@@ -501,7 +692,6 @@
       return;
     }
 
-    el.categoryChips.classList.add('hidden');
     el.sectionTitle.textContent = group.title;
     const seasons = Object.keys(group.seasons).map(Number).sort((a, b) => a - b);
     const parts = [group.episodes.length + (group.episodes.length === 1 ? ' episode' : ' episodes')];
@@ -559,7 +749,7 @@
 
   function focusFirstCard() {
     requestAnimationFrame(() => {
-      const first = $('.card', el.grid);
+      const first = $('.card', el.grid) || $('.card', el.library);
       if (first) first.focus();
     });
   }
@@ -747,7 +937,7 @@
   function ensureThumbnailsRequested() {
     clearTimeout(thumbFallbackTimer);
     thumbFallbackTimer = setTimeout(() => {
-      const images = $$('.thumb-img', el.grid).concat($$('.thumb-img', el.continueRow));
+      const images = $$('.thumb-img', el.library);
       if (!images.length) return;
       if (images.some(img => img.getAttribute('src'))) return;
       images.forEach(loadThumbnail);
@@ -793,7 +983,9 @@
       .map(entry => ({ video: byId.get(entry.id), entry: entry }))
       .filter(item => item.video);
 
-    if (!items.length) {
+    // Filtering or searching is a deliberate narrowing; a resume rail on top
+    // of it is just noise. The hero already covers the first of these.
+    if (!items.length || !isHomeView()) {
       el.continueSection.classList.add('hidden');
       el.continueRow.replaceChildren();
       return;
@@ -803,6 +995,11 @@
     items.forEach(item => {
       const card = buildCard(item.video, false);
       card.classList.add('rail-card');
+      // Always a landscape frame here: these are episodes in progress.
+      card.classList.remove('shape-poster');
+      card.classList.add('shape-still');
+      const img = $('.thumb-img', card);
+      img.dataset.src = artworkUrl(item.video, 'still');
       const meta = $('.card-meta', card);
       const label = document.createElement('span');
       if (item.entry.next_up) {
@@ -1840,45 +2037,77 @@
     if (arrows.indexOf(event.key) === -1) return;
     if (isTypingTarget(active) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) return;
 
-    const cards = $$('.card', el.grid);
-    if (!cards.length) return;
+    const targets = navigableTargets();
+    if (!targets.length) return;
 
-    const inGrid = !!active && active.classList.contains('card') && el.grid.contains(active);
-    if (!inGrid) {
+    const onTarget = !!active && targets.indexOf(active) !== -1;
+    if (!onTarget) {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
-        cards[0].focus();
+        targets[0].focus();
+        targets[0].scrollIntoView({ block: 'nearest' });
       }
       return;
     }
 
-    const index = cards.indexOf(active);
-    let next = index;
-    switch (event.key) {
-      case 'ArrowRight':
-        next = Math.min(cards.length - 1, index + 1);
-        break;
-      case 'ArrowLeft':
-        next = Math.max(0, index - 1);
-        break;
-      case 'ArrowDown':
-        next = Math.min(cards.length - 1, index + state.columns);
-        break;
-      case 'ArrowUp':
-        if (index < state.columns) {
-          event.preventDefault();
-          el.searchInput.focus();
-          return;
-        }
-        next = index - state.columns;
-        break;
+    const next = nearestInDirection(active, targets, event.key);
+    if (!next) {
+      // Nothing above the top row except the search field.
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        el.searchInput.focus();
+      }
+      return;
     }
 
     event.preventDefault();
-    if (next !== index) {
-      cards[next].focus();
-      cards[next].scrollIntoView({ block: 'nearest' });
+    next.focus();
+    next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /* Spatial navigation.
+   *
+   * The home view mixes a hero, horizontal rails and a grid, so "move one
+   * column" has no meaning. Picking the nearest thing in the direction
+   * pressed works for all three, and keeps working when the layout changes.
+   */
+  function navigableTargets() {
+    const nodes = $$('.card', el.library)
+      .concat($$('.rail-more', el.library))
+      .concat([el.heroPlay, el.heroBrowse]);
+    return nodes.filter(node => node && !node.classList.contains('hidden')
+      && node.offsetParent !== null);
+  }
+
+  function nearestInDirection(from, targets, key) {
+    const base = from.getBoundingClientRect();
+    const fromX = base.left + base.width / 2;
+    const fromY = base.top + base.height / 2;
+    const horizontal = key === 'ArrowLeft' || key === 'ArrowRight';
+    const sign = (key === 'ArrowLeft' || key === 'ArrowUp') ? -1 : 1;
+
+    let best = null;
+    let bestScore = Infinity;
+
+    for (let i = 0; i < targets.length; i++) {
+      const node = targets[i];
+      if (node === from) continue;
+      const rect = node.getBoundingClientRect();
+      const dx = (rect.left + rect.width / 2) - fromX;
+      const dy = (rect.top + rect.height / 2) - fromY;
+      const along = horizontal ? dx : dy;
+      const across = horizontal ? dy : dx;
+      // Must actually lie in the direction pressed, by more than a rounding
+      // error, or a card in the same row would count as being below it.
+      if (along * sign < 6) continue;
+      // Drifting sideways is worse than travelling further, so it costs more.
+      const score = Math.abs(along) + Math.abs(across) * 3;
+      if (score < bestScore) {
+        bestScore = score;
+        best = node;
+      }
     }
+    return best;
   }
 
   function handlePlayerKeys(event) {
@@ -1958,12 +2187,16 @@
     el.mediaCount = $('#media-count');
     el.clock = $('#clock');
     el.library = $('#library');
+    el.libraryHeader = $('.library-header');
+    el.mainNav = $('#main-nav');
+    el.sectionTitle = $('#section-title');
     el.grid = $('#video-grid');
     el.sectionTitle = $('#section-title');
     el.sectionSubtitle = $('#section-subtitle');
     el.seriesPlot = $('#series-plot');
     el.seriesBack = $('#series-back');
     el.categoryChips = $('#category-chips');
+    el.formatChips = $('#format-chips');
     el.seasonChips = $('#season-chips');
     el.loading = $('#loading');
     el.emptyState = $('#empty-state');
@@ -1971,6 +2204,18 @@
     el.emptyHint = $('#empty-hint');
     el.continueSection = $('#continue-section');
     el.continueRow = $('#continue-row');
+    el.rails = $('#rails');
+    el.hero = $('#hero');
+    el.heroImage = $('#hero-image');
+    el.heroEyebrow = $('#hero-eyebrow');
+    el.heroTitle = $('#hero-title');
+    el.heroMeta = $('#hero-meta');
+    el.heroPlot = $('#hero-plot');
+    el.heroPlay = $('#hero-play');
+    el.heroBrowse = $('#hero-browse');
+    el.heroProgress = $('#hero-progress');
+    el.heroProgressFill = $('#hero-progress-fill');
+    el.heroRemaining = $('#hero-remaining');
     el.sortSelect = $('#sort-select');
     el.player = $('#player');
     el.video = $('#video-player');
@@ -2056,8 +2301,10 @@
       applyFilters();
     });
 
-    bindChipGroup(el.categoryChips, 'category');
-    bindChipGroup($('.filter-chips[aria-label="Filter by format"]'), 'filter');
+    bindChipGroup(el.formatChips, 'filter');
+    $$('.nav-link', el.mainNav).forEach(link => {
+      link.addEventListener('click', () => selectCategory(link.dataset.category));
+    });
 
     $('#rescan-btn').addEventListener('click', async () => {
       showToast('Rescanning library...');
@@ -2248,6 +2495,7 @@
   }
 
   function startClock() {
+    if (!el.clock) return;
     const tick = () => {
       el.clock.textContent = new Date().toLocaleTimeString(undefined, {
         hour: 'numeric', minute: '2-digit'
@@ -2279,6 +2527,7 @@
     bindLibraryEvents();
     bindPlayerEvents();
     startClock();
+    window.addEventListener('scroll', syncTopbar, { passive: true });
 
     window.addEventListener('error', event => {
       showToast('Script error: ' + (event.message || 'unknown'), 8000);

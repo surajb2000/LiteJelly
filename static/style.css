@@ -1707,3 +1707,422 @@ html.no-flex-gap .subtitle-layer > * + * { margin-top: 2px; }
     --fs-title: clamp(2.75rem, 3.4vw, 4rem);
   }
 }
+
+
+/* ==========================================================================
+   Home: hero and category rails
+   ========================================================================== */
+.hero {
+  position: relative;
+  margin: calc(var(--topbar-height) * -1 - 28px) calc(var(--safe-x) * -1) 40px;
+  min-height: 62vh;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+.hero-art {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0;
+}
+
+.hero-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.hero-image.loaded { opacity: 1; }
+
+/* Two scrims: one so the text has contrast, one so the art melts into the
+   rails below instead of ending on a hard edge. */
+.hero-art::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background:
+    linear-gradient(to right, rgba(7, 9, 14, 0.97) 4%, rgba(7, 9, 14, 0.62) 44%, rgba(7, 9, 14, 0) 82%),
+    linear-gradient(to top, var(--bg) 1%, rgba(7, 9, 14, 0) 55%);
+}
+
+.hero-body {
+  position: relative;
+  z-index: 1;
+  padding: 48px var(--safe-x) 56px;
+  max-width: 720px;
+}
+
+.hero-eyebrow {
+  font-size: var(--fs-card-sub);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.hero-title {
+  font-size: var(--fs-title);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  color: #fff;
+  margin-bottom: 12px;
+}
+
+.hero-meta {
+  font-size: var(--fs-body);
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.hero-plot {
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin-bottom: 22px;
+  max-width: 62ch;
+  /* A plot can run to a thousand characters; three lines is a teaser.
+     max-height is the fallback, line-clamp only tidies the ellipsis. */
+  max-height: 4.8em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.hero-actions > * { margin-right: 14px; }
+
+.hero-play,
+.hero-browse {
+  font-size: var(--fs-control);
+  font-weight: 700;
+  padding: 14px 30px;
+  border-radius: 99px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.hero-play {
+  background: var(--accent);
+  border: 2px solid var(--accent);
+  color: #04121f;
+}
+
+.hero-browse {
+  background: transparent;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+.hero-play:focus,
+.hero-browse:focus {
+  outline: none;
+  box-shadow: 0 0 0 var(--focus-ring) var(--accent),
+              0 0 0 calc(var(--focus-ring) + 5px) var(--accent-glow);
+}
+
+.hero-progress {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.hero-progress > * { margin-right: 14px; }
+
+.hero-progress-track {
+  display: block;
+  width: 320px;
+  max-width: 46vw;
+  height: 8px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.2);
+  overflow: hidden;
+}
+
+.hero-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to right, var(--accent), var(--accent-secondary));
+}
+
+.hero-remaining {
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+[data-profile="tv"] .hero {
+  min-height: 68vh;
+}
+
+[data-profile="phone"] .hero {
+  min-height: 52vh;
+}
+
+[data-profile="phone"] .hero-plot {
+  display: none;
+}
+
+/* Rail headings get a "see all" affordance on the right. */
+.rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.rail-more {
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-control);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 99px;
+}
+
+.rail-more:hover { color: #fff; }
+
+.rail-more:focus {
+  outline: none;
+  color: #fff;
+  box-shadow: 0 0 0 var(--focus-ring) var(--accent);
+}
+
+/* A rail card keeps its tile shape, so a poster rail and a still rail can
+   sit on the same page without fighting each other. */
+.rail-card.shape-poster { flex: 0 0 200px; }
+.rail-card.shape-still { flex: 0 0 300px; }
+
+[data-profile="tv"] .rail-card.shape-poster { flex: 0 0 260px; }
+[data-profile="tv"] .rail-card.shape-still { flex: 0 0 400px; }
+
+[data-profile="phone"] .rail-card.shape-poster { flex: 0 0 132px; }
+[data-profile="phone"] .rail-card.shape-still { flex: 0 0 240px; }
+
+/* Focus scales cards up, so the rail needs room or the ring gets clipped. */
+.rail {
+  padding: 10px 4px 18px;
+}
+
+
+/* The bar grew taller for TV but its contents did not, which left a row of
+   mouse-sized controls above ten-foot content. */
+[data-profile="tv"] #topbar {
+  padding: 0 var(--safe-x);
+}
+
+[data-profile="tv"] .logo-icon {
+  width: 52px;
+  height: 52px;
+  font-size: 20px;
+  border-radius: 14px;
+}
+
+[data-profile="tv"] .logo-text {
+  font-size: 1.9rem;
+}
+
+[data-profile="tv"] .search-box input {
+  width: 260px;
+  padding: 14px 18px 14px 46px;
+  font-size: var(--fs-control);
+  border-radius: 99px;
+}
+
+[data-profile="tv"] .search-box input:focus {
+  width: 360px;
+}
+
+[data-profile="tv"] .search-icon {
+  left: 18px;
+}
+
+[data-profile="tv"] .icon-btn {
+  width: 56px;
+  height: 56px;
+}
+
+[data-profile="tv"] .status-pill,
+[data-profile="tv"] .clock-display {
+  font-size: var(--fs-control);
+}
+
+[data-profile="tv"] .status-pill {
+  padding: 10px 20px;
+}
+
+[data-profile="tv"] .sort-control select {
+  font-size: var(--fs-control);
+  padding: 14px 44px 14px 22px;
+  background-position: right 18px center;
+  background-size: 14px;
+}
+
+[data-profile="tv"] .rail-more {
+  font-size: var(--fs-control);
+  padding: 10px 18px;
+}
+
+
+/* ==========================================================================
+   Top navigation
+   --------------------------------------------------------------------------
+   Sections live in the bar as text links rather than as a row of pills below
+   the hero, so the page starts with artwork instead of with controls.
+   ========================================================================== */
+.main-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.main-nav > * + * { margin-left: 6px; }
+
+.nav-link {
+  position: relative;
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-control);
+  font-weight: 600;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.nav-link:hover { color: #fff; }
+
+.nav-link.active {
+  color: #fff;
+}
+
+/* An underline rather than a filled pill: it reads as navigation, and a
+   filled chip would compete with the focus ring. */
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 2px;
+  height: 3px;
+  border-radius: 99px;
+  background: var(--accent);
+}
+
+.nav-link:focus {
+  outline: none;
+  color: #fff;
+  box-shadow: 0 0 0 var(--focus-ring) var(--accent),
+              0 0 0 calc(var(--focus-ring) + 5px) var(--accent-glow);
+}
+
+[data-profile="tv"] .nav-link {
+  padding: 14px 22px;
+}
+
+[data-profile="tv"] .nav-link.active::after {
+  left: 22px;
+  right: 22px;
+  height: 4px;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-right > * + * { margin-left: 12px; }
+
+/* The hero is the page heading on home, so the old title block and the
+   format filters only appear once you are actually browsing a list. */
+.library-header.hidden,
+#format-chips.hidden,
+.sort-control.hidden {
+  display: none !important;
+}
+
+[data-profile="phone"] .main-nav {
+  gap: 0;
+}
+
+[data-profile="phone"] .main-nav > * + * { margin-left: 0; }
+
+[data-profile="phone"] .nav-link {
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
+[data-profile="phone"] .nav-link.active::after {
+  left: 10px;
+  right: 10px;
+}
+
+[data-profile="phone"] .search-box input {
+  width: 44px;
+  padding-right: 8px;
+}
+
+[data-profile="phone"] .search-box input:focus {
+  width: 150px;
+}
+
+
+/* Over a hero the bar should not be a slab; it earns its background only
+   once content scrolls beneath it. */
+#topbar {
+  transition: background-color 0.25s ease, border-color 0.25s ease;
+}
+
+body.at-top #topbar {
+  background: transparent;
+  border-bottom-color: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Without a hero there is no artwork to sit on, so keep the slab. */
+body.no-hero #topbar {
+  background: var(--glass-bg);
+  border-bottom-color: var(--glass-border);
+}
+
+
+/* A rail is for browsing artwork; file sizes and dates belong in a list
+   view, not under a poster. */
+.rail-card .card-meta {
+  display: none;
+}
+
+/* Continue watching is the exception: how much is left is the whole point. */
+#continue-row .card-meta {
+  display: flex;
+  font-size: var(--fs-card-sub);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hero-body {
+  align-self: center;
+}

@@ -20,32 +20,52 @@
         <span class="logo-icon" aria-hidden="true">▶</span>
         <span id="server-name" class="logo-text">LiteJelly</span>
       </div>
-      <div class="search-box">
-        <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="search" id="search-input" placeholder="Search videos..." autocomplete="off" spellcheck="false" aria-label="Search videos">
-      </div>
+      <nav id="main-nav" class="main-nav" aria-label="Library sections">
+        <button type="button" class="nav-link active" data-category="all" aria-current="page">Home</button>
+        <button type="button" class="nav-link" data-category="shows">Shows</button>
+        <button type="button" class="nav-link" data-category="anime">Anime</button>
+        <button type="button" class="nav-link" data-category="movies">Films</button>
+      </nav>
     </div>
     <div class="topbar-right">
+      <div class="search-box">
+        <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" id="search-input" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search videos">
+      </div>
       <button id="rescan-btn" class="icon-btn" title="Rescan library" aria-label="Rescan library">
         <svg viewBox="0 0 24 24" width="19" height="19" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
       </button>
+      <a id="settings-link" class="icon-btn" href="/admin" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+      </a>
       <button id="fullscreen-btn" class="icon-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">
         <svg class="fs-icon-enter" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
         <svg class="fs-icon-exit hidden" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
       </button>
-      <div class="status-pill">
-        <span class="status-dot" aria-hidden="true"></span>
-        <span id="media-count">0 videos</span>
-      </div>
-      <div id="clock" class="clock-display">--:--</div>
+      <span id="media-count" class="sr-only">0 videos</span>
     </div>
   </header>
 
   <!-- Library View -->
   <main id="library">
-    <section id="continue-section" class="rail-section hidden" aria-labelledby="continue-heading">
-      <h2 id="continue-heading" class="rail-title">Continue watching</h2>
-      <div id="continue-row" class="rail" role="list"></div>
+    <section id="hero" class="hero hidden" aria-labelledby="hero-title">
+      <div class="hero-art">
+        <img id="hero-image" class="hero-image" alt="" decoding="async">
+      </div>
+      <div class="hero-body">
+        <p id="hero-eyebrow" class="hero-eyebrow"></p>
+        <h1 id="hero-title" class="hero-title"></h1>
+        <p id="hero-meta" class="hero-meta"></p>
+        <p id="hero-plot" class="hero-plot"></p>
+        <div class="hero-actions">
+          <button type="button" id="hero-play" class="btn-primary hero-play"></button>
+          <button type="button" id="hero-browse" class="btn-secondary hero-browse">Episodes</button>
+        </div>
+        <div id="hero-progress" class="hero-progress hidden">
+          <span class="hero-progress-track"><span id="hero-progress-fill" class="hero-progress-fill"></span></span>
+          <span id="hero-remaining" class="hero-remaining"></span>
+        </div>
+      </div>
     </section>
 
     <div class="library-header">
@@ -64,7 +84,7 @@
           <button class="chip" data-category="anime" aria-pressed="false">Anime</button>
           <button class="chip" data-category="movies" aria-pressed="false">Movies</button>
         </div>
-        <div class="filter-chips" role="group" aria-label="Filter by format">
+        <div id="format-chips" class="filter-chips" role="group" aria-label="Filter by format">
           <button class="chip active" data-filter="all" aria-pressed="true">All</button>
           <button class="chip" data-filter="mp4" aria-pressed="false">MP4</button>
           <button class="chip" data-filter="mkv" aria-pressed="false">MKV</button>
@@ -83,6 +103,13 @@
     </div>
 
     <div id="season-chips" class="filter-chips season-chips hidden" role="group" aria-label="Filter by season"></div>
+
+    <section id="continue-section" class="rail-section hidden" aria-labelledby="continue-heading">
+      <h2 id="continue-heading" class="rail-title">Continue watching</h2>
+      <div id="continue-row" class="rail" role="list"></div>
+    </section>
+
+    <div id="rails"></div>
 
     <div id="loading" class="loading-container">
       <div class="spinner" aria-hidden="true"></div>

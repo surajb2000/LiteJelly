@@ -211,6 +211,8 @@ class Video:
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        # The hero needs to know a backdrop exists without asking per item.
+        data["has_backdrop"] = bool(self.backdrop_path)
         for internal in ("meta", "poster_path", "backdrop_path", "mal_id"):
             data.pop(internal, None)
         return data
