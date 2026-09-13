@@ -152,6 +152,17 @@ class RateLimitedFetcher:
             return None
         return parsed if isinstance(parsed, dict) else None
 
+    def fetch_json_list(self, url: str) -> list:
+        """Some endpoints answer with an array, which fetch_json discards."""
+        raw = self.fetch(url)
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+
 
 class MetadataCache:
     """JSON on disk. Misses are cached too, or every scan re-asks for nothing."""
@@ -212,6 +223,7 @@ class SeriesInfo:
     imdb_id: str = ""
     mal_id: int | None = None
     poster_url: str = ""
+    backdrop_url: str = ""
     # "s1e2" -> {"title", "summary", "rating", "image", "runtime"}
     episodes: dict = field(default_factory=dict)
     # [{"name", "character", "image"}]
@@ -224,6 +236,7 @@ class SeriesInfo:
             "year": self.year, "genres": self.genres,
             "imdb_id": self.imdb_id, "mal_id": self.mal_id,
             "poster_url": self.poster_url, "episodes": self.episodes,
+            "backdrop_url": self.backdrop_url,
             "cast": self.cast,
         }
 
@@ -242,6 +255,7 @@ class SeriesInfo:
         info.imdb_id = str(data.get("imdb_id") or "")
         info.mal_id = data.get("mal_id")
         info.poster_url = str(data.get("poster_url") or "")
+        info.backdrop_url = str(data.get("backdrop_url") or "")
         info.episodes = dict(data.get("episodes") or {})
         info.cast = list(data.get("cast") or [])
         return info
@@ -619,7 +633,37 @@ class MetadataProviders:
         payload = self.fetcher.fetch_json(url)
         if not payload or not payload.get("name"):
             return None
-        return parse_tvmaze(payload)
+        info = parse_tvmaze(payload)
+        self._attach_tvmaze_backdrop(info, payload.get("id"))
+        return info
+
+    def _attach_tvmaze_backdrop(self, info: SeriesInfo, show_id) -> None:
+        """A landscape backdrop, which the show record itself does not carry.
+
+        Worth one extra request per show: the alternative is stretching a
+        portrait poster across a wide hero, which is what it was built to
+        avoid. Cached with the rest of the series record.
+        """
+        if not show_id:
+            return
+        fetch = getattr(self.fetcher, "fetch_json_list", None)
+        payload = fetch(f"{TVMAZE_ROOT}/shows/{int(show_id)}/images") if fetch else []
+        if not isinstance(payload, list):
+            return
+        best = ""
+        for image in payload:
+            if not isinstance(image, dict) or image.get("type") != "background":
+                continue
+            url = ((image.get("resolutions") or {}).get("original") or {}).get("url")
+            if not url:
+                continue
+            # A show can carry several; the one marked main is the chosen art.
+            if image.get("main"):
+                best = str(url)
+                break
+            if not best:
+                best = str(url)
+        info.backdrop_url = best
 
     def _fetch_anilist(self, title: str) -> SeriesInfo | None:
         body = json.dumps({"query": ANILIST_QUERY,

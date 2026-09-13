@@ -435,6 +435,11 @@ class Library:
                 video.poster_path = str(downloaded)
                 video.has_poster = True
 
+        if not video.backdrop_path and info.backdrop_url:
+            downloaded = self.metadata.artwork_path(info.backdrop_url)
+            if downloaded is not None:
+                video.backdrop_path = str(downloaded)
+
         merged = dict(video.meta or {})
         merged.setdefault("plot", episode.get("summary") or info.summary)
         merged.setdefault("genres", info.genres)

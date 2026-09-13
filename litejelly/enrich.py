@@ -117,6 +117,8 @@ class Enricher:
             log.info("Found %s on %s", info.title or title, info.source)
             if info.poster_url:
                 self.providers.artwork(info.poster_url)
+            if info.backdrop_url:
+                self.providers.artwork(info.backdrop_url)
             for member in info.cast:
                 if member.get("image"):
                     self.providers.artwork(member["image"])

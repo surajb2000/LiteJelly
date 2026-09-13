@@ -2591,3 +2591,79 @@ body.no-hero #topbar {
   bottom: 120px;
   min-width: 280px;
 }
+
+
+/* ==========================================================================
+   Player corrections
+   ========================================================================== */
+
+/* The transport is a flex child of the OSD now, so space-between drops it in
+   the middle of the picture and the seek bar stays at the bottom where it
+   belongs. It used to sit in the bottom stack, which pushed the scrubber up
+   to the middle of the screen. */
+.osd-transport {
+  margin: 0;
+  align-self: center;
+}
+
+/* Popups are positioned from JS so they open above whichever control was
+   pressed. These are only the values used before that runs. */
+.popup-menu {
+  right: auto;
+  left: 50%;
+  bottom: 120px;
+}
+
+/* Two menus can no longer collide, but keep the stacking explicit. */
+#options-menu,
+#subtitle-menu,
+#quality-menu,
+#audiosync-menu {
+  z-index: 45;
+}
+
+.quality-btn .btn-label {
+  min-width: 3.2em;
+  text-align: left;
+}
+
+
+/* The hero carries the poster as its own card beside the copy, rather than
+   stretching a portrait image across a wide backdrop. */
+.hero-body {
+  display: flex;
+  align-items: center;
+  max-width: 1100px;
+}
+
+.hero-body > * + * { margin-left: 36px; }
+
+.hero-poster {
+  flex: 0 0 200px;
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+  background: #0d1219;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.65);
+}
+
+.hero-poster.hidden { display: none; }
+
+.hero-poster-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.hero-poster-img.loaded { opacity: 1; }
+
+.hero-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 720px;
+}
+
+[data-profile="tv"] .hero-poster { flex-basis: 300px; }
+[data-profile="phone"] .hero-poster { flex-basis: 108px; }
+[data-profile="phone"] .hero-body > * + * { margin-left: 16px; }

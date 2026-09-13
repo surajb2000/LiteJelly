@@ -611,16 +611,22 @@
     // A suggestion is by definition unstarted, so there is no progress to show.
     el.heroProgress.classList.add('hidden');
 
-    // A backdrop is landscape by nature; an episode's own frame is the next
-    // best thing. A portrait poster would be stretched, so it is not used.
+    // The poster is portrait, so it gets its own card rather than being
+    // stretched across the backdrop.
+    if (video.has_poster) {
+      el.heroPoster.classList.remove('hidden');
+      setImage(el.heroPosterImg,
+               API.artwork + '?id=' + encodeURIComponent(video.id));
+    } else {
+      el.heroPoster.classList.add('hidden');
+    }
+
+    // A real backdrop is landscape art. An episode's own frame is only a
+    // fallback, and a portrait poster is never used here.
     const src = video.has_backdrop
       ? API.artwork + '?id=' + encodeURIComponent(video.id) + '&kind=backdrop'
       : API.thumbnail + '?id=' + encodeURIComponent(video.id);
-    if (el.heroImage.dataset.src !== src) {
-      el.heroImage.dataset.src = src;
-      el.heroImage.classList.remove('loaded');
-      attemptThumbnail(el.heroImage, src);
-    }
+    setImage(el.heroImage, src);
   }
 
   async function loadHeroPlot(video) {
@@ -1857,11 +1863,33 @@
     closeSubtitleMenu();
     showToast(trackId === 'off' ? 'Subtitles off' : 'Subtitles: ' + (track ? track.label : ''), 1800);
   }
+  /* Put a popup directly above the control that opened it.
+   *
+   * Every menu used to be pinned to the bottom right, so pressing Subtitles
+   * on the left opened a panel on the far right, and two menus could land on
+   * top of each other.
+   */
+  function anchorMenu(menu, button) {
+    if (!button || button.offsetParent === null) return;
+    const host = el.player.getBoundingClientRect();
+    const rect = button.getBoundingClientRect();
+    const margin = 16;
+
+    menu.style.right = 'auto';
+    menu.style.bottom = Math.round(host.bottom - rect.top + 12) + 'px';
+
+    const width = menu.offsetWidth;
+    let left = rect.left + rect.width / 2 - width / 2 - host.left;
+    left = Math.max(margin, Math.min(left, host.width - width - margin));
+    menu.style.left = Math.round(left) + 'px';
+  }
+
   function toggleSubtitleMenu() {
     if (el.subtitleMenu.classList.contains('hidden')) {
-      closeQualityMenu();
+      closeMenus();
       renderSubtitleMenu();
       el.subtitleMenu.classList.remove('hidden');
+      anchorMenu(el.subtitleMenu, el.btnSubtitles);
       el.btnSubtitles.setAttribute('aria-expanded', 'true');
       const first = $('.popup-item', el.subtitleMenu);
       if (first) first.focus();
@@ -1966,9 +1994,10 @@
 
   function toggleQualityMenu() {
     if (el.qualityMenu.classList.contains('hidden')) {
-      closeSubtitleMenu();
+      closeMenus();
       renderQualityMenu();
       el.qualityMenu.classList.remove('hidden');
+      anchorMenu(el.qualityMenu, el.btnQuality);
       el.btnQuality.setAttribute('aria-expanded', 'true');
       const first = $('.popup-item', el.qualityMenu);
       if (first) first.focus();
@@ -2001,6 +2030,7 @@
     if (el.optionsMenu.classList.contains('hidden')) {
       closeMenus();
       el.optionsMenu.classList.remove('hidden');
+      anchorMenu(el.optionsMenu, el.btnOptions);
       el.btnOptions.setAttribute('aria-expanded', 'true');
       const first = $('.popup-item', el.optionsMenu);
       if (first) first.focus();
@@ -2098,10 +2128,12 @@
 
   function toggleAudioSyncMenu() {
     if (el.audioSyncMenu.classList.contains('hidden')) {
-      closeSubtitleMenu();
-      closeQualityMenu();
+      // Opened from inside Options, which has to close or the two overlap.
+      // That leaves its own button hidden, so anchor to the one still on screen.
+      closeMenus();
       renderAudioSyncMenu();
       el.audioSyncMenu.classList.remove('hidden');
+      anchorMenu(el.audioSyncMenu, el.btnOptions);
       el.btnAudioSync.setAttribute('aria-expanded', 'true');
       const current = $('.popup-item[aria-checked="true"]', el.audioSyncMenu);
       (current || $('.popup-item', el.audioSyncMenu)).focus();
@@ -2477,6 +2509,8 @@
     el.rails = $('#rails');
     el.hero = $('#hero');
     el.heroImage = $('#hero-image');
+    el.heroPoster = $('.hero-poster');
+    el.heroPosterImg = $('#hero-poster-img');
     el.heroEyebrow = $('#hero-eyebrow');
     el.heroTitle = $('#hero-title');
     el.heroMeta = $('#hero-meta');

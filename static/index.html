@@ -53,17 +53,22 @@
         <img id="hero-image" class="hero-image" alt="" decoding="async">
       </div>
       <div class="hero-body">
-        <p id="hero-eyebrow" class="hero-eyebrow"></p>
-        <h1 id="hero-title" class="hero-title"></h1>
-        <p id="hero-meta" class="hero-meta"></p>
-        <p id="hero-plot" class="hero-plot"></p>
-        <div class="hero-actions">
-          <button type="button" id="hero-play" class="btn-primary hero-play"></button>
-          <button type="button" id="hero-browse" class="btn-secondary hero-browse">Episodes</button>
+        <div class="hero-poster">
+          <img id="hero-poster-img" class="hero-poster-img" alt="" decoding="async">
         </div>
-        <div id="hero-progress" class="hero-progress hidden">
-          <span class="hero-progress-track"><span id="hero-progress-fill" class="hero-progress-fill"></span></span>
-          <span id="hero-remaining" class="hero-remaining"></span>
+        <div class="hero-copy">
+          <p id="hero-eyebrow" class="hero-eyebrow"></p>
+          <h1 id="hero-title" class="hero-title"></h1>
+          <p id="hero-meta" class="hero-meta"></p>
+          <p id="hero-plot" class="hero-plot"></p>
+          <div class="hero-actions">
+            <button type="button" id="hero-play" class="btn-primary hero-play"></button>
+            <button type="button" id="hero-browse" class="btn-secondary hero-browse">Episodes</button>
+          </div>
+          <div id="hero-progress" class="hero-progress hidden">
+            <span class="hero-progress-track"><span id="hero-progress-fill" class="hero-progress-fill"></span></span>
+            <span id="hero-remaining" class="hero-remaining"></span>
+          </div>
         </div>
       </div>
     </section>
@@ -199,6 +204,21 @@
         </div>
       </div>
 
+      <div class="osd-transport">
+        <button id="btn-rewind" class="transport-btn" title="Rewind 10 seconds" aria-label="Rewind 10 seconds">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          <span class="btn-subtext">10</span>
+        </button>
+        <button id="btn-play-pause" class="transport-btn transport-main" title="Play/Pause" aria-label="Play or pause">
+          <svg id="icon-play" class="hidden" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <svg id="icon-pause" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+        <button id="btn-forward" class="transport-btn" title="Forward 10 seconds" aria-label="Forward 10 seconds">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
+          <span class="btn-subtext">10</span>
+        </button>
+      </div>
+
       <div class="osd-bottom">
         <div class="progress-wrap" id="progress-container">
           <div class="progress-bar">
@@ -209,21 +229,6 @@
           <input id="seek-range" class="seek-range" type="range" min="0" max="1000" value="0" step="1"
                  aria-label="Seek" aria-valuetext="0:00">
           <div id="scrub-preview" class="scrub-preview hidden"></div>
-        </div>
-
-        <div class="osd-transport">
-          <button id="btn-rewind" class="transport-btn" title="Rewind 10 seconds" aria-label="Rewind 10 seconds">
-            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
-            <span class="btn-subtext">10</span>
-          </button>
-          <button id="btn-play-pause" class="transport-btn transport-main" title="Play/Pause" aria-label="Play or pause">
-            <svg id="icon-play" class="hidden" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            <svg id="icon-pause" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-          </button>
-          <button id="btn-forward" class="transport-btn" title="Forward 10 seconds" aria-label="Forward 10 seconds">
-            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
-            <span class="btn-subtext">10</span>
-          </button>
         </div>
 
         <div class="osd-controls-row">
@@ -253,6 +258,11 @@
           </div>
 
           <div class="controls-right">
+            <button id="btn-quality" class="control-icon-btn quality-btn" title="Quality" aria-label="Video quality"
+                    aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2.5"/><path d="M8 9.5h8M8 14.5h5" stroke-linecap="round"/></svg>
+              <span id="quality-label" class="btn-label">Auto</span>
+            </button>
             <button id="btn-options" class="control-icon-btn" title="Options" aria-label="Playback options"
                     aria-haspopup="menu" aria-expanded="false">
               <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -275,12 +285,7 @@
 
       <!-- Rescue controls for a difficult file, not everyday viewing. -->
       <div id="options-menu" class="popup-menu hidden" role="menu" aria-label="Playback options">
-        <p class="popup-heading">Playback</p>
-        <button id="btn-quality" class="popup-item quality-btn" type="button" role="menuitem"
-                aria-haspopup="menu" aria-expanded="false">
-          <span class="popup-item-label">Quality</span>
-          <span id="quality-label" class="popup-item-hint">Auto</span>
-        </button>
+        <p class="popup-heading">Advanced</p>
         <button id="btn-speed" class="popup-item speed-btn" type="button" role="menuitem">
           <span class="popup-item-label">Speed</span>
           <span class="popup-item-hint"><span>1x</span></span>
