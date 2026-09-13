@@ -1,6 +1,42 @@
 /* ==========================================================================
    LiteJelly Modern Dark Theme (TV & Mobile Optimized)
    ========================================================================== */
+
+/* Inter, served from this machine rather than a font CDN. Self-hosting keeps
+   the library working with no internet, needs no CSP exception, and does not
+   announce every page view to a third party. Static weights, not the variable
+   file: variable fonts need Chrome 62 and the target television is older, so
+   it would silently get nothing.
+   SIL Open Font License 1.1 — see static/fonts/Inter-LICENSE.txt. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/Inter-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/Inter-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/Inter-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/static/fonts/Inter-ExtraBold.woff2") format("woff2");
+}
+
 :root {
   --bg: #07090e;
   --card-bg: rgba(22, 27, 34, 0.75);
@@ -24,9 +60,11 @@
   --glass-border: rgba(255, 255, 255, 0.1);
   --glass-blur: blur(16px);
 
-  /* Bundled system stack - no network fetch, so it works fully offline. */
-  --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display",
-    "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  /* The system stack stays behind Inter, so if the file ever fails to load
+     the page falls back to exactly the typography it had before. */
+  --font-stack: "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", sans-serif;
 
   /* Type scale. Overridden per device profile below, so every size in the
      sheet is expressed once and rescaled in one place. */

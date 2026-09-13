@@ -520,19 +520,60 @@
 
   const RAIL_LIMIT = 20;
 
-  /* What the hero should be about: whatever you would actually press play on.
-   * A half-watched episode beats anything else; failing that, the newest
-   * thing added, because that is why you came.
+  /* The hero suggests something, it does not repeat the Continue watching
+   * rail sitting directly beneath it. Resuming already has a row of its own,
+   * so the one large slot on the page is better spent on a title you have
+   * not started.
+   *
+   * There is no recommendation engine here and inventing one would be
+   * dishonest, so the pick is simply the best-looking unwatched title, with
+   * a rotation that changes by the day rather than on every render. A hero
+   * that reshuffles whenever the library rescans is unusable.
    */
   function heroSubject() {
-    const byId = new Map(state.videos.map(video => [video.id, video]));
-    for (let i = 0; i < state.continueWatching.length; i++) {
-      const entry = state.continueWatching[i];
-      const video = byId.get(entry.id);
-      if (video) return { video: video, entry: entry };
-    }
-    const newest = sortVideos(state.videos)[0];
-    return newest ? { video: newest, entry: null } : null;
+    const started = {};
+    Object.keys(state.progress).forEach(id => {
+      const entry = state.progress[id];
+      if (entry && (entry.finished || entry.position > 15)) started[id] = true;
+    });
+
+    // One candidate per series, so a long show cannot flood the shortlist.
+    const seen = {};
+    const fresh = [];
+    sortVideos(state.videos).forEach(video => {
+      if (started[video.id]) return;
+      const key = video.series_id || video.id;
+      if (seen[key]) return;
+      seen[key] = true;
+      fresh.push(video);
+    });
+
+    const pool = fresh.length ? fresh : state.videos;
+    if (!pool.length) return null;
+
+    // Something with artwork and a rating makes a far better hero than a
+    // bare filename, so those sort first.
+    const ranked = pool.slice().sort((a, b) => score(b) - score(a));
+    const shortlist = ranked.slice(0, Math.min(8, ranked.length));
+    const day = Math.floor(Date.now() / 86400000);
+    return { video: shortlist[day % shortlist.length], entry: null };
+  }
+
+  function firstEpisodeOf(seriesId) {
+    const episodes = state.videos
+      .filter(video => video.series_id === seriesId)
+      .sort(compareByEpisode);
+    return episodes[0];
+  }
+
+  function score(video) {
+    let value = 0;
+    if (video.has_backdrop) value += 4;
+    if (video.has_poster) value += 3;
+    if (video.imdb_rating != null) value += video.imdb_rating / 4;
+    else if (video.rating != null) value += video.rating / 5;
+    if (video.episode_title) value += 1;
+    return value;
   }
 
   function renderHero() {
@@ -543,42 +584,32 @@
     }
 
     const video = subject.video;
-    const entry = subject.entry;
-    const resuming = !!(entry && entry.position > 15);
-
     el.hero.classList.remove('hidden');
-    el.heroEyebrow.textContent = resuming ? 'Continue watching'
-      : (video.series_id ? 'Latest episode' : 'Recently added');
+    el.heroEyebrow.textContent = video.series_id ? 'Suggested show' : 'Suggested film';
     el.heroTitle.textContent = video.title || video.name;
 
     const bits = [];
     if (video.imdb_rating != null) bits.push('\u2605 ' + video.imdb_rating);
     else if (video.rating != null) bits.push('\u2605 ' + video.rating);
     if (video.year) bits.push(video.year);
-    const code = episodeCode(video);
-    if (code) bits.push(code);
-    if (video.episode_title) bits.push(video.episode_title);
+    if (video.category === 'anime') bits.push('Anime');
     el.heroMeta.textContent = bits.join(' \u00b7 ');
 
     el.heroPlot.textContent = '';
     loadHeroPlot(video);
 
-    el.heroPlay.textContent = resuming ? '\u25b6  Resume' : '\u25b6  Play';
-    el.heroPlay.onclick = () => playVideo(video.id);
+    // "Play first episode" has to mean the first one, not whichever copy of
+    // the show happened to sort to the top.
+    const target = video.series_id ? firstEpisodeOf(video.series_id) : video;
+    el.heroPlay.textContent = video.series_id ? '\u25b6  Play first episode' : '\u25b6  Play';
+    el.heroPlay.onclick = () => openVideo(target.id);
 
     // Only a series has anywhere else to go.
     el.heroBrowse.classList.toggle('hidden', !video.series_id);
     el.heroBrowse.onclick = () => openSeries(video.series_id);
 
-    if (resuming && entry.duration) {
-      const fraction = Math.min(1, entry.position / entry.duration);
-      el.heroProgress.classList.remove('hidden');
-      el.heroProgressFill.style.width = (fraction * 100).toFixed(1) + '%';
-      el.heroRemaining.textContent =
-        formatTime(Math.max(0, entry.duration - entry.position)) + ' left';
-    } else {
-      el.heroProgress.classList.add('hidden');
-    }
+    // A suggestion is by definition unstarted, so there is no progress to show.
+    el.heroProgress.classList.add('hidden');
 
     // A backdrop is landscape by nature; an episode's own frame is the next
     // best thing. A portrait poster would be stretched, so it is not used.
@@ -731,7 +762,7 @@
     const next = nextUnwatched(data.episodes || []);
     el.seriesPlay.textContent = next.resume
       ? '\u25b6  Resume ' + next.code : '\u25b6  Play ' + next.code;
-    el.seriesPlay.onclick = () => playVideo(next.id);
+    el.seriesPlay.onclick = () => openVideo(next.id);
 
     if (data.poster_id) {
       setImage(el.seriesPosterImg,
@@ -861,7 +892,7 @@
     go.textContent = '\u25b6';
     node.appendChild(go);
 
-    node.addEventListener('click', () => playVideo(row.id));
+    node.addEventListener('click', () => openVideo(row.id));
     if (thumbObserver) thumbObserver.observe(node);
     else loadThumbnail(img);
     return node;

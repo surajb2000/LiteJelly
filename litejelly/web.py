@@ -40,6 +40,11 @@ from .thumbnails import ThumbnailService
 
 log = logging.getLogger("litejelly.web")
 
+# Python's table predates web fonts, so without this they would be served as
+# application/octet-stream and some browsers refuse to use them.
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("font/woff", ".woff")
+
 CHUNK_SIZE = 256 * 1024
 MAX_BODY_BYTES = 64 * 1024
 DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
@@ -1337,7 +1342,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if target is None or not target.is_file():
             self.send_api_error(HTTPStatus.NOT_FOUND, "File not found")
             return
-        self.serve_static_file(target, cache_control="no-cache")
+        # A font is nearly half a megabyte and never changes; revalidating it
+        # on every page load is pure cost. Markup and code stay uncached so an
+        # edit shows up on the next reload.
+        cache = ("public, max-age=31536000, immutable"
+                 if target.suffix.lower() in (".woff2", ".woff") else "no-cache")
+        self.serve_static_file(target, cache_control=cache)
 
     def serve_static_file(self, path: Path, cache_control: str = "no-cache",
                           content_type: str | None = None):
