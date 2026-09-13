@@ -50,10 +50,19 @@
 
     <div class="library-header">
       <div class="section-title-wrap">
-        <h1 class="section-title">Media Library</h1>
-        <p class="section-subtitle">Local streaming optimized for TV &amp; mobile</p>
+        <button id="series-back" class="series-back hidden" type="button">
+          <span aria-hidden="true">‹</span> All titles
+        </button>
+        <h1 id="section-title" class="section-title">Media Library</h1>
+        <p id="section-subtitle" class="section-subtitle">Local streaming optimized for TV &amp; mobile</p>
       </div>
       <div class="library-tools">
+        <div id="category-chips" class="filter-chips hidden" role="group" aria-label="Filter by type">
+          <button class="chip active" data-category="all" aria-pressed="true">All</button>
+          <button class="chip" data-category="shows" aria-pressed="false">Shows</button>
+          <button class="chip" data-category="anime" aria-pressed="false">Anime</button>
+          <button class="chip" data-category="movies" aria-pressed="false">Movies</button>
+        </div>
         <div class="filter-chips" role="group" aria-label="Filter by format">
           <button class="chip active" data-filter="all" aria-pressed="true">All</button>
           <button class="chip" data-filter="mp4" aria-pressed="false">MP4</button>
@@ -71,6 +80,8 @@
         </label>
       </div>
     </div>
+
+    <div id="season-chips" class="filter-chips season-chips hidden" role="group" aria-label="Filter by season"></div>
 
     <div id="loading" class="loading-container">
       <div class="spinner" aria-hidden="true"></div>
@@ -206,6 +217,7 @@
       </span>
       <span class="card-info">
         <span class="card-title"></span>
+        <span class="card-subtitle hidden"></span>
         <span class="card-meta">
           <span class="card-size"></span>
           <span class="meta-dot" aria-hidden="true">•</span>

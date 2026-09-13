@@ -61,10 +61,14 @@
     view: 'LIBRARY',
     videos: [],
     filtered: [],
+    entries: [],
     progress: {},
     filter: 'all',
+    category: 'all',
     sort: 'recent',
     query: '',
+    seriesId: null,
+    season: 'all',
     columns: 4,
     ffmpegAvailable: false,
     playback: null,
@@ -218,6 +222,7 @@
       state.videos = Array.isArray(data.videos) ? data.videos : [];
       state.progress = data.progress || {};
       state.ffmpegAvailable = !!data.ffmpeg_available;
+      renderCategoryChips();
       applyFilters();
       renderContinueWatching();
     } catch (err) {
@@ -232,9 +237,13 @@
 
   function compareByName(a, b) {
     // Episodes share a series title, so fall back to season/episode numbers.
-    const byTitle = (a.name || '').localeCompare(b.name || '', undefined,
+    const byTitle = (a.title || a.name || '').localeCompare(b.title || b.name || '', undefined,
       { numeric: true, sensitivity: 'base' });
     if (byTitle !== 0) return byTitle;
+    return compareByEpisode(a, b);
+  }
+
+  function compareByEpisode(a, b) {
     if ((a.season || 0) !== (b.season || 0)) return (a.season || 0) - (b.season || 0);
     if ((a.episode || 0) !== (b.episode || 0)) return (a.episode || 0) - (b.episode || 0);
     return (a.filename || '').localeCompare(b.filename || '', undefined, { numeric: true });
@@ -260,8 +269,109 @@
     return sorted;
   }
 
+  // --- Grouping --------------------------------------------------------
+
+  function episodeCode(video) {
+    if (video.season == null || video.episode == null) return '';
+    return 'S' + String(video.season).padStart(2, '0') +
+           'E' + String(video.episode).padStart(2, '0');
+  }
+
+  // Series are derived on the client so the payload stays a flat list.
+  function groupIntoSeries(videos) {
+    const series = new Map();
+    videos.forEach(video => {
+      if (!video.series_id) return;
+      let group = series.get(video.series_id);
+      if (!group) {
+        group = {
+          isSeries: true,
+          id: video.series_id,
+          title: video.title || video.name,
+          category: video.category,
+          episodes: [],
+          seasons: {},
+          newestTs: 0,
+          size: 0
+        };
+        series.set(video.series_id, group);
+      }
+      group.episodes.push(video);
+      if (video.season != null) group.seasons[video.season] = true;
+      if (video.modified_ts > group.newestTs) {
+        group.newestTs = video.modified_ts;
+        group.newest = video;
+      }
+      group.size += video.size || 0;
+    });
+    return series;
+  }
+
+  function seriesById(id) {
+    return groupIntoSeries(state.videos).get(id) || null;
+  }
+
+  // A series is sorted as if it were a single item with the newest episode's date.
+  function buildEntries(videos) {
+    const series = groupIntoSeries(videos);
+    const seen = new Set();
+    const entries = [];
+    videos.forEach(video => {
+      if (!video.series_id) {
+        entries.push(video);
+        return;
+      }
+      if (seen.has(video.series_id)) return;
+      seen.add(video.series_id);
+      const group = series.get(video.series_id);
+      group.modified_ts = group.newestTs;
+      group.name = group.title;
+      entries.push(group);
+    });
+    return entries;
+  }
+
+  function categoryCounts() {
+    const counts = { shows: 0, anime: 0, movies: 0 };
+    state.videos.forEach(video => {
+      if (counts[video.category] != null) counts[video.category] += 1;
+    });
+    return counts;
+  }
+
+  function renderCategoryChips() {
+    const counts = categoryCounts();
+    const present = Object.keys(counts).filter(key => counts[key] > 0);
+    // Only worth showing when the library actually spans more than one kind.
+    const useful = present.length > 1;
+    el.categoryChips.classList.toggle('hidden', !useful);
+    if (!useful) {
+      state.category = 'all';
+      return;
+    }
+    $$('.chip', el.categoryChips).forEach(chip => {
+      const key = chip.dataset.category;
+      chip.classList.toggle('hidden', key !== 'all' && !counts[key]);
+    });
+  }
+
   function applyFilters() {
     let list = state.videos;
+
+    if (state.seriesId) {
+      list = list.filter(video => video.series_id === state.seriesId);
+      if (state.season !== 'all') {
+        list = list.filter(video => String(video.season) === state.season);
+      }
+      state.filtered = list.slice().sort(compareByEpisode);
+      state.entries = state.filtered;
+      renderGrid();
+      return;
+    }
+
+    if (state.category !== 'all') {
+      list = list.filter(video => video.category === state.category);
+    }
 
     if (state.filter !== 'all') {
       list = list.filter(video => {
@@ -279,7 +389,86 @@
     }
 
     state.filtered = sortVideos(list);
+    // Searching is a hunt for one file, so show episodes rather than series.
+    state.entries = state.query ? state.filtered : buildEntries(state.filtered);
     renderGrid();
+  }
+
+  function openSeries(seriesId) {
+    const group = seriesById(seriesId);
+    if (!group) return;
+    state.seriesId = seriesId;
+    state.season = 'all';
+    renderSeriesHeader(group);
+    applyFilters();
+    window.scrollTo(0, 0);
+    focusFirstCard();
+  }
+
+  function closeSeries() {
+    if (!state.seriesId) return false;
+    state.seriesId = null;
+    state.season = 'all';
+    renderSeriesHeader(null);
+    applyFilters();
+    return true;
+  }
+
+  function renderSeriesHeader(group) {
+    el.seriesBack.classList.toggle('hidden', !group);
+    el.seasonChips.classList.add('hidden');
+
+    if (!group) {
+      el.sectionTitle.textContent = 'Media Library';
+      el.sectionSubtitle.textContent = 'Local streaming optimized for TV & mobile';
+      renderCategoryChips();
+      return;
+    }
+
+    el.categoryChips.classList.add('hidden');
+    el.sectionTitle.textContent = group.title;
+    const seasons = Object.keys(group.seasons).map(Number).sort((a, b) => a - b);
+    const parts = [group.episodes.length + (group.episodes.length === 1 ? ' episode' : ' episodes')];
+    if (seasons.length > 1) {
+      parts.push(seasons.length + ' seasons');
+    }
+    el.sectionSubtitle.textContent = parts.join(' · ');
+
+    if (seasons.length > 1) {
+      const fragment = document.createDocumentFragment();
+      fragment.appendChild(seasonChip('all', 'All seasons'));
+      seasons.forEach(season => {
+        fragment.appendChild(seasonChip(String(season), 'Season ' + season));
+      });
+      el.seasonChips.replaceChildren(fragment);
+      el.seasonChips.classList.remove('hidden');
+    }
+  }
+
+  function seasonChip(value, label) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip' + (state.season === value ? ' active' : '');
+    chip.dataset.season = value;
+    chip.setAttribute('aria-pressed', state.season === value ? 'true' : 'false');
+    chip.textContent = label;
+    chip.addEventListener('click', () => {
+      state.season = value;
+      $$('.chip', el.seasonChips).forEach(other => {
+        const on = other.dataset.season === value;
+        other.classList.toggle('active', on);
+        other.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      applyFilters();
+    });
+    return chip;
+  }
+
+  function focusFirstCard() {
+    requestAnimationFrame(() => {
+      const first = $('.card', el.grid);
+      if (first) first.focus();
+    });
   }
 
   function progressFraction(video) {
@@ -294,10 +483,19 @@
     card.setAttribute('aria-label', 'Play ' + video.name);
     card.title = video.filename;
 
-    $('.card-title', card).textContent = video.name;
-    $('.card-letter', card).textContent = (video.name || '?').charAt(0).toUpperCase();
+    const inSeries = !!state.seriesId;
+    const heading = inSeries ? (video.episode_title || video.title || video.name) : video.name;
+    $('.card-title', card).textContent = heading;
+    $('.card-letter', card).textContent = (heading || '?').charAt(0).toUpperCase();
     $('.card-size', card).textContent = video.size_human || '';
     $('.card-date', card).textContent = formatDate(video.modified);
+
+    const code = episodeCode(video);
+    if (inSeries && code) {
+      const sub = $('.card-subtitle', card);
+      sub.textContent = code;
+      sub.classList.remove('hidden');
+    }
 
     const badge = $('.card-badge', card);
     badge.textContent = (video.extension || '').toUpperCase();
@@ -316,6 +514,59 @@
     else loadThumbnail(img);
 
     return card;
+  }
+
+  function buildSeriesCard(group) {
+    const card = cardTemplate.content.firstElementChild.cloneNode(true);
+    card.dataset.seriesId = group.id;
+    card.classList.add('series-card');
+    card.setAttribute('aria-label', 'Open ' + group.title);
+    card.title = group.title;
+
+    $('.card-title', card).textContent = group.title;
+    $('.card-letter', card).textContent = (group.title || '?').charAt(0).toUpperCase();
+
+    const count = group.episodes.length;
+    const sub = $('.card-subtitle', card);
+    sub.textContent = count + (count === 1 ? ' episode' : ' episodes');
+    sub.classList.remove('hidden');
+
+    $('.card-size', card).textContent = humanSize(group.size);
+    $('.card-date', card).textContent = group.newest ? formatDate(group.newest.modified) : '';
+
+    const badge = $('.card-badge', card);
+    badge.textContent = group.category === 'anime' ? 'ANIME' : 'SERIES';
+    badge.classList.add('badge-series');
+
+    // Resume marker for whichever episode is part-watched.
+    const started = group.episodes.find(episode => progressFraction(episode) > 0.01);
+    if (started) {
+      const wrap = $('.card-progress', card);
+      wrap.classList.remove('hidden');
+      $('.card-progress-fill', wrap).style.width =
+        (progressFraction(started) * 100).toFixed(1) + '%';
+    }
+
+    const poster = group.episodes.slice().sort(compareByEpisode)[0] || group.newest;
+    const img = $('.thumb-img', card);
+    if (poster) {
+      img.dataset.src = API.thumbnail + '?id=' + encodeURIComponent(poster.id);
+      if (thumbObserver) thumbObserver.observe(img);
+      else loadThumbnail(img);
+    }
+
+    return card;
+  }
+
+  function humanSize(bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes || 0;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return value.toFixed(1) + ' ' + units[unit];
   }
 
   function loadThumbnail(img) {
@@ -341,22 +592,26 @@
   }
 
   function renderGrid() {
-    const count = state.filtered.length;
-    el.mediaCount.textContent = count + (count === 1 ? ' video' : ' videos');
+    const entries = state.entries;
+    const count = entries.length;
+    const videoCount = state.filtered.length;
+    el.mediaCount.textContent = videoCount + (videoCount === 1 ? ' video' : ' videos');
 
     if (!count) {
       el.grid.replaceChildren();
       el.emptyTitle.textContent = state.videos.length ? 'No matches' : 'No videos found';
       el.emptyHint.textContent = state.videos.length
         ? 'Try a different search or filter.'
-        : 'Add folders to config.json, then rescan.';
+        : 'Add a media folder on the admin page, then rescan.';
       el.emptyState.classList.remove('hidden');
       return;
     }
 
     el.emptyState.classList.add('hidden');
     const fragment = document.createDocumentFragment();
-    state.filtered.forEach(video => fragment.appendChild(buildCard(video)));
+    entries.forEach(entry => {
+      fragment.appendChild(entry.isSeries ? buildSeriesCard(entry) : buildCard(entry));
+    });
     el.grid.replaceChildren(fragment);
     requestAnimationFrame(measureColumns);
   }
@@ -1220,6 +1475,19 @@
       return;
     }
 
+    // Back should step out of a series before it leaves the app.
+    // 10009 (Tizen) and 461 (webOS) are the remote's Back button.
+    const isBack = event.key === 'Escape' || event.key === 'Backspace' ||
+                   event.key === 'BrowserBack' ||
+                   event.keyCode === 10009 || event.keyCode === 461;
+    if (isBack && !isTypingTarget(active)) {
+      if (closeSeries()) {
+        event.preventDefault();
+        focusFirstCard();
+        return;
+      }
+    }
+
     const arrows = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
     if (arrows.indexOf(event.key) === -1) return;
     if (isTypingTarget(active) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) return;
@@ -1323,6 +1591,11 @@
     el.clock = $('#clock');
     el.library = $('#library');
     el.grid = $('#video-grid');
+    el.sectionTitle = $('#section-title');
+    el.sectionSubtitle = $('#section-subtitle');
+    el.seriesBack = $('#series-back');
+    el.categoryChips = $('#category-chips');
+    el.seasonChips = $('#season-chips');
     el.loading = $('#loading');
     el.emptyState = $('#empty-state');
     el.emptyTitle = $('#empty-title');
@@ -1360,16 +1633,42 @@
     cardTemplate = $('#card-template');
   }
 
+  function bindChipGroup(group, key) {
+    if (!group) return;
+    $$('.chip', group).forEach(chip => {
+      chip.addEventListener('click', () => {
+        $$('.chip', group).forEach(other => {
+          other.classList.remove('active');
+          other.setAttribute('aria-pressed', 'false');
+        });
+        chip.classList.add('active');
+        chip.setAttribute('aria-pressed', 'true');
+        state[key] = chip.dataset[key];
+        if (key === 'category' && state.seriesId) closeSeries();
+        applyFilters();
+      });
+    });
+  }
+
   function bindLibraryEvents() {
     const onCardActivate = event => {
       const card = event.target.closest('.card');
-      if (card && card.dataset.id) openVideo(card.dataset.id);
+      if (!card) return;
+      if (card.dataset.seriesId) openSeries(card.dataset.seriesId);
+      else if (card.dataset.id) openVideo(card.dataset.id);
     };
     el.grid.addEventListener('click', onCardActivate);
     el.continueRow.addEventListener('click', onCardActivate);
 
+    el.seriesBack.addEventListener('click', () => {
+      closeSeries();
+      focusFirstCard();
+    });
+
     el.searchInput.addEventListener('input', debounce(event => {
       state.query = event.target.value.toLowerCase().trim();
+      // A search spans the whole library, not the series being browsed.
+      if (state.query && state.seriesId) closeSeries();
       applyFilters();
     }, 180));
 
@@ -1378,18 +1677,8 @@
       applyFilters();
     });
 
-    $$('.chip').forEach(chip => {
-      chip.addEventListener('click', () => {
-        $$('.chip').forEach(other => {
-          other.classList.remove('active');
-          other.setAttribute('aria-pressed', 'false');
-        });
-        chip.classList.add('active');
-        chip.setAttribute('aria-pressed', 'true');
-        state.filter = chip.dataset.filter;
-        applyFilters();
-      });
-    });
+    bindChipGroup(el.categoryChips, 'category');
+    bindChipGroup($('.filter-chips[aria-label="Filter by format"]'), 'filter');
 
     $('#rescan-btn').addEventListener('click', async () => {
       showToast('Rescanning library...');

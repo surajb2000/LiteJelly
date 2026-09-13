@@ -306,6 +306,13 @@ class SettingsFileTests(unittest.TestCase):
         settings.settings_path(self.root).write_text("[1, 2]", encoding="utf-8")
         self.assertEqual(settings.load_overrides(self.root), {})
 
+    def test_byte_order_mark_is_tolerated(self):
+        # Notepad and PowerShell's Set-Content write a BOM; plain utf-8 chokes
+        # on it and the file would be silently ignored.
+        settings.settings_path(self.root).write_text(
+            '{"server_name": "Den"}', encoding="utf-8-sig")
+        self.assertEqual(settings.load_overrides(self.root), {"server_name": "Den"})
+
     def test_save_does_not_leave_temp_files(self):
         settings.save_overrides(self.root, {"server_name": "Den"})
         leftovers = [p.name for p in self.root.iterdir() if p.suffix == ".tmp"]
@@ -398,6 +405,13 @@ class ConfigLayeringTests(unittest.TestCase):
         self._write_config({"media_dirs": [str(self.movies), str(self.movies)]})
         config, _ = load_config(self.root)
         self.assertEqual(len(config.media_dirs), 1)
+
+    def test_config_with_a_byte_order_mark_still_loads(self):
+        (self.root / "config.json").write_text(
+            json.dumps({"server_name": "Den"}), encoding="utf-8-sig")
+        config, warnings = load_config(self.root)
+        self.assertEqual(config.server_name, "Den")
+        self.assertEqual(warnings, [])
 
 
 class PublicConfigTests(unittest.TestCase):

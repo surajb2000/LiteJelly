@@ -713,6 +713,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     # -- response helpers -------------------------------------------------
     def _begin(self, status, headers: dict):
+        # Any part of the body the handler did not read is still queued on the
+        # socket; with keep-alive the next read would treat it as a request
+        # line. Drain it before replying, whatever the outcome.
+        self.discard_body()
         self.send_response(status)
         for key, value in SECURITY_HEADERS.items():
             self.send_header(key, value)
@@ -739,12 +743,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_bytes(payload, "application/json; charset=utf-8", status)
 
     def send_api_error(self, status, message: str):
-        # A rejected POST still has its body queued on the socket. Left there,
-        # keep-alive makes the next read treat it as a request line.
-        self.discard_body()
         self.send_json({"error": message, "status": int(status)}, status=status)
 
     def discard_body(self) -> None:
+        """Consume an unread request body so the connection stays in sync."""
         if getattr(self, "_body_read", True):
             return
         self._body_read = True

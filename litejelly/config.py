@@ -130,7 +130,8 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
 
     if config_path.exists():
         try:
-            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            # utf-8-sig also accepts a BOM, which Notepad and PowerShell add.
+            raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
             if not isinstance(raw, dict):
                 warnings.append(f"{CONFIG_FILE} must contain a JSON object; ignoring it.")
                 raw = {}

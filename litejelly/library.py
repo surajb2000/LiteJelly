@@ -55,17 +55,38 @@ def _smart_title(text: str) -> str:
     return " ".join(words)
 
 
+def _strip_release_group(stem: str) -> str:
+    """Drop the trailing -GROUP tag scene releases end with.
+
+    Left in place it becomes the episode title, so every episode of a show
+    ends up captioned with the encoder's name.
+    """
+    match = re.search(r"-([A-Za-z0-9]{2,})$", stem)
+    if not match:
+        return stem
+    before = stem[: match.start()]
+    # Not a group tag when it is half of a hyphenated format name (WEB-DL,
+    # BLU-RAY, DTS-HD, H-264).
+    if re.search(r"(?:web|blu|dts|h|x|true)$", before, re.IGNORECASE):
+        return stem
+    return before
+
+
 def parse_title(filename: str) -> dict:
     """Derive a display title (plus year/episode info) from a filename."""
     stem = os.path.splitext(filename)[0]
     working = _BRACKETS.sub(" ", stem)
+    working = _strip_release_group(working.strip())
     working = working.replace("_", " ").replace(".", " ").replace("-", " ")
     working = re.sub(r"\s+", " ", working).strip()
 
     episode = None
+    episode_title = ""
     match = _EPISODE.search(working)
     if match:
         episode = {"season": int(match.group(1)), "episode": int(match.group(2))}
+        # Whatever follows SxxExx is usually the episode name.
+        episode_title = _clean_fragment(working[match.end():])
         working = working[: match.start()].strip() or working
 
     year = None
@@ -81,32 +102,71 @@ def parse_title(filename: str) -> dict:
     if not working:
         working = re.sub(r"[._-]+", " ", stem).strip()
 
-    return {"title": _smart_title(working), "year": year, "episode": episode}
+    return {
+        "title": _smart_title(working),
+        "year": year,
+        "episode": episode,
+        "episode_title": episode_title,
+    }
+
+
+def _clean_fragment(text: str) -> str:
+    """Tidy the text trailing an SxxExx marker into an episode name."""
+    cleaned = _NOISE.sub(" ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–—")
+    if not cleaned or cleaned.isdigit():
+        return ""
+    return _smart_title(cleaned)
+
+
+def resolve_category(content_type: str, has_episode: bool) -> str:
+    """A tagged folder wins; an untagged one is judged by the filename."""
+    if content_type in ("movies", "shows", "anime"):
+        return content_type
+    return "shows" if has_episode else "movies"
+
+
+def series_key(category: str, title: str) -> str:
+    """Stable id so episodes group together across folders and rescans.
+
+    Separators are removed rather than collapsed so that "S.H.I.E.L.D." and
+    "SHIELD" resolve to the same show.
+    """
+    normalised = re.sub(r"[^a-z0-9]+", "", title.lower())
+    digest = hashlib.sha1(f"{category}\x00{normalised}".encode("utf-8")).hexdigest()
+    return digest[:16]
 
 
 def display_name(parsed: dict) -> str:
-    """Every episode of a series parses to the same title, so re-attach SxxExx."""
+    """Flat label for search results and the player, where there is no series
+    heading to give an episode its context."""
     episode = parsed.get("episode")
     if not episode:
         return parsed["title"]
-    return (f"{parsed['title']} \u00b7 "
-            f"S{episode['season']:02d}E{episode['episode']:02d}")
+    code = f"S{episode['season']:02d}E{episode['episode']:02d}"
+    if parsed.get("episode_title"):
+        return f"{parsed['title']} \u00b7 {code} \u00b7 {parsed['episode_title']}"
+    return f"{parsed['title']} \u00b7 {code}"
 
 
 @dataclass
 class Video:
     id: str
     name: str
+    title: str
     filename: str
     path: str
     dir_index: int
     folder: str
     content_type: str
+    category: str
+    series_id: str
     size: int
     size_human: str
     modified: str
     modified_ts: float
     extension: str
+    episode_title: str = ""
     year: int | None = None
     season: int | None = None
     episode: int | None = None
@@ -277,21 +337,27 @@ class Library:
                         rel = full.relative_to(base).as_posix()
                         parsed = parse_title(filename)
                         ep = parsed["episode"] or {}
+                        category = resolve_category(entry.content_type, bool(ep))
                         modified = datetime.datetime.fromtimestamp(
                             stat.st_mtime, tz=datetime.timezone.utc)
                         videos.append(Video(
                             id=_make_id(index, rel),
                             name=display_name(parsed),
+                            title=parsed["title"],
                             filename=filename,
                             path=rel,
                             dir_index=index,
                             folder=str(Path(rel).parent.as_posix()) if "/" in rel else "",
                             content_type=entry.content_type,
+                            category=category,
+                            # Only episodes form a series; a movie stands alone.
+                            series_id=series_key(category, parsed["title"]) if ep else "",
                             size=stat.st_size,
                             size_human=human_size(stat.st_size),
                             modified=modified.isoformat(),
                             modified_ts=stat.st_mtime,
                             extension=full.suffix.lstrip(".").lower(),
+                            episode_title=parsed["episode_title"],
                             year=parsed["year"],
                             season=ep.get("season"),
                             episode=ep.get("episode"),

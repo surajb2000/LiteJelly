@@ -447,6 +447,11 @@ body.playing {
   color: #fff;
 }
 
+.card-badge.badge-series {
+  background: rgba(139, 92, 246, 0.9);
+  color: #fff;
+}
+
 /* Card Info */
 .card-info {
   display: block;
@@ -462,6 +467,44 @@ body.playing {
   overflow: hidden;
   text-overflow: ellipsis;
   margin-bottom: 6px;
+}
+
+.card-subtitle {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.03em;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A series opens a list rather than starting playback, so drop the play glyph. */
+.series-card .card-play-overlay { display: none; }
+
+.series-back {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 6px 14px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.series-back:hover,
+.series-back:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.season-chips {
+  margin: 0 0 18px;
 }
 
 .card-meta {

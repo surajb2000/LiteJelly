@@ -38,7 +38,8 @@ def load_overrides(app_dir: Path) -> dict:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: Notepad and PowerShell write a BOM that plain utf-8 rejects.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         log.warning("Ignoring unreadable %s: %s", SETTINGS_FILE, exc)
         return {}
