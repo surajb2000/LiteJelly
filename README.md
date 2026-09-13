@@ -84,16 +84,19 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 ```
 lucid-fermi/
 ├── config.json             # Server and transcoding configuration
+├── settings.json           # Written by the admin page; overrides config.json (gitignored)
 ├── server.py               # CLI entry point and server startup
 ├── ffmpeg.exe              # Optional portable FFmpeg binary
 ├── ffprobe.exe             # Optional portable FFprobe binary
 │
 ├── litejelly/              # Core Python package (Zero pip dependencies)
 │   ├── __init__.py         # Version info
+│   ├── admin.py            # Admin access control: loopback rule, token check, CSRF guard
 │   ├── config.py           # Configuration loading, validation, and CLI overrides
 │   ├── ffmpeg.py           # Media probe, playback planner, quality ladders, transcode commands
 │   ├── library.py          # Media scanner, title cleanup, regex SxxExx parser
 │   ├── paths.py            # Realpath containment and symlink traversal guards
+│   ├── settings.py         # settings.json load/save and admin input validation
 │   ├── store.py            # SQLite WAL progress store and continue watching
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
 │   ├── thumbnails.py       # Single-flight thumbnail worker pool with fallback seeking
@@ -103,11 +106,16 @@ lucid-fermi/
 │   ├── index.html          # Semantic HTML5 layout with accessible templates
 │   ├── style.css           # Glassmorphic dark theme, TV focus states, player OSD
 │   ├── app.js              # State machine, D-pad navigation, custom video controls
+│   ├── admin.html          # Settings page, served at /admin (separate from the TV UI)
+│   ├── admin.css           # Desktop-oriented styling for the settings page
+│   ├── admin.js            # Settings form, directory picker, save/validation handling
 │   ├── favicon.svg         # SVG vector favicon
 │   └── site.webmanifest    # Web app manifest for mobile home screen installs
 │
 ├── tests/                  # Automated test suite
-│   └── test_litejelly.py   # Unit tests for containment, ranges, subtitles, and titles
+│   ├── test_litejelly.py   # Unit tests for containment, ranges, subtitles, and titles
+│   ├── test_admin.py       # Settings validation, admin access control, library rebuild
+│   └── test_avsync.py      # Regression tests for the seeking and A/V sync fixes
 │
 └── tools/                  # Diagnostic and verification utilities
     └── avsync_probe.py     # Diagnostic harness for measuring A/V synchronization drift
@@ -144,17 +152,21 @@ Upon launch, LiteJelly prints the network URL:
  ffmpeg:  7.1-essentials (ffmpeg.exe)
  ffprobe: 7.1-essentials (ffprobe.exe)
  Videos:  66
+ Admin:   http://127.0.0.1:8000/admin
  Media directories:
-   - D:\TV Shows
+   - [shows] D:\TV Shows
 ============================================================
 ```
 Type the **Network URL** (e.g., `http://192.168.1.50:8000`) into your TV's browser or mobile browser and bookmark it!
 
 ---
 
-## ⚙️ Configuration (`config.json`)
+## ⚙️ Configuration
 
-You can configure defaults in `config.json`:
+There are two layers. `config.json` is the hand-written baseline you edit in a
+text editor. `settings.json`, written by the admin page, sits beside it and
+wins where the two overlap. Command line flags beat both. Delete
+`settings.json` at any time to fall back to your own file.
 
 ```json
 {
@@ -162,6 +174,8 @@ You can configure defaults in `config.json`:
     "host": "0.0.0.0",
     "server_name": "LiteJelly",
     "media_dirs": [
+        { "path": "D:\\Movies", "content_type": "movies" },
+        { "path": "D:\\TV Shows", "content_type": "shows", "label": "TV" },
         "C:\\My Local Drive\\Media"
     ],
     "scan_interval": 60,
@@ -170,6 +184,7 @@ You can configure defaults in `config.json`:
     "stream_buffer_mb": 8,
     "ffmpeg_path": "",
     "ffprobe_path": "",
+    "admin_token": "",
     "transcode": {
         "video_codec": "libx264",
         "audio_codec": "aac",
@@ -182,6 +197,31 @@ You can configure defaults in `config.json`:
     }
 }
 ```
+
+A media directory may be a plain path string or an object with a
+`content_type` of `mixed`, `movies`, `shows` or `anime`. The tag describes how
+the folder should be grouped and presented; plain strings default to `mixed`.
+
+---
+
+## 🔧 Admin Page (`/admin`)
+
+Settings live on their own page at `http://<server>:<port>/admin`, the way Plex
+and Jellyfin separate configuration from the viewing experience. There is
+deliberately no settings icon in the library UI: someone watching a film on a
+TV has no reason to reach the transcoder configuration with a D-pad.
+
+From it you can change the server name, media directories and their content
+types, scan interval, playback and transcoding options, and the ffmpeg paths.
+Everything except `port` and `host` applies immediately; those two are saved
+and reported as needing a restart.
+
+**Access is restricted.** The admin API decides which directories the server
+exposes, so a request that can change it can make the server share any file on
+the machine. It is therefore reachable only from the machine running LiteJelly.
+To reach it from another device, set `admin_token` in `config.json` and open
+`http://<server>:<port>/admin?token=<your-token>`. Writes additionally require
+a same-origin request, so another website cannot post to it from your browser.
 
 ---
 
@@ -203,6 +243,9 @@ You can configure defaults in `config.json`:
 
 - [x] **Phase 0: Project Documentation & Guidelines**
   - Architecture specifications, comprehensive README, coding conventions.
+- [x] **Phase 0.1: Admin Page & Settings**
+  - Separate `/admin` page, tagged media directories, live-applied settings.
+  - Admin API limited to the local machine unless an `admin_token` is set.
 - [ ] **Phase 1: Media Library Grouping & Default Sorting**
   - Default sorting by Episode number (`S01E01`, `S01E02`...).
   - Hierarchical grouping: Shows, Movies, Anime categories + Season & Episode grouping.

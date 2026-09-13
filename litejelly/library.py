@@ -101,6 +101,7 @@ class Video:
     path: str
     dir_index: int
     folder: str
+    content_type: str
     size: int
     size_human: str
     modified: str
@@ -122,12 +123,13 @@ def _make_id(dir_index: int, rel_path: str) -> str:
 class Library:
     """Holds an immutable snapshot of the scanned media, refreshed in the background."""
 
-    def __init__(self, media_dirs: list[str], scan_interval: int = 60):
-        self.media_dirs = media_dirs
+    def __init__(self, media_dirs, scan_interval: int = 60):
+        self.media_dirs = list(media_dirs)
         self.scan_interval = scan_interval
         self._videos: list[Video] = []
         self._by_id: dict[str, Video] = {}
         self._signature: dict[str, tuple] = {}
+        self._dirs_version = 0
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._scanning = False
@@ -154,12 +156,28 @@ class Library:
         with self._lock:
             return self._by_id.get(video_id)
 
+    def set_media_dirs(self, media_dirs, scan_interval: int | None = None) -> None:
+        """Swap the scanned directories and force a rescan.
+
+        Bumping the version invalidates any scan already in flight: its results
+        carry dir_index values that point into the old list.
+        """
+        with self._lock:
+            self.media_dirs = list(media_dirs)
+            if scan_interval is not None:
+                self.scan_interval = scan_interval
+            self._signature = {}
+            self._dirs_version += 1
+        self.request_scan()
+
     def absolute_path(self, video: Video) -> Path | None:
         from .paths import resolve_within
 
-        if not 0 <= video.dir_index < len(self.media_dirs):
+        with self._lock:
+            dirs = self.media_dirs
+        if not 0 <= video.dir_index < len(dirs):
             return None
-        return resolve_within(Path(self.media_dirs[video.dir_index]), video.path)
+        return resolve_within(Path(dirs[video.dir_index].path), video.path)
 
     def request_scan(self) -> None:
         self._wake.set()
@@ -186,10 +204,11 @@ class Library:
             except Exception:
                 log.exception("Library scan failed")
 
-    def _directory_signature(self) -> dict[str, tuple]:
+    def _directory_signature(self, dirs) -> dict[str, tuple]:
         """Cheap fingerprint of each tree, used to skip unnecessary rescans."""
         signature: dict[str, tuple] = {}
-        for root_dir in self.media_dirs:
+        for entry in dirs:
+            root_dir = entry.path
             latest = 0.0
             count = 0
             for root, dirs, _files in os.walk(root_dir):
@@ -207,20 +226,25 @@ class Library:
             if self._scanning:
                 return self._videos
             self._scanning = True
+            dirs = list(self.media_dirs)
+            version = self._dirs_version
 
         try:
-            signature = self._directory_signature()
+            signature = self._directory_signature(dirs)
             with self._lock:
                 unchanged = signature == self._signature and self._videos
             if unchanged and not force:
                 return self.videos
 
             log.info("Scanning %d media director%s...",
-                     len(self.media_dirs), "y" if len(self.media_dirs) == 1 else "ies")
-            videos = self._walk()
+                     len(dirs), "y" if len(dirs) == 1 else "ies")
+            videos = self._walk(dirs)
             videos.sort(key=lambda v: v.modified_ts, reverse=True)
 
             with self._lock:
+                if version != self._dirs_version:
+                    log.info("Media directories changed during the scan; discarding results")
+                    return self._videos
                 self._videos = videos
                 self._by_id = {v.id: v for v in videos}
                 self._signature = signature
@@ -231,9 +255,10 @@ class Library:
             with self._lock:
                 self._scanning = False
 
-    def _walk(self) -> list[Video]:
+    def _walk(self, dirs) -> list[Video]:
         videos: list[Video] = []
-        for index, root_dir in enumerate(self.media_dirs):
+        for index, entry in enumerate(dirs):
+            root_dir = entry.path
             base = Path(root_dir)
             try:
                 for root, dirs, files in os.walk(root_dir):
@@ -261,6 +286,7 @@ class Library:
                             path=rel,
                             dir_index=index,
                             folder=str(Path(rel).parent.as_posix()) if "/" in rel else "",
+                            content_type=entry.content_type,
                             size=stat.st_size,
                             size_human=human_size(stat.st_size),
                             modified=modified.isoformat(),

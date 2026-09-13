@@ -7,6 +7,7 @@ import http.server
 import json
 import logging
 import mimetypes
+import os
 import socket
 import socketserver
 import subprocess
@@ -17,6 +18,9 @@ from email.utils import formatdate
 from http import HTTPStatus
 from pathlib import Path
 
+from . import admin as admin_auth
+from . import settings as user_settings
+from .config import load_config
 from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
 from .library import Library
 from .store import ProgressStore
@@ -111,11 +115,23 @@ def _audio_delay_ms(info, plan, query) -> float:
     return max(-5000.0, min(5000.0, delay))
 
 
+def _drive_roots() -> list[dict]:
+    """Top level of the directory picker: drive letters on Windows, / elsewhere."""
+    if os.name != "nt":
+        return [{"name": "/", "path": "/"}]
+    roots = []
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        candidate = f"{letter}:\\"
+        if os.path.exists(candidate):
+            roots.append({"name": candidate, "path": candidate})
+    return roots
+
+
 class Application:
     """Holds every service and maps request paths to handlers."""
-
     def __init__(self, config):
         self.config = config
+        self._config_lock = threading.RLock()
         self.library = Library(config.media_dirs, config.scan_interval)
         self.tools = FFmpegTools(
             config.app_dir,
@@ -133,6 +149,8 @@ class Application:
             ("GET", "/"): Routes.index,
             ("GET", "/index.html"): Routes.index,
             ("GET", "/favicon.ico"): Routes.favicon,
+            ("GET", "/admin"): Routes.admin_page,
+            ("GET", "/admin/"): Routes.admin_page,
             ("GET", "/api/config"): Routes.config,
             ("GET", "/api/library"): Routes.library,
             ("POST", "/api/rescan"): Routes.rescan,
@@ -142,9 +160,38 @@ class Application:
             ("GET", "/api/subtitle"): Routes.subtitle,
             ("GET", "/api/progress"): Routes.progress_get,
             ("POST", "/api/progress"): Routes.progress_post,
+            ("GET", "/api/admin/settings"): Routes.admin_settings_get,
+            ("POST", "/api/admin/settings"): Routes.admin_settings_post,
+            ("GET", "/api/admin/browse"): Routes.admin_browse,
             ("GET", "/media/stream"): Routes.stream,
             ("GET", "/media/transcode"): Routes.transcode,
         }
+
+    def apply_config(self, new_config) -> None:
+        """Swap in a reloaded config and rebuild everything derived from it.
+
+        Rebuilding matters: the ffmpeg tools, subtitle and thumbnail services
+        all captured values from the previous config, so replacing only
+        ``self.config`` would leave them pointing at the old binaries and
+        concurrency limits.
+        """
+        with self._config_lock:
+            old_tools = self.tools
+            tools = FFmpegTools(
+                new_config.app_dir,
+                transcode_slots=new_config.transcode.max_concurrent,
+                thumbnail_slots=new_config.thumbnail_workers,
+                ffmpeg_path=new_config.ffmpeg_path,
+                ffprobe_path=new_config.ffprobe_path,
+            )
+            self.config = new_config
+            self.tools = tools
+            self.subtitles = SubtitleService(tools, new_config.cache_dir)
+            self.thumbnails = ThumbnailService(tools, new_config.cache_dir)
+            self.static_dir = new_config.static_dir.resolve()
+            del old_tools
+
+        self.library.set_media_dirs(new_config.media_dirs, new_config.scan_interval)
 
     def resolve_video(self, query: dict):
         """Look up a video by opaque id and return (video, absolute_path)."""
@@ -203,6 +250,120 @@ class Routes:
     def rescan(h, query):
         h.app.library.request_scan()
         h.send_json({"ok": True, "status": h.app.library.status})
+
+    # -- admin ------------------------------------------------------------
+    @staticmethod
+    def admin_page(h, query):
+        if not h.require_admin(query):
+            return
+        h.serve_static_file(h.app.static_dir / "admin.html")
+
+    @staticmethod
+    def admin_settings_get(h, query):
+        if not h.require_admin(query):
+            return
+        config = h.app.config
+        h.send_json({
+            "settings": config.to_admin_dict(),
+            "overrides": user_settings.load_overrides(config.app_dir),
+            "content_types": list(user_settings.CONTENT_TYPES),
+            "presets": list(user_settings.PRESETS),
+            "restart_required_fields": list(user_settings.RESTART_REQUIRED),
+            "settings_file": str(user_settings.settings_path(config.app_dir)),
+            "library": h.app.library.status,
+            "ffmpeg": {
+                "available": h.app.tools.available,
+                "can_probe": h.app.tools.can_probe,
+                "ffmpeg_path": str(h.app.tools.ffmpeg or ""),
+                "ffprobe_path": str(h.app.tools.ffprobe or ""),
+            },
+            "version": __import__("litejelly").__version__,
+        })
+
+    @staticmethod
+    def admin_settings_post(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+
+        clean, errors = user_settings.validate(body)
+        if errors:
+            h.send_json({"ok": False, "errors": errors}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if not clean:
+            h.send_json({"ok": False, "errors": ["Nothing to save"]},
+                        status=HTTPStatus.BAD_REQUEST)
+            return
+
+        app_dir = h.app.config.app_dir
+        existing = user_settings.load_overrides(app_dir)
+        needs_restart = user_settings.restart_required(existing, clean)
+
+        merged = dict(existing)
+        for key, value in clean.items():
+            if key == "transcode" and isinstance(existing.get("transcode"), dict):
+                combined = dict(existing["transcode"])
+                combined.update(value)
+                merged["transcode"] = combined
+            else:
+                merged[key] = value
+
+        try:
+            user_settings.save_overrides(app_dir, merged)
+        except OSError as exc:
+            h.send_json({"ok": False, "errors": [f"Could not save settings: {exc}"]},
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        new_config, warnings = load_config(app_dir)
+        h.app.apply_config(new_config)
+
+        h.send_json({
+            "ok": True,
+            "settings": h.app.config.to_admin_dict(),
+            "warnings": warnings,
+            "restart_required": needs_restart,
+        })
+
+    @staticmethod
+    def admin_browse(h, query):
+        """List subdirectories so the admin page can offer a picker."""
+        if not h.require_admin(query):
+            return
+        raw = query.get("path", [""])[0].strip()
+        if not raw:
+            roots = _drive_roots()
+            h.send_json({"path": "", "parent": None, "entries": roots})
+            return
+
+        target = Path(os.path.expandvars(os.path.expanduser(raw)))
+        try:
+            target = target.resolve(strict=True)
+        except OSError:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No such directory")
+            return
+        if not target.is_dir():
+            h.send_api_error(HTTPStatus.BAD_REQUEST, "Not a directory")
+            return
+
+        entries = []
+        try:
+            for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
+                if child.name.startswith("."):
+                    continue
+                try:
+                    if child.is_dir():
+                        entries.append({"name": child.name, "path": str(child)})
+                except OSError:
+                    continue
+        except OSError as exc:
+            h.send_api_error(HTTPStatus.FORBIDDEN, f"Cannot list directory: {exc}")
+            return
+
+        parent = str(target.parent) if target.parent != target else ""
+        h.send_json({"path": str(target), "parent": parent, "entries": entries})
 
     @staticmethod
     def progress_get(h, query):
@@ -518,6 +679,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             path = urllib.parse.unquote(parsed.path)
             query = urllib.parse.parse_qs(parsed.query)
             self._head_only = method == "HEAD"
+            self._body_read = method not in ("POST", "PUT", "PATCH")
 
             lookup = "GET" if method == "HEAD" else method
             handler = self.app.routes.get((lookup, path))
@@ -567,7 +729,44 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_bytes(payload, "application/json; charset=utf-8", status)
 
     def send_api_error(self, status, message: str):
+        # A rejected POST still has its body queued on the socket. Left there,
+        # keep-alive makes the next read treat it as a request line.
+        self.discard_body()
         self.send_json({"error": message, "status": int(status)}, status=status)
+
+    def discard_body(self) -> None:
+        if getattr(self, "_body_read", True):
+            return
+        self._body_read = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY_BYTES:
+            # Too big to drain cheaply, or unknown: drop the connection instead.
+            self.close_connection = True
+            return
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, CHUNK_SIZE))
+            if not chunk:
+                self.close_connection = True
+                return
+            remaining -= len(chunk)
+
+    # -- admin guard ------------------------------------------------------
+    def require_admin(self, query, write: bool = False) -> bool:
+        """Gate every admin route. Sends the error response when denied."""
+        client = self.client_address[0] if self.client_address else ""
+        allowed, reason = admin_auth.authorize(self.app.config, client, self.headers, query)
+        if not allowed:
+            log.warning("Denied admin request from %s: %s", client, reason)
+            self.send_api_error(HTTPStatus.FORBIDDEN, reason)
+            return False
+        if write and not admin_auth.same_origin(self.headers, self.headers.get("Host", "")):
+            self.send_api_error(HTTPStatus.FORBIDDEN, "Cross-site admin request refused.")
+            return False
+        return True
 
     def read_json_body(self):
         try:
@@ -580,8 +779,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
+            self._body_read = True
             self.send_api_error(HTTPStatus.BAD_REQUEST, "Body must be valid JSON")
             return None
+        self._body_read = True
         if not isinstance(body, dict):
             self.send_api_error(HTTPStatus.BAD_REQUEST, "Body must be a JSON object")
             return None

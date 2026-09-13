@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>LiteJelly · Settings</title>
+<link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+<header class="bar">
+  <div class="bar-inner">
+    <h1>LiteJelly Settings</h1>
+    <a class="link" href="/">Back to library</a>
+  </div>
+</header>
+
+<main id="main" class="wrap" hidden>
+
+  <p id="banner" class="banner" hidden></p>
+
+  <section class="card">
+    <h2>Status</h2>
+    <dl class="status">
+      <dt>Version</dt><dd id="stat-version">—</dd>
+      <dt>Videos indexed</dt><dd id="stat-videos">—</dd>
+      <dt>ffmpeg</dt><dd id="stat-ffmpeg">—</dd>
+      <dt>ffprobe</dt><dd id="stat-ffprobe">—</dd>
+      <dt>Settings file</dt><dd id="stat-settings">—</dd>
+    </dl>
+    <button type="button" class="btn" id="rescan">Rescan library now</button>
+  </section>
+
+  <form id="form">
+
+    <section class="card">
+      <h2>Server</h2>
+      <div class="field">
+        <label for="server_name">Server name</label>
+        <input type="text" id="server_name" name="server_name" maxlength="64">
+        <p class="hint">Shown in the library header.</p>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="host">Bind address</label>
+          <input type="text" id="host" name="host">
+          <p class="hint">Restart required. 0.0.0.0 listens on every interface.</p>
+        </div>
+        <div class="field">
+          <label for="port">Port</label>
+          <input type="number" id="port" name="port" min="1" max="65535">
+          <p class="hint">Restart required.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Media directories</h2>
+      <p class="hint">
+        The content type is a hint for how a folder should be grouped and
+        displayed. Use Mixed if a folder holds more than one kind.
+      </p>
+      <ul class="dirs" id="dirs"></ul>
+      <div class="actions">
+        <button type="button" class="btn" id="add-dir">Add directory</button>
+        <button type="button" class="btn" id="browse">Browse…</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Library scanning</h2>
+      <div class="row">
+        <div class="field">
+          <label for="scan_interval">Scan interval (seconds)</label>
+          <input type="number" id="scan_interval" name="scan_interval" min="5" max="86400">
+        </div>
+        <div class="field">
+          <label for="thumbnail_workers">Thumbnail workers</label>
+          <input type="number" id="thumbnail_workers" name="thumbnail_workers" min="1" max="16">
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Playback</h2>
+      <div class="field check">
+        <label>
+          <input type="checkbox" id="allow_hevc_direct" name="allow_hevc_direct">
+          Allow HEVC direct play
+        </label>
+        <p class="hint">
+          Only enable this if your TV decodes HEVC. When off, HEVC is re-encoded
+          to H.264, which costs CPU but plays anywhere.
+        </p>
+      </div>
+      <div class="field">
+        <label for="stream_buffer_mb">Stream buffer (MB)</label>
+        <input type="number" id="stream_buffer_mb" name="stream_buffer_mb" min="1" max="512">
+        <p class="hint">Read-ahead held in memory per active transcode.</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Transcoding</h2>
+      <div class="row">
+        <div class="field">
+          <label for="tc_preset">x264 preset</label>
+          <select id="tc_preset" name="preset"></select>
+          <p class="hint">Slower presets look better at the same bitrate.</p>
+        </div>
+        <div class="field">
+          <label for="tc_crf">CRF</label>
+          <input type="number" id="tc_crf" name="crf" min="0" max="51">
+          <p class="hint">Lower is better quality. 18–24 is the useful range.</p>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="tc_resolution">Default resolution</label>
+          <input type="text" id="tc_resolution" name="resolution" placeholder="1280x720">
+          <p class="hint">Never upscales; smaller sources keep their size.</p>
+        </div>
+        <div class="field">
+          <label for="tc_max_concurrent">Concurrent transcodes</label>
+          <input type="number" id="tc_max_concurrent" name="max_concurrent" min="1" max="16">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="tc_max_video_bitrate">Max video bitrate</label>
+          <input type="text" id="tc_max_video_bitrate" name="max_video_bitrate" placeholder="3000k">
+        </div>
+        <div class="field">
+          <label for="tc_audio_bitrate">Audio bitrate</label>
+          <input type="text" id="tc_audio_bitrate" name="audio_bitrate" placeholder="160k">
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>ffmpeg</h2>
+      <div class="field">
+        <label for="ffmpeg_path">ffmpeg path</label>
+        <input type="text" id="ffmpeg_path" name="ffmpeg_path" placeholder="Auto-detect">
+      </div>
+      <div class="field">
+        <label for="ffprobe_path">ffprobe path</label>
+        <input type="text" id="ffprobe_path" name="ffprobe_path" placeholder="Auto-detect">
+        <p class="hint">Leave both empty to search next to the app, bin/, then PATH.</p>
+      </div>
+    </section>
+
+    <div class="save-bar">
+      <button type="submit" class="btn primary" id="save">Save settings</button>
+      <button type="button" class="btn" id="reload">Discard changes</button>
+      <span id="save-status" class="save-status" role="status"></span>
+    </div>
+  </form>
+</main>
+
+<div id="denied" class="wrap" hidden>
+  <section class="card">
+    <h2>Not available from this device</h2>
+    <p id="denied-message"></p>
+  </section>
+</div>
+
+<div id="picker" class="modal" hidden>
+  <div class="modal-box">
+    <h2>Choose a directory</h2>
+    <p class="picker-path" id="picker-path"></p>
+    <ul class="picker-list" id="picker-list"></ul>
+    <div class="actions">
+      <button type="button" class="btn primary" id="picker-choose">Use this directory</button>
+      <button type="button" class="btn" id="picker-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<template id="tpl-dir">
+  <li class="dir">
+    <div class="field grow">
+      <label>Path</label>
+      <input type="text" class="dir-path" spellcheck="false">
+    </div>
+    <div class="field">
+      <label>Content type</label>
+      <select class="dir-type"></select>
+    </div>
+    <div class="field">
+      <label>Label (optional)</label>
+      <input type="text" class="dir-label" maxlength="48">
+    </div>
+    <button type="button" class="btn danger dir-remove">Remove</button>
+  </li>
+</template>
+
+<template id="tpl-picker-item">
+  <li><button type="button" class="picker-item"></button></li>
+</template>
+
+<script src="/static/admin.js"></script>
+</body>
+</html>

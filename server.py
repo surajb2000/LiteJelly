@@ -50,10 +50,11 @@ def print_banner(config, app: Application, video_count: int) -> None:
         f"ffmpeg:  {tools.describe('ffmpeg')}",
         f"ffprobe: {tools.describe('ffprobe')}",
         f"Videos:  {video_count}",
+        f"Admin:   http://127.0.0.1:{config.port}/admin",
         "Media directories:",
     ]
     for directory in config.media_dirs:
-        lines.append(f"  - {directory}")
+        lines.append(f"  - [{directory.content_type}] {directory.path}")
 
     if not tools.available:
         lines += [

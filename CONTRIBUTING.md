@@ -53,6 +53,22 @@ This document outlines the architectural standards, code quality conventions, an
 - SQLite connections across threads must use `check_same_thread=False` accompanied by explicit threading locks.
 - Store database tables in `.cache/litejelly.db` (gitignored).
 
+### 6. The Admin Trust Boundary
+- The library API is intentionally unauthenticated so any TV on the LAN can browse it. The admin API is **not**, and the two must never be blurred.
+- Anything that changes `media_dirs` changes which files the server will hand out. Treat every admin write as equivalent to granting filesystem access.
+- Guard every admin route with `RequestHandler.require_admin()`. It allows loopback callers, accepts a configured `admin_token` from remote ones, and requires a same-origin marker on writes.
+- `Config.to_public_dict()` feeds the unauthenticated `/api/config`. Never add filesystem paths, binary locations, tokens or bind addresses to it; those belong in `to_admin_dict()`.
+- Validate admin input in `litejelly.settings.validate()`, not in the route. Unknown keys are ignored and enumerated values (content types, presets) are whitelisted rather than pattern-matched.
+- Persist user settings to `settings.json` beside `config.json`. Never write them into `.cache/`, which is disposable and safe to delete.
+
+### 7. Request Bodies and Keep-Alive
+- If a request is rejected before its body is read, the unread bytes stay queued on the socket and the next keep-alive request parses them as a request line. `send_api_error()` drains the body for this reason; leave that call in place when adding error paths.
+
+### 8. Applying Configuration at Runtime
+- `FFmpegTools`, `SubtitleService` and `ThumbnailService` capture values from the config when constructed. Replacing `Application.config` alone leaves them pointing at the old binaries and limits, so rebuild them together in `Application.apply_config()`.
+- `Library` owns its directory list. Change it through `Library.set_media_dirs()` so the lock is held, the scan fingerprint is cleared, and any scan already in flight is discarded rather than publishing stale `dir_index` values.
+- `port` and `host` cannot be rebound on a live server. They are saved and reported through `settings.RESTART_REQUIRED` instead of being applied.
+
 ---
 
 ## 🌐 Frontend Architecture Guidelines (`static/`)
@@ -82,10 +98,14 @@ This document outlines the architectural standards, code quality conventions, an
 
 ## 🧪 Testing & Verification
 
-- Every new core feature or parser modification should include corresponding unit tests in `tests/test_litejelly.py`.
+- Every new core feature or parser modification should include corresponding unit tests, added in the same change rather than deferred.
+  - `tests/test_litejelly.py` — path containment, range parsing, subtitles, title parsing.
+  - `tests/test_admin.py` — settings validation, admin access control, library reconfiguration.
+  - `tests/test_avsync.py` — regression tests for the seeking and A/V sync fixes.
+- Bugs found by measurement get a test that pins the measured behaviour, with the measurement recorded in the docstring. The A/V desync cost days to diagnose; the tests exist so it cannot return silently.
 - Run tests locally before committing:
   ```bash
   python -m unittest discover -s tests
   ```
-- Ensure all 36+ existing tests pass with zero regressions.
-- For A/V synchronization testing, utilize `tools/avsync_probe.py` to measure clock drift against test clips.
+- Ensure all existing tests pass with zero regressions.
+- For A/V synchronization testing, utilize `tools/avsync_probe.py` to measure clock drift against test clips. Its beep-onset detection is not yet reliable at sub-100 ms resolution; prefer packet and timestamp measurements for small offsets.
