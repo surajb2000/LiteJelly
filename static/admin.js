@@ -90,6 +90,20 @@
 
   // -- media directory rows ------------------------------------------------
 
+  // A key field that is filled in is the difference between a provider that
+  // works and one that silently does nothing, so say which it is.
+  function syncProviderStatus() {
+    [['tmdb_api_key', 'tmdb-status'], ['omdb_api_key', 'omdb-status']]
+      .forEach(function (pair) {
+        var field = $(pair[0]);
+        var pill = $(pair[1]);
+        if (!field || !pill) return;
+        var ready = field.value.trim() !== '';
+        pill.textContent = ready ? 'Ready' : 'Needs key';
+        pill.className = 'pill ' + (ready ? 'ready' : 'needs-key');
+      });
+  }
+
   function fillSelect(select, values, selected) {
     clear(select);
     for (var i = 0; i < values.length; i++) {
@@ -145,6 +159,7 @@
     $('online_metadata').checked = !!settings.online_metadata;
     $('tmdb_api_key').value = settings.tmdb_api_key || '';
     $('omdb_api_key').value = settings.omdb_api_key || '';
+    syncProviderStatus();
     $('ffmpeg_path').value = settings.ffmpeg_path || '';
     $('ffprobe_path').value = settings.ffprobe_path || '';
     $('log_verbosity').value = settings.log_verbosity || 'info';
@@ -615,6 +630,8 @@
     $('log-refresh').addEventListener('click', loadLogs);
     $('log-clear').addEventListener('click', clearLogs);
     $('log-filter').addEventListener('change', loadLogs);
+    $('tmdb_api_key').addEventListener('input', syncProviderStatus);
+    $('omdb_api_key').addEventListener('input', syncProviderStatus);
     $('log-lines').addEventListener('change', loadLogs);
     $('log-auto').addEventListener('change', function () {
       setAutoRefresh(this.checked && !$('panel-logs').hidden);

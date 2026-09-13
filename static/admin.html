@@ -124,11 +124,43 @@
           </label>
           <p class="hint">
             Off by default because it sends your show titles to a third party.
-            Uses TVmaze for television, AniList for anime and AniSkip for
-            opening and ending times. All free, none needs an account.
             Anything found in a local .nfo or poster file still wins.
           </p>
         </div>
+
+        <div id="providers">
+          <div class="provider">
+            <span class="provider-name">TVmaze</span>
+            <span class="provider-role">Episode names, plots, ratings, posters, cast</span>
+            <span class="pill ready">Ready</span>
+          </div>
+          <div class="provider">
+            <span class="provider-name">AniList</span>
+            <span class="provider-role">Anime titles, scores, cover art</span>
+            <span class="pill ready">Ready</span>
+          </div>
+          <div class="provider">
+            <span class="provider-name">AniSkip</span>
+            <span class="provider-role">Anime opening and ending times</span>
+            <span class="pill ready">Ready</span>
+          </div>
+          <div class="provider">
+            <span class="provider-name">TheIntroDB</span>
+            <span class="provider-role">Intro, recap and credit times</span>
+            <span class="pill ready">Ready</span>
+          </div>
+          <div class="provider">
+            <span class="provider-name">TMDb</span>
+            <span class="provider-role">Films, and shows TVmaze does not have</span>
+            <span class="pill needs-key" id="tmdb-status">Needs key</span>
+          </div>
+          <div class="provider">
+            <span class="provider-name">OMDb</span>
+            <span class="provider-role">IMDb ratings</span>
+            <span class="pill needs-key" id="omdb-status">Needs key</span>
+          </div>
+        </div>
+
         <div class="field">
           <label for="tmdb_api_key">TMDb API key (optional)</label>
           <input type="text" id="tmdb_api_key" name="tmdb_api_key" spellcheck="false"

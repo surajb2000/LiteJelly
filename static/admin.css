@@ -1,16 +1,17 @@
-/* Admin page. Separate from the TV UI on purpose: this is used from a desktop
-   browser with a pointer, so it is a plain scrolling form rather than a
-   focus-driven layout. Still avoids gap/inset/clamp so it renders on the
-   same old engines as the player. */
+/* Admin page. Denser than the TV UI because it is driven with a pointer, but
+   it shares the library's palette and type: it configures the same product
+   and should not look like a different one. Still avoids gap/inset/clamp so
+   it renders on the same old engines as the player. */
 
 :root {
-  --bg: #0f1216;
-  --panel: #171c22;
-  --panel-2: #1e242c;
-  --line: #2b333d;
-  --text: #e7edf3;
-  --muted: #9aa7b4;
-  --accent: #4fa3ff;
+  --bg: #07090e;
+  --panel: #10141c;
+  --panel-2: #0d1219;
+  --line: rgba(255, 255, 255, 0.10);
+  --text: #f8fafc;
+  --muted: #9fb0c4;
+  --accent: #38bdf8;
+  --accent-ink: #04121f;
   --danger: #ff6b6b;
   --ok: #46c07a;
 }
@@ -22,7 +23,8 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display",
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
 }
 
 h1 { font-size: 18px; margin: 0; font-weight: 600; }
@@ -138,15 +140,20 @@ h2 { font-size: 15px; margin: 0 0 14px; font-weight: 600; letter-spacing: .02em;
   color: var(--text);
 }
 
+/* password was missing here, so every password field rendered as a white
+   browser-default box on a dark card. */
 input[type="text"],
+input[type="password"],
 input[type="number"],
+input[type="search"],
+input[type="email"],
 select {
   width: 100%;
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 9px 10px;
+  border-radius: 8px;
+  padding: 10px 12px;
   font: inherit;
 }
 
@@ -308,3 +315,74 @@ input[readonly] { color: var(--muted); }
 .picker-item:hover { background: var(--panel-2); }
 
 [hidden] { display: none !important; }
+
+
+/* Pull the page onto the same surfaces as the library. */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 18px;
+}
+
+.bar { background: rgba(15, 23, 42, 0.9); }
+
+.bar-inner, .wrap { max-width: 1080px; }
+
+h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 16px; font-weight: 600; letter-spacing: 0; margin-bottom: 16px; }
+
+.btn {
+  border-radius: 10px;
+  padding: 9px 16px;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.tab { border-radius: 10px 10px 0 0; }
+
+.tab.active { border-bottom-color: var(--accent); }
+
+.field > label { font-size: 12px; }
+
+.gate-card { max-width: 460px; }
+
+/* Provider list on the Library tab. */
+.provider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+
+.provider-name { font-weight: 600; }
+
+.provider-role {
+  color: var(--muted);
+  font-size: 14px;
+  margin-left: 12px;
+  flex: 1 1 auto;
+}
+
+.pill {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 99px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+
+.pill.ready { background: rgba(70, 192, 122, 0.16); color: var(--ok); }
+.pill.needs-key { background: rgba(251, 191, 36, 0.16); color: #fbbf24; }
