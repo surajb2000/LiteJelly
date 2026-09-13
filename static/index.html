@@ -211,30 +211,37 @@
           <div id="scrub-preview" class="scrub-preview hidden"></div>
         </div>
 
+        <div class="osd-transport">
+          <button id="btn-rewind" class="transport-btn" title="Rewind 10 seconds" aria-label="Rewind 10 seconds">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
+            <span class="btn-subtext">10</span>
+          </button>
+          <button id="btn-play-pause" class="transport-btn transport-main" title="Play/Pause" aria-label="Play or pause">
+            <svg id="icon-play" class="hidden" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <svg id="icon-pause" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+          </button>
+          <button id="btn-forward" class="transport-btn" title="Forward 10 seconds" aria-label="Forward 10 seconds">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
+            <span class="btn-subtext">10</span>
+          </button>
+        </div>
+
         <div class="osd-controls-row">
           <div class="controls-left">
             <button id="btn-prev-episode" class="control-icon-btn hidden" title="Previous episode" aria-label="Previous episode">
               <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="19 20 9 12 19 4 19 20"/><rect x="5" y="4" width="2" height="16"/></svg>
+              <span class="btn-label">Previous</span>
             </button>
-            <button id="btn-play-pause" class="control-icon-btn" title="Play/Pause" aria-label="Play or pause">
-              <svg id="icon-play" class="hidden" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-              <svg id="icon-pause" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-            </button>
-            <button id="btn-next-episode" class="control-icon-btn hidden" title="Next episode" aria-label="Next episode">
-              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="2" height="16"/></svg>
-            </button>
-            <button id="btn-rewind" class="control-icon-btn" title="Rewind 10 seconds" aria-label="Rewind 10 seconds">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
-              <span class="btn-subtext">10</span>
-            </button>
-            <button id="btn-forward" class="control-icon-btn" title="Forward 10 seconds" aria-label="Forward 10 seconds">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 17l5-5-5-5M6 17l5-5-5-5"/></svg>
-              <span class="btn-subtext">10</span>
+            <button id="btn-subtitles" class="control-icon-btn" title="Subtitles" aria-label="Subtitles"
+                    aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6.5 13.5h4M13.5 13.5h4" stroke-linecap="round"/></svg>
+              <span class="btn-label">Subtitles</span>
             </button>
             <div class="volume-control">
               <button id="btn-mute" class="control-icon-btn" title="Mute" aria-label="Mute">
                 <svg id="icon-volume" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
                 <svg id="icon-muted" class="hidden" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
+                <span class="btn-label">Audio</span>
               </button>
               <input id="volume-range" class="volume-range" type="range" min="0" max="100" value="100" step="1" aria-label="Volume">
             </div>
@@ -246,24 +253,14 @@
           </div>
 
           <div class="controls-right">
-            <button id="btn-subtitles" class="control-icon-btn" title="Subtitles" aria-label="Subtitles"
+            <button id="btn-options" class="control-icon-btn" title="Options" aria-label="Playback options"
                     aria-haspopup="menu" aria-expanded="false">
-              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6.5 13.5h4M13.5 13.5h4" stroke-linecap="round"/></svg>
+              <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              <span class="btn-label">Options</span>
             </button>
-            <button id="btn-quality" class="control-icon-btn quality-btn" title="Quality" aria-label="Video quality"
-                    aria-haspopup="menu" aria-expanded="false">
-              <span id="quality-label">Auto</span>
-            </button>
-            <button id="btn-audiosync" class="control-icon-btn sync-btn" title="Audio sync" aria-label="Audio sync"
-                    aria-haspopup="menu" aria-expanded="false">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h3l2-5 3 10 2.5-7 1.8 4H21" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <span id="sync-label" class="btn-subtext">0</span>
-            </button>
-            <button id="btn-speed" class="control-icon-btn speed-btn" title="Playback speed" aria-label="Playback speed">
-              <span>1x</span>
-            </button>
-            <button id="btn-aspect" class="control-icon-btn aspect-btn" title="Fit or fill screen" aria-label="Fit or fill screen">
-              <span>FIT</span>
+            <button id="btn-next-episode" class="control-icon-btn hidden" title="Next episode" aria-label="Next episode">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="2" height="16"/></svg>
+              <span class="btn-label">Next</span>
             </button>
             <button id="player-fs-btn" class="control-icon-btn" title="Fullscreen" aria-label="Toggle fullscreen">
               <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
@@ -275,6 +272,29 @@
       <div id="subtitle-menu" class="popup-menu hidden" role="menu" aria-label="Subtitle tracks"></div>
       <div id="quality-menu" class="popup-menu hidden" role="menu" aria-label="Video quality"></div>
       <div id="audiosync-menu" class="popup-menu hidden" role="menu" aria-label="Audio sync"></div>
+
+      <!-- Rescue controls for a difficult file, not everyday viewing. -->
+      <div id="options-menu" class="popup-menu hidden" role="menu" aria-label="Playback options">
+        <p class="popup-heading">Playback</p>
+        <button id="btn-quality" class="popup-item quality-btn" type="button" role="menuitem"
+                aria-haspopup="menu" aria-expanded="false">
+          <span class="popup-item-label">Quality</span>
+          <span id="quality-label" class="popup-item-hint">Auto</span>
+        </button>
+        <button id="btn-speed" class="popup-item speed-btn" type="button" role="menuitem">
+          <span class="popup-item-label">Speed</span>
+          <span class="popup-item-hint"><span>1x</span></span>
+        </button>
+        <button id="btn-aspect" class="popup-item aspect-btn" type="button" role="menuitem">
+          <span class="popup-item-label">Picture</span>
+          <span class="popup-item-hint"><span>FIT</span></span>
+        </button>
+        <button id="btn-audiosync" class="popup-item sync-btn" type="button" role="menuitem"
+                aria-haspopup="menu" aria-expanded="false">
+          <span class="popup-item-label">Audio delay</span>
+          <span class="popup-item-hint"><span id="sync-label" class="btn-subtext">0</span> ms</span>
+        </button>
+      </div>
     </div>
   </div>
 

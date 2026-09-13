@@ -2424,3 +2424,132 @@ body.no-hero #topbar {
 [data-profile="tv"] .cast-portrait { width: 170px; height: 170px; }
 [data-profile="phone"] .cast-member { flex-basis: 108px; }
 [data-profile="phone"] .cast-portrait { width: 88px; height: 88px; }
+
+
+/* ==========================================================================
+   Player: scrim, centre transport, secondary row
+   ========================================================================== */
+
+/* White text on raw video is unreadable the moment a bright frame arrives,
+   so the chrome sits on its own gradient rather than on the picture. */
+.osd::before,
+.osd::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.osd::before {
+  top: 0;
+  height: 26%;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0));
+}
+
+.osd::after {
+  bottom: 0;
+  height: 46%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.92), rgba(0, 0, 0, 0));
+}
+
+.osd-top,
+.osd-bottom {
+  position: relative;
+  z-index: 1;
+}
+
+/* The three controls anyone actually uses, centred and large. */
+.osd-transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  margin: 10px 0 6px;
+}
+
+.osd-transport > * + * { margin-left: 28px; }
+
+.transport-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.42);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.transport-btn:hover { background: rgba(0, 0, 0, 0.7); }
+
+.transport-main {
+  width: 88px;
+  height: 88px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04121f;
+}
+
+.transport-main:hover { background: #4fc9fb; }
+
+.transport-btn:focus {
+  outline: none;
+  transform: scale(1.06);
+  box-shadow: 0 0 0 var(--focus-ring) var(--accent),
+              0 0 0 calc(var(--focus-ring) + 6px) var(--accent-glow);
+}
+
+[data-profile="tv"] .transport-btn { width: 88px; height: 88px; }
+[data-profile="tv"] .transport-main { width: 120px; height: 120px; }
+[data-profile="tv"] .osd-transport { gap: 40px; }
+[data-profile="tv"] .osd-transport > * + * { margin-left: 40px; }
+
+/* Secondary controls carry a word, because an icon alone is a guess from
+   three metres away. */
+.btn-label {
+  margin-left: 10px;
+  font-size: var(--fs-control);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.control-icon-btn {
+  width: auto;
+  min-width: 44px;
+  padding: 0 16px;
+  height: 48px;
+  border-radius: 12px;
+}
+
+[data-profile="tv"] .control-icon-btn {
+  height: 64px;
+  padding: 0 22px;
+}
+
+[data-profile="phone"] .btn-label { display: none; }
+[data-profile="phone"] .control-icon-btn { padding: 0 10px; min-width: 40px; }
+
+.osd-time {
+  font-size: var(--fs-control);
+  font-weight: 600;
+}
+
+[data-profile="tv"] .osd-movie-title { font-size: 2.4rem; }
+[data-profile="tv"] .osd-meta-badge { font-size: var(--fs-control); }
+[data-profile="tv"] .osd-top { padding: var(--safe-x); }
+[data-profile="tv"] .osd-bottom { padding: 0 var(--safe-x) var(--safe-x); }
+[data-profile="tv"] .progress-bar { height: 10px; }
+[data-profile="tv"] .progress-wrap { height: 26px; }
+
+/* Options is a menu of last resorts, so it opens above its button. */
+#options-menu {
+  right: var(--safe-x);
+  bottom: 120px;
+  min-width: 280px;
+}

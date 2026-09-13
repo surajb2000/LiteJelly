@@ -1955,6 +1955,7 @@
   function menusOpen() {
     return !el.subtitleMenu.classList.contains('hidden') ||
       !el.qualityMenu.classList.contains('hidden') ||
+      !el.optionsMenu.classList.contains('hidden') ||
       !el.audioSyncMenu.classList.contains('hidden');
   }
 
@@ -1962,6 +1963,26 @@
     closeSubtitleMenu();
     closeQualityMenu();
     closeAudioSyncMenu();
+    closeOptionsMenu();
+  }
+
+  function toggleOptionsMenu() {
+    if (el.optionsMenu.classList.contains('hidden')) {
+      closeMenus();
+      el.optionsMenu.classList.remove('hidden');
+      el.btnOptions.setAttribute('aria-expanded', 'true');
+      const first = $('.popup-item', el.optionsMenu);
+      if (first) first.focus();
+      showOSD();
+    } else {
+      closeOptionsMenu();
+      el.btnOptions.focus();
+    }
+  }
+
+  function closeOptionsMenu() {
+    el.optionsMenu.classList.add('hidden');
+    el.btnOptions.setAttribute('aria-expanded', 'false');
   }
 
   // --- Audio sync ------------------------------------------------------
@@ -2456,6 +2477,8 @@
     el.qualityLabel = $('#quality-label');
     el.btnAudioSync = $('#btn-audiosync');
     el.audioSyncMenu = $('#audiosync-menu');
+    el.optionsMenu = $('#options-menu');
+    el.btnOptions = $('#btn-options');
     el.syncLabel = $('#sync-label');
     el.btnMute = $('#btn-mute');
     el.volumeRange = $('#volume-range');
@@ -2566,6 +2589,10 @@
     el.btnSubtitles.addEventListener('click', event => {
       event.stopPropagation();
       toggleSubtitleMenu();
+    });
+    el.btnOptions.addEventListener('click', event => {
+      event.stopPropagation();
+      toggleOptionsMenu();
     });
     el.subtitleMenu.addEventListener('click', event => {
       const item = event.target.closest('.popup-item');
