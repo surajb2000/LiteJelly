@@ -42,6 +42,7 @@ This document outlines the architectural standards, code quality conventions, an
 
 ### 4. Subprocess & FFmpeg Management
 - Always specify `creationflags = subprocess.CREATE_NO_WINDOW` on Windows (`os.name == 'nt'`) so console windows do not flash during background probes or transcodes.
+- Never let a child inherit stdin. ffmpeg switches the controlling terminal to no-echo so it can read its interactive keys, and killing the server first leaves the shell needing a manual `stty echo`. Pass `stdin=subprocess.DEVNULL` and `-nostdin`.
 - Always wrap subprocess lifecycles in `try ... finally:` blocks to guarantee termination (`process.terminate()` -> `process.wait(timeout=0.5)` -> `process.kill()`).
 - Use the threaded `ReadAhead` ring buffer when streaming process `stdout` to avoid blocking FFmpeg when the network client pauses or buffers.
 - Fast input seeking (`-ss` before `-i`) must be used for streaming transcodes.

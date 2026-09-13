@@ -12,13 +12,44 @@
   var state = {
     contentTypes: ['mixed'],
     presets: [],
-    restartFields: []
+    restartFields: [],
+    localIp: '',
+    port: 0
   };
 
   function $(id) { return document.getElementById(id); }
 
   function clear(node) {
     while (node.firstChild) { node.removeChild(node.firstChild); }
+  }
+
+  // -- tabs ----------------------------------------------------------------
+
+  function showPanel(panelId) {
+    var tabs = $('tabs').querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i++) {
+      var selected = tabs[i].getAttribute('data-panel') === panelId;
+      tabs[i].setAttribute('aria-selected', selected ? 'true' : 'false');
+      tabs[i].className = selected ? 'tab active' : 'tab';
+      $(tabs[i].getAttribute('data-panel')).hidden = !selected;
+    }
+    try {
+      window.localStorage.setItem('litejelly_admin_tab', panelId);
+    } catch (e) { /* private mode */ }
+  }
+
+  function initTabs() {
+    var tabs = $('tabs').querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener('click', function () {
+        showPanel(this.getAttribute('data-panel'));
+      });
+    }
+    var remembered = null;
+    try {
+      remembered = window.localStorage.getItem('litejelly_admin_tab');
+    } catch (e) { /* private mode */ }
+    showPanel(remembered && $(remembered) ? remembered : 'panel-library');
   }
 
   function text(node, value) {
@@ -119,19 +150,71 @@
     $('allow_hevc_direct').checked = !!settings.allow_hevc_direct;
     $('ffmpeg_path').value = settings.ffmpeg_path || '';
     $('ffprobe_path').value = settings.ffprobe_path || '';
+    $('admin_token').value = settings.admin_token || '';
 
     var tc = settings.transcode || {};
     fillSelect($('tc_preset'), state.presets, tc.preset);
     $('tc_crf').value = tc.crf == null ? '' : tc.crf;
-    $('tc_resolution').value = tc.resolution || '';
     $('tc_max_concurrent').value = tc.max_concurrent == null ? '' : tc.max_concurrent;
     $('tc_max_video_bitrate').value = tc.max_video_bitrate || '';
     $('tc_audio_bitrate').value = tc.audio_bitrate || '';
+    setResolution(tc.resolution);
 
     clear($('dirs'));
     var dirs = settings.media_dirs || [];
     for (var i = 0; i < dirs.length; i++) { addDirRow(dirs[i]); }
     if (!dirs.length) { addDirRow(); }
+
+    state.port = settings.port || state.port;
+    $('setup').hidden = dirs.length > 0;
+    updateRemoteUrl();
+  }
+
+  // The select only lists common rungs; keep a custom value from config.json.
+  function setResolution(value) {
+    var select = $('tc_resolution');
+    if (!value) { return; }
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === value) {
+        select.value = value;
+        return;
+      }
+    }
+    var option = document.createElement('option');
+    option.value = value;
+    option.appendChild(document.createTextNode(value + ' (custom)'));
+    select.appendChild(option);
+    select.value = value;
+  }
+
+  function updateRemoteUrl() {
+    var token = $('admin_token').value.trim();
+    var wrap = $('remote-url-wrap');
+    if (!token || !state.localIp) {
+      wrap.hidden = true;
+      return;
+    }
+    $('remote-url').value = 'http://' + state.localIp + ':' + state.port +
+                            '/admin?token=' + encodeURIComponent(token);
+    wrap.hidden = false;
+  }
+
+  function generateToken() {
+    var alphabet = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    var out = '';
+    var i;
+    if (window.crypto && window.crypto.getRandomValues) {
+      var bytes = new Uint8Array(24);
+      window.crypto.getRandomValues(bytes);
+      for (i = 0; i < bytes.length; i++) {
+        out += alphabet.charAt(bytes[i] % alphabet.length);
+      }
+    } else {
+      for (i = 0; i < 24; i++) {
+        out += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+      }
+    }
+    return out;
   }
 
   function number(id) {
@@ -147,6 +230,7 @@
       allow_hevc_direct: $('allow_hevc_direct').checked,
       ffmpeg_path: $('ffmpeg_path').value.trim(),
       ffprobe_path: $('ffprobe_path').value.trim(),
+      admin_token: $('admin_token').value.trim(),
       transcode: {
         preset: $('tc_preset').value,
         resolution: $('tc_resolution').value.trim(),
@@ -259,6 +343,7 @@
       state.contentTypes = result.data.content_types || ['mixed'];
       state.presets = result.data.presets || [];
       state.restartFields = result.data.restart_required_fields || [];
+      state.localIp = result.data.local_ip || '';
       $('main').hidden = false;
       $('denied').hidden = true;
       fillStatus(result.data);
@@ -301,6 +386,7 @@
   }
 
   function init() {
+    initTabs();
     $('form').addEventListener('submit', save);
     $('reload').addEventListener('click', function () { load(); });
     $('add-dir').addEventListener('click', function () { addDirRow(); });
@@ -315,10 +401,26 @@
       }
       closePicker();
     });
+    $('gen-token').addEventListener('click', function () {
+      $('admin_token').value = generateToken();
+      updateRemoteUrl();
+    });
+    $('admin_token').addEventListener('input', updateRemoteUrl);
+    $('port').addEventListener('input', function () {
+      state.port = Number($('port').value) || state.port;
+      updateRemoteUrl();
+    });
     $('rescan').addEventListener('click', function () {
+      var node = $('rescan-status');
+      node.className = 'save-status';
+      text(node, 'Rescanning…');
       request('POST', '/api/rescan', {}).then(function () {
-        setStatus('Rescan requested', 'ok');
-        window.setTimeout(load, 1200);
+        window.setTimeout(function () {
+          load().then(function () {
+            node.className = 'save-status ok';
+            text(node, 'Done');
+          });
+        }, 1200);
       });
     });
     document.addEventListener('keydown', function (event) {

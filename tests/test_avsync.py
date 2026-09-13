@@ -168,6 +168,25 @@ class AudioFilterTests(unittest.TestCase):
         self.assertEqual(_arg_after(cmd, "-c:a"), "copy")
 
 
+class TerminalSafetyTests(unittest.TestCase):
+    """ffmpeg switches the controlling terminal to no-echo so it can read its
+    interactive keys. Inheriting stdin left Termux with invisible input after
+    Ctrl+C, needing a manual `stty echo`."""
+
+    def test_stream_command_declines_stdin(self):
+        cmd = _tools().build_stream_command(
+            Path("movie.mkv"), COPY_PLAN, TranscodeSettings())
+        self.assertIn("-nostdin", cmd)
+
+    def test_popen_detaches_stdin(self):
+        import inspect
+        from litejelly.ffmpeg import popen_quiet, run_quiet
+
+        for func in (popen_quiet, run_quiet):
+            source = inspect.getsource(func)
+            self.assertIn("stdin=subprocess.DEVNULL", source, func.__name__)
+
+
 class ScalingTests(unittest.TestCase):
     """Every source was once re-encoded to 1280x720 with black bars baked in."""
 

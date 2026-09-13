@@ -83,16 +83,21 @@ def run_quiet(cmd: list[str], timeout: float | None = None) -> subprocess.Comple
     return subprocess.run(
         cmd,
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         timeout=timeout,
         creationflags=_CREATION_FLAGS,
     )
 
 
 def popen_quiet(cmd: list[str], stdout=subprocess.PIPE) -> subprocess.Popen:
+    # stdin must not be inherited: ffmpeg puts the controlling terminal into
+    # no-echo mode to read its interactive keys, and killing the server before
+    # ffmpeg restores it leaves the shell with invisible input.
     return subprocess.Popen(
         cmd,
         stdout=stdout,
         stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
         creationflags=_CREATION_FLAGS,
     )
 
@@ -429,7 +434,7 @@ class FFmpegTools:
         audio_delay_ms: float = 0.0,
     ) -> list[str]:
         """ffmpeg command producing a fragmented MP4 on stdout."""
-        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error"]
+        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
         # MKV timestamps are often sparse; regenerate them before seeking.
         cmd += ["-fflags", "+genpts"]
         if start > 0:

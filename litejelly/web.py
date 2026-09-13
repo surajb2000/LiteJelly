@@ -271,6 +271,7 @@ class Routes:
             "restart_required_fields": list(user_settings.RESTART_REQUIRED),
             "settings_file": str(user_settings.settings_path(config.app_dir)),
             "library": h.app.library.status,
+            "local_ip": get_local_ip(),
             "ffmpeg": {
                 "available": h.app.tools.available,
                 "can_probe": h.app.tools.can_probe,
@@ -299,7 +300,16 @@ class Routes:
 
         app_dir = h.app.config.app_dir
         existing = user_settings.load_overrides(app_dir)
-        needs_restart = user_settings.restart_required(existing, clean)
+
+        # The form posts every field, including ones the user never touched.
+        # Compare the restart-required ones against what is actually running so
+        # a no-op save neither persists a temporary CLI override nor claims a
+        # restart is needed.
+        running = {"port": h.app.config.port, "host": h.app.config.host}
+        for key, current in running.items():
+            if key in clean and clean[key] == current and key not in existing:
+                del clean[key]
+        needs_restart = user_settings.restart_required(running, clean)
 
         merged = dict(existing)
         for key, value in clean.items():

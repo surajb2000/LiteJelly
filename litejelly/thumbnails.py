@@ -81,7 +81,7 @@ class ThumbnailService:
         try:
             for offset in offsets:
                 cmd = [
-                    self.tools.ffmpeg, "-hide_banner", "-loglevel", "error",
+                    self.tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
                     "-ss", f"{max(0.0, offset):.2f}",
                     "-i", str(video_path),
                     "-map", "0:v:0",

@@ -132,15 +132,19 @@ lucid-fermi/
 
 ### 2. Run the Server
 ```bash
-# Default (scans ~/Videos)
+# That's it. Everything else is set up in the browser.
 python server.py
 
-# Point to one or more media folders
-python server.py --dir "D:\Movies" --dir "D:\TV Shows"
+# Optional: choose the port or bind address
+python server.py --host 0.0.0.0 --port 8000
 
-# Specify custom port and host
-python server.py --host 0.0.0.0 --port 8000 --dir "D:\Anime"
+# Optional: seed a folder on first run instead of using the admin page
+python server.py --dir "D:\Movies"
 ```
+
+On the first run the library is empty. Open **`http://127.0.0.1:<port>/admin`**,
+add your media folders and save. Settings persist, so from then on
+`python server.py` is all you need.
 
 ### 3. Open on Your TV or Mobile Device
 Upon launch, LiteJelly prints the network URL:
@@ -149,10 +153,10 @@ Upon launch, LiteJelly prints the network URL:
  LiteJelly 0.2.0
  Local:   http://127.0.0.1:8000
  Network: http://192.168.1.50:8000
+ Admin:   http://127.0.0.1:8000/admin
  ffmpeg:  7.1-essentials (ffmpeg.exe)
  ffprobe: 7.1-essentials (ffprobe.exe)
  Videos:  66
- Admin:   http://127.0.0.1:8000/admin
  Media directories:
    - [shows] D:\TV Shows
 ============================================================
@@ -163,15 +167,27 @@ Type the **Network URL** (e.g., `http://192.168.1.50:8000`) into your TV's brows
 
 ## ⚙️ Configuration
 
-There are two layers. `config.json` is the hand-written baseline you edit in a
-text editor. `settings.json`, written by the admin page, sits beside it and
-wins where the two overlap. Command line flags beat both. Delete
-`settings.json` at any time to fall back to your own file.
+Most people never need to edit a file. `config.json` only holds what must be
+known before the server can start listening:
 
 ```json
 {
     "port": 8000,
     "host": "0.0.0.0",
+    "admin_token": ""
+}
+```
+
+Everything else — media folders, transcoding, ffmpeg paths — is set on the
+admin page and saved to `settings.json` beside it. Where the two overlap,
+`settings.json` wins; command line flags beat both. Delete `settings.json` at
+any time to fall back to `config.json` and the built-in defaults.
+
+If you prefer to configure by hand, any admin-page setting can also be written
+directly into `config.json`:
+
+```json
+{
     "server_name": "LiteJelly",
     "media_dirs": [
         { "path": "D:\\Movies", "content_type": "movies" },
@@ -184,7 +200,6 @@ wins where the two overlap. Command line flags beat both. Delete
     "stream_buffer_mb": 8,
     "ffmpeg_path": "",
     "ffprobe_path": "",
-    "admin_token": "",
     "transcode": {
         "video_codec": "libx264",
         "audio_codec": "aac",
@@ -211,17 +226,38 @@ and Jellyfin separate configuration from the viewing experience. There is
 deliberately no settings icon in the library UI: someone watching a film on a
 TV has no reason to reach the transcoder configuration with a D-pad.
 
-From it you can change the server name, media directories and their content
-types, scan interval, playback and transcoding options, and the ffmpeg paths.
+It is grouped into four tabs so the everyday controls are not buried among the
+rare ones:
+
+| Tab | Contains |
+| :--- | :--- |
+| **Library** | Media folders and their content types, scan interval, manual rescan |
+| **Playback** | HEVC direct play, default transcode quality |
+| **General** | Server name, port and bind address, remote access, status |
+| **Advanced** | x264 preset and CRF, bitrates, concurrency, stream buffer, ffmpeg paths |
+
 Everything except `port` and `host` applies immediately; those two are saved
 and reported as needing a restart.
 
-**Access is restricted.** The admin API decides which directories the server
-exposes, so a request that can change it can make the server share any file on
-the machine. It is therefore reachable only from the machine running LiteJelly.
-To reach it from another device, set `admin_token` in `config.json` and open
-`http://<server>:<port>/admin?token=<your-token>`. Writes additionally require
-a same-origin request, so another website cannot post to it from your browser.
+### Reaching it from another device
+
+By default the admin page answers only on the machine running LiteJelly, so
+opening `http://192.168.1.50:8000/admin` from your TV returns 403. To allow it:
+
+1. Open `/admin` on the server itself and go to **General → Remote access**.
+2. Press **Generate token** (or type your own, 8+ characters, no spaces) and **Save settings**.
+3. Use the link the page then shows you:
+   `http://<server-ip>:<port>/admin?token=<your-token>`
+
+The token can also be set as `admin_token` in `config.json` if you have no
+desktop access to the machine. Treat that URL like a password: anyone with it
+can point the server at any folder on the host. The library itself stays
+available to the whole network without a token.
+
+**Why the restriction.** The admin API decides which directories the server
+hands files out of, so a request that can change it can make the server share
+anything on the machine. Writes additionally require a same-origin request, so
+another website cannot post to it from your browser.
 
 ---
 

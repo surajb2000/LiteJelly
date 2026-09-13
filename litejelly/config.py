@@ -108,6 +108,9 @@ class Config:
             "stream_buffer_mb": self.stream_buffer_mb,
             "ffmpeg_path": self.ffmpeg_path,
             "ffprobe_path": self.ffprobe_path,
+            # Echoed so the page can show a ready-made remote URL. Safe here:
+            # the caller already passed the admin guard to see this at all.
+            "admin_token": self.admin_token,
             "transcode": asdict(self.transcode),
         }
 
@@ -174,18 +177,8 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
             cfg.port = args.port
         if getattr(args, "host", None):
             cfg.host = args.host
-        if getattr(args, "name", None):
-            cfg.server_name = args.name
-        if getattr(args, "ffmpeg", None):
-            cfg.ffmpeg_path = args.ffmpeg
-        if getattr(args, "ffprobe", None):
-            cfg.ffprobe_path = args.ffprobe
         if getattr(args, "dir", None):
             raw_dirs = list(args.dir)
-
-    if not raw_dirs:
-        raw_dirs = [os.path.expanduser("~/Videos")]
-        warnings.append("No media_dirs configured; defaulting to ~/Videos.")
 
     resolved: list[MediaDir] = []
     seen: set[str] = set()

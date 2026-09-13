@@ -353,7 +353,7 @@ class SubtitleService:
     def _ffmpeg_to_vtt(self, middle: list[str]) -> str | None:
         if not self.tools.available:
             return None
-        cmd = [self.tools.ffmpeg, "-hide_banner", "-loglevel", "error",
+        cmd = [self.tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
                *middle, "-f", "webvtt", "pipe:1"]
         try:
             result = run_quiet(cmd, timeout=60)

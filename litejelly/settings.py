@@ -182,10 +182,9 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
     if "media_dirs" in payload:
         dirs = _clean_media_dirs(payload["media_dirs"], errors)
         if dirs is not None:
-            if not dirs:
-                errors.append("at least one media directory is required")
-            else:
-                clean["media_dirs"] = dirs
+            # An empty list is allowed: the server starts without media and
+            # points the user at this page to add some.
+            clean["media_dirs"] = dirs
 
     if "scan_interval" in payload:
         number = _as_int(payload["scan_interval"], 5, 86400, "scan_interval", errors)
@@ -226,6 +225,15 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
             errors.append("host cannot be empty")
         else:
             clean["host"] = host
+
+    if "admin_token" in payload:
+        token = str(payload["admin_token"] or "").strip()
+        if token and len(token) < 8:
+            errors.append("admin_token must be at least 8 characters")
+        elif any(ch.isspace() for ch in token):
+            errors.append("admin_token cannot contain spaces")
+        else:
+            clean["admin_token"] = token
 
     if "transcode" in payload:
         transcode = _clean_transcode(payload["transcode"], errors)

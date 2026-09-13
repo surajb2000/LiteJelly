@@ -195,9 +195,12 @@ class SettingsValidationTests(unittest.TestCase):
             "media_dirs": [str(self.media), str(self.media) + "//"]})
         self.assertEqual(len(clean["media_dirs"]), 1)
 
-    def test_empty_media_dirs_rejected(self):
-        _, errors = settings.validate({"media_dirs": []})
-        self.assertTrue(errors)
+    def test_empty_media_dirs_allowed(self):
+        # The server now starts with no library and sends the user to /admin,
+        # so clearing the list is a legitimate state rather than an error.
+        clean, errors = settings.validate({"media_dirs": []})
+        self.assertEqual(errors, [])
+        self.assertEqual(clean["media_dirs"], [])
 
     def test_media_dirs_must_be_a_list(self):
         _, errors = settings.validate({"media_dirs": {"path": str(self.media)}})
@@ -235,6 +238,24 @@ class SettingsValidationTests(unittest.TestCase):
         _, errors = settings.validate(["media_dirs"])
         self.assertTrue(errors)
 
+    def test_admin_token_minimum_length(self):
+        _, errors = settings.validate({"admin_token": "short"})
+        self.assertTrue(errors)
+
+    def test_admin_token_rejects_spaces(self):
+        _, errors = settings.validate({"admin_token": "has spaces here"})
+        self.assertTrue(errors)
+
+    def test_admin_token_accepted(self):
+        clean, errors = settings.validate({"admin_token": "a-long-enough-token"})
+        self.assertEqual(errors, [])
+        self.assertEqual(clean["admin_token"], "a-long-enough-token")
+
+    def test_admin_token_can_be_cleared(self):
+        clean, errors = settings.validate({"admin_token": ""})
+        self.assertEqual(errors, [])
+        self.assertEqual(clean["admin_token"], "")
+
 
 class RestartRequiredTests(unittest.TestCase):
     def test_changed_port_needs_restart(self):
@@ -243,8 +264,17 @@ class RestartRequiredTests(unittest.TestCase):
     def test_unchanged_port_does_not(self):
         self.assertEqual(settings.restart_required({"port": 8000}, {"port": 8000}), [])
 
+    def test_absent_key_does_not(self):
+        self.assertEqual(settings.restart_required({"port": 8000}, {}), [])
+
     def test_other_fields_apply_live(self):
         self.assertEqual(settings.restart_required({}, {"server_name": "New"}), [])
+
+    def test_host_and_port_reported_together(self):
+        changed = settings.restart_required(
+            {"port": 8000, "host": "0.0.0.0"},
+            {"port": 9000, "host": "127.0.0.1"})
+        self.assertEqual(sorted(changed), ["host", "port"])
 
 
 class SettingsFileTests(unittest.TestCase):
@@ -348,16 +378,21 @@ class ConfigLayeringTests(unittest.TestCase):
         class Args:
             port = 7777
             host = None
-            name = "FromCli"
-            ffmpeg = None
-            ffprobe = None
             dir = None
 
         self._write_config({"media_dirs": [str(self.movies)]})
         settings.save_overrides(self.root, {"server_name": "FromSettings", "port": 9001})
         config, _ = load_config(self.root, Args())
         self.assertEqual(config.port, 7777)
-        self.assertEqual(config.server_name, "FromCli")
+        self.assertEqual(config.server_name, "FromSettings")
+
+    def test_no_media_dirs_is_a_valid_first_run_state(self):
+        # Previously this silently fell back to ~/Videos, which indexed files
+        # the user never asked to share.
+        self._write_config({})
+        config, warnings = load_config(self.root)
+        self.assertEqual(config.media_dirs, [])
+        self.assertEqual(warnings, [])
 
     def test_duplicate_dirs_collapse(self):
         self._write_config({"media_dirs": [str(self.movies), str(self.movies)]})
@@ -394,8 +429,10 @@ class PublicConfigTests(unittest.TestCase):
         self.assertIn("media_dirs", admin_view)
         self.assertIn("transcode", admin_view)
 
-    def test_admin_dict_does_not_echo_the_token(self):
-        self.assertNotIn("s3cret", json.dumps(self.config.to_admin_dict()))
+    def test_admin_dict_echoes_the_token_for_the_remote_url(self):
+        # Only ever served behind require_admin, and the page needs it to show
+        # a working remote link.
+        self.assertEqual(self.config.to_admin_dict()["admin_token"], "s3cret")
 
 
 class LibraryReconfigureTests(unittest.TestCase):

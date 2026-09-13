@@ -67,6 +67,32 @@ h2 { font-size: 15px; margin: 0 0 14px; font-weight: 600; letter-spacing: .02em;
 }
 .banner.error { border-color: var(--danger); color: #ffd9d9; }
 .banner.warn { border-color: #b58b2f; color: #ffe8bd; }
+.banner.setup { border-color: var(--accent); }
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+
+.tab {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  padding: 10px 16px;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.hint.lead { margin: 0 0 16px; }
 
 .field { margin-bottom: 14px; }
 .field.grow { flex: 1 1 auto; min-width: 220px; }
@@ -139,6 +165,8 @@ input[type="checkbox"] { margin-right: 8px; }
 
 .actions { margin-top: 4px; }
 .actions .btn { margin-right: 8px; }
+
+input[readonly] { color: var(--muted); }
 
 .save-bar {
   position: sticky;
