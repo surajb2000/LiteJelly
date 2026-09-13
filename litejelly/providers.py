@@ -58,6 +58,11 @@ MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 CACHE_TTL = 30 * 24 * 3600
 MISS_TTL = 3 * 24 * 3600
 
+# Bump when the shape of a cached record changes. Without this, a record
+# written before a field existed stays valid for its full month and the new
+# field simply never appears, which is indistinguishable from a broken fetch.
+CACHE_VERSION = 2
+
 # How far past the end of the file a skip segment may reach before the data is
 # assumed to describe a different cut.
 END_TOLERANCE = 5.0
@@ -181,6 +186,8 @@ class MetadataCache:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
+        if payload.get("version") != CACHE_VERSION:
+            return None
         age = time.time() - (payload.get("fetched_at") or 0)
         ttl = MISS_TTL if payload.get("miss") else CACHE_TTL
         if age > ttl:
@@ -189,7 +196,7 @@ class MetadataCache:
 
     def put(self, namespace: str, key: str, data, miss: bool = False) -> None:
         path = self._path(namespace, key)
-        payload = {"fetched_at": time.time(), "key": key,
+        payload = {"fetched_at": time.time(), "key": key, "version": CACHE_VERSION,
                    "miss": miss, "data": data}
         with self._lock:
             try:

@@ -317,6 +317,34 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(self.cache.get("tvmaze", "Bleach")["source"], "tv")
         self.assertEqual(self.cache.get("anilist", "Bleach")["source"], "anilist")
 
+    def test_a_record_from_an_older_shape_is_refetched(self):
+        """A field added after a record was written must not be invisible.
+
+        Without this, adding backdrop_url meant existing servers kept serving
+        month-old records that could not contain it, which looks exactly like
+        a broken download.
+        """
+        self.cache.put("tvmaze", "Breaking Bad", {"title": "Breaking Bad"})
+        path = next(Path(self._tmp.name).rglob("*.json"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["version"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        self.assertIsNone(self.cache.get("tvmaze", "Breaking Bad"))
+
+    def test_a_record_from_a_future_shape_is_also_refetched(self):
+        self.cache.put("tvmaze", "Breaking Bad", {"title": "Breaking Bad"})
+        path = next(Path(self._tmp.name).rglob("*.json"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["version"] = 999
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        self.assertIsNone(self.cache.get("tvmaze", "Breaking Bad"))
+
+    def test_a_current_record_still_hits(self):
+        self.cache.put("tvmaze", "Breaking Bad", {"title": "Breaking Bad"})
+        self.assertIsNotNone(self.cache.get("tvmaze", "Breaking Bad"))
+
     def test_corrupt_entry_is_ignored(self):
         self.cache.put("tvmaze", "X", {"a": 1})
         for path in Path(self._tmp.name).rglob("*.json"):
