@@ -111,6 +111,8 @@
     progress: '/api/progress',
     thumbnail: '/api/thumbnail',
     artwork: '/api/artwork',
+    image: '/api/image',
+    series: '/api/series',
     details: '/api/details',
     subtitle: '/api/subtitle'
   };
@@ -134,6 +136,7 @@
     sort: 'recent',
     query: '',
     seriesId: null,
+    seriesData: null,
     season: 'all',
     columns: 4,
     ffmpegAvailable: false,
@@ -435,7 +438,15 @@
       }
       state.filtered = list.slice().sort(compareByEpisode);
       state.entries = state.filtered;
-      renderGrid();
+      // The series page draws its own episode rows; the card grid would be a
+      // second, worse copy of the same list.
+      el.grid.classList.add('hidden');
+      el.rails.classList.add('hidden');
+      el.libraryHeader.classList.add('hidden');
+      el.continueSection.classList.add('hidden');
+      el.hero.classList.add('hidden');
+      syncTopbar();
+      renderEpisodes();
       return;
     }
 
@@ -665,42 +676,250 @@
     if (!group) return;
     state.seriesId = seriesId;
     state.season = 'all';
+    state.seriesData = null;
     renderSeriesHeader(group);
     applyFilters();
+    loadSeries(seriesId);
     window.scrollTo(0, 0);
-    focusFirstCard();
   }
 
   function closeSeries() {
     if (!state.seriesId) return false;
     state.seriesId = null;
     state.season = 'all';
+    state.seriesData = null;
     renderSeriesHeader(null);
     applyFilters();
     return true;
   }
 
+  /* One request for the whole page: the plot of every episode, the cast and
+   * which artwork exists. Asking per row would be one request per episode.
+   */
+  async function loadSeries(seriesId) {
+    try {
+      const data = await getJSON(API.series + '?id=' + encodeURIComponent(seriesId));
+      if (state.seriesId !== seriesId) return;
+      state.seriesData = data;
+      renderSeriesHero(data);
+      renderEpisodes();
+      renderCast(data.cast || []);
+    } catch (err) {
+      // The episode rows still work from the library listing alone.
+      renderEpisodes();
+    }
+  }
+
+  function renderSeriesHero(data) {
+    el.seriesHero.classList.remove('hidden');
+    el.seriesTitle.textContent = data.title || '';
+
+    const bits = [];
+    const rating = data.imdb_rating != null ? data.imdb_rating : data.rating;
+    if (rating != null) bits.push('\u2605 ' + rating);
+    if (data.year) bits.push(data.year);
+    const seasons = {};
+    (data.episodes || []).forEach(ep => { seasons[ep.season] = true; });
+    const seasonCount = Object.keys(seasons).length;
+    if (seasonCount > 1) bits.push(seasonCount + ' seasons');
+    const count = (data.episodes || []).length;
+    bits.push(count + (count === 1 ? ' episode' : ' episodes'));
+    if (data.genres && data.genres.length) bits.push(data.genres.slice(0, 3).join(', '));
+    el.seriesMeta.textContent = bits.join(' \u00b7 ');
+    el.seriesSummary.textContent = data.plot || '';
+
+    const next = nextUnwatched(data.episodes || []);
+    el.seriesPlay.textContent = next.resume
+      ? '\u25b6  Resume ' + next.code : '\u25b6  Play ' + next.code;
+    el.seriesPlay.onclick = () => playVideo(next.id);
+
+    if (data.poster_id) {
+      setImage(el.seriesPosterImg,
+               API.artwork + '?id=' + encodeURIComponent(data.poster_id));
+      el.seriesPoster.classList.remove('hidden');
+    } else {
+      el.seriesPoster.classList.add('hidden');
+    }
+
+    const backdrop = data.backdrop_id
+      ? API.artwork + '?id=' + encodeURIComponent(data.backdrop_id) + '&kind=backdrop'
+      : (count ? API.thumbnail + '?id=' + encodeURIComponent(data.episodes[0].id) : '');
+    if (backdrop) setImage(el.seriesBackdrop, backdrop);
+  }
+
+  function nextUnwatched(episodes) {
+    for (let i = 0; i < episodes.length; i++) {
+      const ep = episodes[i];
+      if (!ep.finished) {
+        return { id: ep.id, code: episodeLabel(ep),
+                 resume: ep.position > 15 };
+      }
+    }
+    const first = episodes[0] || {};
+    return { id: first.id, code: episodeLabel(first), resume: false };
+  }
+
+  function episodeLabel(ep) {
+    if (ep.season == null || ep.episode == null) return '';
+    return 'S' + String(ep.season).padStart(2, '0')
+      + 'E' + String(ep.episode).padStart(2, '0');
+  }
+
+  function setImage(img, src) {
+    if (img.dataset.src === src && img.getAttribute('src')) return;
+    img.dataset.src = src;
+    img.dataset.attempt = '0';
+    img.classList.remove('loaded');
+    img.removeAttribute('src');
+    attemptThumbnail(img, src);
+  }
+
+  function renderEpisodes() {
+    const data = state.seriesData;
+    el.episodeSection.classList.toggle('hidden', !state.seriesId);
+    if (!state.seriesId) {
+      el.episodeList.replaceChildren();
+      return;
+    }
+
+    // Fall back to the library listing when the detail call has not landed.
+    const rows = data && data.episodes
+      ? data.episodes
+      : state.filtered.map(video => ({
+          id: video.id, season: video.season, episode: video.episode,
+          title: video.episode_title || '', plot: '', aired: '',
+          runtime: null, position: 0, duration: 0, finished: false
+        }));
+
+    const visible = state.season === 'all'
+      ? rows : rows.filter(row => String(row.season) === state.season);
+
+    const fragment = document.createDocumentFragment();
+    visible.forEach(row => fragment.appendChild(buildEpisodeRow(row)));
+    el.episodeList.replaceChildren(fragment);
+  }
+
+  function buildEpisodeRow(row) {
+    const node = document.createElement('button');
+    node.type = 'button';
+    node.className = 'episode-row';
+    node.dataset.id = row.id;
+    const code = episodeLabel(row);
+    const heading = (row.episode != null ? row.episode + '. ' : '')
+      + (row.title || 'Episode ' + (row.episode != null ? row.episode : ''));
+    node.setAttribute('aria-label', 'Play ' + (code ? code + ' ' : '') + heading);
+
+    const still = document.createElement('span');
+    still.className = 'episode-still';
+    const pad = document.createElement('span');
+    pad.className = 'episode-still-pad';
+    still.appendChild(pad);
+    const img = document.createElement('img');
+    img.alt = '';
+    img.decoding = 'async';
+    img.dataset.src = API.thumbnail + '?id=' + encodeURIComponent(row.id);
+    still.appendChild(img);
+
+    if (row.duration && row.position > 0 && !row.finished) {
+      const bar = document.createElement('span');
+      bar.className = 'episode-progress';
+      const fill = document.createElement('span');
+      fill.style.width =
+        (Math.min(1, row.position / row.duration) * 100).toFixed(1) + '%';
+      bar.appendChild(fill);
+      still.appendChild(bar);
+    }
+    node.appendChild(still);
+
+    const body = document.createElement('span');
+    body.className = 'episode-body';
+    const title = document.createElement('span');
+    title.className = 'episode-heading';
+    title.textContent = heading;
+    body.appendChild(title);
+
+    if (row.plot) {
+      const plot = document.createElement('span');
+      plot.className = 'episode-synopsis';
+      plot.textContent = row.plot;
+      body.appendChild(plot);
+    }
+
+    const sub = document.createElement('span');
+    sub.className = 'episode-sub';
+    const subBits = [];
+    if (code) subBits.push(code);
+    if (row.runtime) subBits.push(row.runtime + ' min');
+    if (row.aired) subBits.push('Aired ' + formatDate(row.aired));
+    sub.textContent = subBits.join(' \u00b7 ');
+    body.appendChild(sub);
+    node.appendChild(body);
+
+    const go = document.createElement('span');
+    go.className = 'episode-go';
+    go.setAttribute('aria-hidden', 'true');
+    go.textContent = '\u25b6';
+    node.appendChild(go);
+
+    node.addEventListener('click', () => playVideo(row.id));
+    if (thumbObserver) thumbObserver.observe(node);
+    else loadThumbnail(img);
+    return node;
+  }
+
+  function renderCast(cast) {
+    const usable = cast.filter(member => member.image);
+    el.castSection.classList.toggle('hidden', !usable.length);
+    if (!usable.length) {
+      el.castRow.replaceChildren();
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    usable.forEach(member => {
+      const item = document.createElement('div');
+      item.className = 'cast-member';
+      item.setAttribute('role', 'listitem');
+
+      const portrait = document.createElement('div');
+      portrait.className = 'cast-portrait';
+      const img = document.createElement('img');
+      img.alt = '';
+      img.decoding = 'async';
+      img.loading = 'lazy';
+      img.src = API.image + '?h=' + encodeURIComponent(member.image);
+      portrait.appendChild(img);
+      item.appendChild(portrait);
+
+      const name = document.createElement('span');
+      name.className = 'cast-name';
+      name.textContent = member.name;
+      item.appendChild(name);
+
+      if (member.character) {
+        const role = document.createElement('span');
+        role.className = 'cast-role';
+        role.textContent = member.character;
+        item.appendChild(role);
+      }
+      fragment.appendChild(item);
+    });
+    el.castRow.replaceChildren(fragment);
+  }
+
   function renderSeriesHeader(group) {
-    el.seriesBack.classList.toggle('hidden', !group);
     el.seasonChips.classList.add('hidden');
 
     if (!group) {
-      el.sectionSubtitle.textContent = 'Local streaming optimized for TV & mobile';
-      el.seriesPlot.textContent = '';
-      el.seriesPlot.classList.add('hidden');
+      el.seriesHero.classList.add('hidden');
+      el.episodeSection.classList.add('hidden');
+      el.castSection.classList.add('hidden');
+      el.episodeList.replaceChildren();
+      el.castRow.replaceChildren();
       renderCategoryChips();
       return;
     }
 
-    el.sectionTitle.textContent = group.title;
     const seasons = Object.keys(group.seasons).map(Number).sort((a, b) => a - b);
-    const parts = [group.episodes.length + (group.episodes.length === 1 ? ' episode' : ' episodes')];
-    if (seasons.length > 1) {
-      parts.push(seasons.length + ' seasons');
-    }
-    el.sectionSubtitle.textContent = parts.join(' · ');
-    showSeriesPlot(group);
-
     if (seasons.length > 1) {
       const fragment = document.createDocumentFragment();
       fragment.appendChild(seasonChip('all', 'All seasons'));
@@ -710,22 +929,6 @@
       el.seasonChips.replaceChildren(fragment);
       el.seasonChips.classList.remove('hidden');
     }
-  }
-
-  // Plots are too long to ship with every item, so fetch the one on screen.
-  function showSeriesPlot(group) {
-    el.seriesPlot.textContent = '';
-    el.seriesPlot.classList.add('hidden');
-    const first = group.episodes.slice().sort(compareByEpisode)[0];
-    if (!first) return;
-
-    getJSON(API.details + '?id=' + encodeURIComponent(first.id)).then(data => {
-      if (state.seriesId !== group.id) return;  // Moved on while it loaded.
-      const meta = (data && data.metadata) || {};
-      if (!meta.plot) return;
-      el.seriesPlot.textContent = meta.plot;
-      el.seriesPlot.classList.remove('hidden');
-    }).catch(() => { /* metadata is optional */ });
   }
 
   function seasonChip(value, label) {
@@ -742,7 +945,7 @@
         other.classList.toggle('active', on);
         other.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
-      applyFilters();
+      renderEpisodes();
     });
     return chip;
   }
@@ -926,7 +1129,8 @@
       entries.forEach(entry => {
         if (!entry.isIntersecting) return;
         observer.unobserve(entry.target);
-        const img = $('.thumb-img', entry.target);
+        const img = $('.thumb-img', entry.target)
+          || $('img[data-src]', entry.target);
         if (img) loadThumbnail(img);
       });
     }, { rootMargin: '300px 0px' });
@@ -2073,8 +2277,10 @@
    */
   function navigableTargets() {
     const nodes = $$('.card', el.library)
+      .concat($$('.episode-row', el.library))
       .concat($$('.rail-more', el.library))
-      .concat([el.heroPlay, el.heroBrowse]);
+      .concat($$('.chip', el.seasonChips))
+      .concat([el.heroPlay, el.heroBrowse, el.seriesPlay, el.seriesBack]);
     return nodes.filter(node => node && !node.classList.contains('hidden')
       && node.offsetParent !== null);
   }
@@ -2198,6 +2404,18 @@
     el.categoryChips = $('#category-chips');
     el.formatChips = $('#format-chips');
     el.seasonChips = $('#season-chips');
+    el.seriesHero = $('#series-hero');
+    el.seriesBackdrop = $('#series-backdrop');
+    el.seriesPoster = $('.series-poster');
+    el.seriesPosterImg = $('#series-poster-img');
+    el.seriesTitle = $('#series-title');
+    el.seriesMeta = $('#series-meta');
+    el.seriesSummary = $('#series-summary');
+    el.seriesPlay = $('#series-play');
+    el.episodeSection = $('#episode-list-section');
+    el.episodeList = $('#episode-list');
+    el.castSection = $('#cast-section');
+    el.castRow = $('#cast-row');
     el.loading = $('#loading');
     el.emptyState = $('#empty-state');
     el.emptyTitle = $('#empty-title');
@@ -2283,6 +2501,7 @@
     };
     el.grid.addEventListener('click', onCardActivate);
     el.continueRow.addEventListener('click', onCardActivate);
+    el.rails.addEventListener('click', onCardActivate);
 
     el.seriesBack.addEventListener('click', () => {
       closeSeries();

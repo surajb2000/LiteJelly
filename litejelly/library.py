@@ -439,6 +439,8 @@ class Library:
         merged.setdefault("plot", episode.get("summary") or info.summary)
         merged.setdefault("genres", info.genres)
         merged.setdefault("aired", episode.get("airdate") or "")
+        if episode.get("runtime"):
+            merged.setdefault("runtime", episode["runtime"])
         merged["source"] = info.source
         merged["imdb_id"] = info.imdb_id
         merged["series_plot"] = info.summary

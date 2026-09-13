@@ -117,6 +117,9 @@ class Enricher:
             log.info("Found %s on %s", info.title or title, info.source)
             if info.poster_url:
                 self.providers.artwork(info.poster_url)
+            for member in info.cast:
+                if member.get("image"):
+                    self.providers.artwork(member["image"])
             self._pending_updates = True
         elif kind == "movie":
             _, title, year = job

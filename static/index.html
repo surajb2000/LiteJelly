@@ -70,9 +70,6 @@
 
     <div class="library-header">
       <div class="section-title-wrap">
-        <button id="series-back" class="series-back hidden" type="button">
-          <span aria-hidden="true">‹</span> All titles
-        </button>
         <h1 id="section-title" class="section-title">Media Library</h1>
         <p id="section-subtitle" class="section-subtitle">Local streaming optimized for TV &amp; mobile</p>
         <p id="series-plot" class="series-plot hidden"></p>
@@ -102,7 +99,39 @@
       </div>
     </div>
 
+    <section id="series-hero" class="series-hero hidden">
+      <div class="hero-art">
+        <img id="series-backdrop" class="hero-image" alt="" decoding="async">
+      </div>
+      <div class="series-hero-body">
+        <div class="series-poster">
+          <img id="series-poster-img" class="series-poster-img" alt="" decoding="async">
+        </div>
+        <div class="series-info">
+          <button id="series-back" class="series-back" type="button">
+            <span aria-hidden="true">‹</span> Back
+          </button>
+          <h1 id="series-title" class="series-title"></h1>
+          <p id="series-meta" class="series-meta"></p>
+          <p id="series-summary" class="series-summary"></p>
+          <div class="series-actions">
+            <button type="button" id="series-play" class="hero-play"></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div id="season-chips" class="filter-chips season-chips hidden" role="group" aria-label="Filter by season"></div>
+
+    <section id="episode-list-section" class="episode-section hidden">
+      <h2 class="rail-title">Episodes</h2>
+      <div id="episode-list" class="episode-list"></div>
+    </section>
+
+    <section id="cast-section" class="rail-section hidden" aria-labelledby="cast-heading">
+      <h2 id="cast-heading" class="rail-title">Cast</h2>
+      <div id="cast-row" class="rail cast-rail" role="list"></div>
+    </section>
 
     <section id="continue-section" class="rail-section hidden" aria-labelledby="continue-heading">
       <h2 id="continue-heading" class="rail-title">Continue watching</h2>

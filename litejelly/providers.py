@@ -2,9 +2,10 @@
 
 Verified against the live services rather than their docs:
 
-  TVmaze   /singlesearch/shows?q=NAME&embed=episodes returns the show and every
-           episode in one call, with rating.average, externals.imdb and poster
-           URLs. No key. CC BY-SA, so the UI credits it.
+  TVmaze   /singlesearch/shows?q=NAME&embed[]=episodes&embed[]=cast returns the
+           show, every episode and the billed cast in one request, with
+           rating.average, externals.imdb and poster URLs. No key.
+           CC BY-SA, so the UI credits it.
   AniList  GraphQL search returns idMal, averageScore and cover art. No key.
            404 means no match.
   AniSkip  /v2/skip-times/{malId}/{episode} returns opening and ending
@@ -211,8 +212,10 @@ class SeriesInfo:
     imdb_id: str = ""
     mal_id: int | None = None
     poster_url: str = ""
-    # "s1e2" -> {"title", "summary", "rating", "image"}
+    # "s1e2" -> {"title", "summary", "rating", "image", "runtime"}
     episodes: dict = field(default_factory=dict)
+    # [{"name", "character", "image"}]
+    cast: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -221,6 +224,7 @@ class SeriesInfo:
             "year": self.year, "genres": self.genres,
             "imdb_id": self.imdb_id, "mal_id": self.mal_id,
             "poster_url": self.poster_url, "episodes": self.episodes,
+            "cast": self.cast,
         }
 
     @classmethod
@@ -239,6 +243,7 @@ class SeriesInfo:
         info.mal_id = data.get("mal_id")
         info.poster_url = str(data.get("poster_url") or "")
         info.episodes = dict(data.get("episodes") or {})
+        info.cast = list(data.get("cast") or [])
         return info
 
 
@@ -275,7 +280,25 @@ def parse_tvmaze(payload: dict) -> SeriesInfo:
             if isinstance(episode_rating, (int, float)) else None,
             "airdate": str(raw.get("airdate") or ""),
             "image": str((raw.get("image") or {}).get("original") or ""),
+            "runtime": raw.get("runtime") if isinstance(raw.get("runtime"), int) else None,
         }
+
+    # A long-running show can list a hundred guest actors; the billed few are
+    # the ones anyone recognises.
+    for member in ((payload.get("_embedded") or {}).get("cast") or [])[:12]:
+        if not isinstance(member, dict):
+            continue
+        person = member.get("person") or {}
+        character = member.get("character") or {}
+        image = (person.get("image") or {})
+        name = str(person.get("name") or "").strip()
+        if not name:
+            continue
+        info.cast.append({
+            "name": name,
+            "character": str(character.get("name") or "").strip(),
+            "image": str(image.get("medium") or image.get("original") or ""),
+        })
     return info
 
 
@@ -421,6 +444,11 @@ def _introdb_key(imdb_id: str, season=None, episode=None) -> str:
         return ""
 
 
+def artwork_digest(url: str) -> str:
+    """Stable name for a downloaded image, so the client can ask for it."""
+    return hashlib.sha1((url or "").encode("utf-8")).hexdigest()[:20]
+
+
 class MetadataProviders:
     """Looks things up once, remembers the answer, and never blocks a request."""
 
@@ -484,12 +512,29 @@ class MetadataProviders:
         suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
         if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
             suffix = ".jpg"
-        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+        digest = artwork_digest(url)
         target = self.artwork_dir / f"{digest}{suffix}"
         try:
             return target if target.is_file() and target.stat().st_size else None
         except OSError:
             return None
+
+    def cached_image(self, digest: str) -> Path | None:
+        """Look a downloaded image up by digest alone.
+
+        The name is derived from a sha1, so a caller cannot walk out of the
+        cache directory with it.
+        """
+        if not re.fullmatch(r"[0-9a-f]{20}", str(digest or "")):
+            return None
+        for suffix in (".jpg", ".jpeg", ".png", ".webp"):
+            target = self.artwork_dir / f"{digest}{suffix}"
+            try:
+                if target.is_file() and target.stat().st_size:
+                    return target
+            except OSError:
+                continue
+        return None
 
     def series(self, title: str, anime: bool = False) -> SeriesInfo | None:
         if not title.strip():
@@ -570,7 +615,7 @@ class MetadataProviders:
 
     def _fetch_tvmaze(self, title: str) -> SeriesInfo | None:
         url = (f"{TVMAZE_ROOT}/singlesearch/shows"
-               f"?q={urllib.parse.quote(title)}&embed=episodes")
+               f"?q={urllib.parse.quote(title)}&embed[]=episodes&embed[]=cast")
         payload = self.fetcher.fetch_json(url)
         if not payload or not payload.get("name"):
             return None
@@ -643,7 +688,7 @@ class MetadataProviders:
         suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
         if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
             suffix = ".jpg"
-        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+        digest = artwork_digest(url)
         target = self.artwork_dir / f"{digest}{suffix}"
         if target.is_file() and target.stat().st_size > 0:
             return target

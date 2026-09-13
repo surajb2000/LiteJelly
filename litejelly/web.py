@@ -29,10 +29,11 @@ from .config import load_config
 from .enrich import Enricher
 from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
 from .library import (
-    Library, build_continue_watching, next_episode, previous_episode,
+    Library, build_continue_watching, episode_order, next_episode,
+    previous_episode,
 )
 from .paths import is_within
-from .providers import MetadataProviders
+from .providers import MetadataProviders, artwork_digest
 from .store import ProgressStore
 from .subtitles import SubtitleService, discover as discover_subtitles
 from .thumbnails import ThumbnailService
@@ -256,6 +257,8 @@ class Application:
             ("GET", "/api/skip"): Routes.skip,
             ("GET", "/api/thumbnail"): Routes.thumbnail,
             ("GET", "/api/artwork"): Routes.artwork,
+            ("GET", "/api/image"): Routes.image,
+            ("GET", "/api/series"): Routes.series,
             ("GET", "/api/details"): Routes.details,
             ("GET", "/api/subtitle"): Routes.subtitle,
             ("GET", "/api/progress"): Routes.progress_get,
@@ -968,6 +971,85 @@ class Routes:
             h.send_api_error(HTTPStatus.NOT_FOUND, "No artwork")
             return
 
+        h.serve_static_file(target, cache_control="public, max-age=604800")
+
+    @staticmethod
+    def series(h, query):
+        """Everything the series page needs, in one request.
+
+        Fetching a plot per episode would mean one request per row, so the
+        whole season's text, the cast and the artwork all come back together.
+        """
+        app = h.app
+        series_id = query.get("id", [""])[0]
+        episodes = [v for v in app.library.videos if v.series_id == series_id]
+        if not episodes:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Series not found")
+            return
+
+        episodes.sort(key=episode_order)
+        first = episodes[0]
+        meta = first.meta or {}
+
+        info = None
+        if app.metadata is not None:
+            info = app.metadata.cached_series(first.title,
+                                              first.category == "anime")
+
+        cast = []
+        for member in (info.cast if info else []):
+            digest = artwork_digest(member.get("image") or "")
+            if member.get("image") and app.metadata.cached_image(digest) is None:
+                digest = ""
+            cast.append({"name": member.get("name", ""),
+                         "character": member.get("character", ""),
+                         "image": digest})
+
+        h.send_json({
+            "id": series_id,
+            "title": (info.title if info and info.title else first.title),
+            "category": first.category,
+            "plot": meta.get("series_plot") or meta.get("plot") or "",
+            "genres": meta.get("genres") or (info.genres if info else []),
+            "rating": first.rating,
+            "imdb_rating": first.imdb_rating,
+            # An episode carries no year of its own; the show does.
+            "year": first.year or (info.year if info else None),
+            "poster_id": first.id if first.has_poster else "",
+            "backdrop_id": next((v.id for v in episodes if v.backdrop_path), ""),
+            "cast": cast,
+            "episodes": [Routes._episode_row(app, video) for video in episodes],
+        })
+
+    @staticmethod
+    def _episode_row(app, video):
+        meta = video.meta or {}
+        progress = app.progress.get(video.id) or {}
+        return {
+            "id": video.id,
+            "season": video.season,
+            "episode": video.episode,
+            "title": video.episode_title or "",
+            "plot": meta.get("plot") or "",
+            "aired": meta.get("aired") or "",
+            "runtime": meta.get("runtime"),
+            "rating": video.rating,
+            "position": progress.get("position") or 0,
+            "duration": progress.get("duration") or 0,
+            "finished": bool(progress.get("finished")),
+        }
+
+    @staticmethod
+    def image(h, query):
+        """Serve a downloaded image by digest, for cast portraits."""
+        app = h.app
+        if app.metadata is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No artwork")
+            return
+        target = app.metadata.cached_image(query.get("h", [""])[0])
+        if target is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No artwork")
+            return
         h.serve_static_file(target, cache_control="public, max-age=604800")
 
     @staticmethod
