@@ -10,9 +10,9 @@ Heavy media servers like Plex, Jellyfin, or Emby often struggle on low-spec hard
 
 **LiteJelly** is built from the ground up to solve this:
 - **Zero Dependencies**: Pure Python standard library backend (no `pip install` required).
-- **Featherweight Frontend**: Under 100 KB total payload (HTML + CSS + Vanilla JS) with zero frameworks or build steps.
+- **Featherweight Frontend**: 178 KB of HTML, CSS and vanilla JavaScript, with no frameworks and no build step. A further 445 KB of self-hosted font is fetched once and then cached for a year, so a return visit is the 178 KB alone. For comparison, the clients this replaces ship 10–30 MB of JavaScript before any of it runs.
 - **Smart Transcoding & Remuxing**: Offloads codec heavy-lifting (HEVC/x265, AC-3, DTS, 10-bit) to the host server via portable FFmpeg.
-- **10-Foot TV Experience**: Seamless D-pad remote navigation with high-visibility focus indicators, smooth auto-scrolling, and mobile touch gestures.
+- **10-Foot TV Experience**: The interface sizes itself to the screen it is on, judged by what the device can do rather than by what its user agent claims to be.
 - **Local Synchronization**: SQLite-backed playback progress (WAL mode) shared instantly across all devices on your local network.
 
 ---
@@ -71,10 +71,18 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 - **Dynamic Cue Shifting**: Dynamically re-bases subtitle timestamps when playback resumes midway through a stream.
 - **Bitmap Burn-in**: Detects image-based subtitles (PGS / VobSub) and offers clean hardware-assisted video burn-in.
 
-### 4. TV Remote & 10-Foot User Interface- **D-pad Spatial Navigation**: Full keyboard / TV remote arrow key control with grid row/column math.
+### 4. TV Remote & 10-Foot User Interface
+
+- **Device profiles**: The interface sizes itself to the screen it is on. There is no reliable way to ask a browser "am I a television", so LiteJelly asks what actually changes the design: a wide screen that cannot hover is being driven by a remote from across a room. Type, spacing, focus rings and hit targets all scale from that, and a stray mouse movement corrects a wrong guess.
+- **D-pad spatial navigation**: Arrow keys move to the nearest control in that direction, measured geometrically. A hero, rails of differing lengths and a grid share no common column count, so counting columns cannot work.
+- **Overscan safe area**: Nothing readable or pressable sits in the outer 5% on a television, because many still clip the edge of the picture.
+- **Home screen**: A suggestion with full-width artwork, then one rail per category. A flat alphabetical grid is a file browser, not a library.
+- **Series pages**: Poster beside backdrop, season tabs, and one row per episode carrying its own still, synopsis, runtime and air date.
 - **"Continue Watching" Rail**: One row per series rather than one per episode, showing the next episode once you finish one.
 - **Up Next**: When an episode ends, the following one is offered with a ten second countdown, or Back to library to stop.
 - **Skip Intro / Skip Credits**: Taken from the file's own chapter markers when it has them, and from a shared database when it does not. The segments are also drawn on the seek bar, so you can see where the intro and the credits are before you reach them.
+- **Artwork in its own shape**: Posters are portrait, episode stills are landscape. Forcing both into one box is what cropped posters to a slice and made every episode of a show look identical.
+- **Offline typography**: Inter is served from the machine itself. Static weights, not the variable file, because variable fonts need a newer engine than the target television has.
 
 ### Metadata and artwork
 
@@ -159,20 +167,21 @@ lucid-fermi/
 │   ├── logs.py             # Verbosity, rotating log file, and reading it back
 │   ├── metadata.py         # Kodi .nfo sidecars and local artwork discovery
 │   ├── paths.py            # Realpath containment and symlink traversal guards
-│   ├── providers.py        # TVmaze, AniList, AniSkip and TheIntroDB clients with an on-disk cache
+│   ├── providers.py        # TVmaze, AniList, AniSkip, TheIntroDB, TMDb and OMDb clients with a versioned on-disk cache
 │   ├── settings.py         # settings.json load/save and admin input validation
 │   ├── store.py            # SQLite WAL progress store and continue watching
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
 │   ├── thumbnails.py       # Single-flight thumbnail worker pool with fallback seeking
 │   └── web.py              # HTTP server, REST API, ReadAhead ring buffer, streaming pump
 │
-├── static/                 # Frontend assets (<100 KB total payload)
+├── static/                 # Frontend assets, no build step and no CDN
 │   ├── index.html          # Semantic HTML5 layout with accessible templates
-│   ├── style.css           # Glassmorphic dark theme, TV focus states, player OSD
-│   ├── app.js              # State machine, D-pad navigation, custom video controls
+│   ├── style.css           # Device profiles, tile shapes, player OSD, @supports layer
+│   ├── app.js              # State machine, spatial navigation, custom video controls
 │   ├── admin.html          # Settings page, served at /admin (separate from the TV UI)
-│   ├── admin.css           # Desktop-oriented styling for the settings page
+│   ├── admin.css           # Settings page styling, sharing the library's tokens
 │   ├── admin.js            # Settings form, directory picker, save/validation handling
+│   ├── fonts/              # Self-hosted Inter (SIL Open Font License 1.1)
 │   ├── favicon.svg         # SVG vector favicon
 │   └── site.webmanifest    # Web app manifest for mobile home screen installs
 │
@@ -375,43 +384,88 @@ old files to keep live under **Advanced → Log file** and need a restart.
 
 | Key / Button | Library View | Player View |
 | :--- | :--- | :--- |
-| **◀ Left** | Focus previous card | Seek backward 10 seconds |
-| **▶ Right** | Focus next card | Seek forward 10 seconds |
-| **▲ Up** | Focus card row above | Seek forward 60 seconds |
-| **▼ Down** | Focus card row below | Seek backward 60 seconds |
+| **◀ Left** | Focus the nearest control to the left | Seek backward 10 seconds |
+| **▶ Right** | Focus the nearest control to the right | Seek forward 10 seconds |
+| **▲ Up** | Focus the nearest control above | Seek forward 60 seconds |
+| **▼ Down** | Focus the nearest control below | Seek backward 60 seconds |
 | **OK / Enter** | Open & play selected video | Toggle Play / Pause |
 | **Back / Escape** | Clear search / exit | Return to library view |
 | **Space** | Play selected video | Toggle Play / Pause |
+| **N / P** | — | Next / previous episode |
+| **S** | — | Skip intro or credits when offered |
+
+Focus moves to whichever control is nearest in the direction pressed, measured
+from where things actually are on screen. The home view mixes a hero, rails of
+differing lengths and a grid, so "move one column" has no meaning there.
 
 ---
 
-## 🗺️ Project Roadmap
+## 🗺️ Roadmap
 
-- [x] **Phase 0: Project Documentation & Guidelines**
-  - Architecture specifications, comprehensive README, coding conventions.
-- [x] **Phase 0.1: Admin Page & Settings**
-  - Separate `/admin` page, tagged media directories, live-applied settings.
-  - Admin API limited to the local machine unless an `admin_token` is set.
-- [x] **Phase 1: Media Library Grouping & Default Sorting**
-  - Episodes collapse into series cards, ordered by season and episode.
-  - Shows / Movies / Anime categories from folder content types.
-- [x] **Phase 2: Playback Flow & Next Episode**
-  - "Up next" countdown at the end of an episode, with auto-play and cancel.
-  - Continue watching shows one row per series, advancing to the next episode.
-  - Previous and next episode buttons in the player.
-- [x] **Phase 3: Metadata Enrichment & Intro Skipping**
-  - Kodi-style `.nfo` sidecars for titles, plots, ratings and episode names.
-  - Local artwork (`poster.jpg`, `folder.jpg`, `fanart.jpg`) used in place of generated frames.
-  - Skip intro and Skip credits from the file's own chapter markers.
-- [x] **Phase 3.5: Online metadata and shared skip times**
-  - TVmaze, AniList, TMDb and OMDb for names, plots, ratings and artwork.
-  - AniSkip and TheIntroDB for intros, recaps and credits when the file has no chapters.
-  - Skip segments marked on the seek bar.
-- [ ] **Phase 4: Hardware Acceleration**
-  - Auto-detection for hardware encoders (NVENC, QuickSync, AMF) to achieve near-0% CPU usage during transcoding.
-- [ ] **Phase 5: Audio Tracks & HLS**
-  - Multi-audio stream switcher (e.g. Japanese audio vs. English dub).
-  - HLS or pre-remuxed MP4 for clients that struggle with piped output.
+Everything above is built and working. This is what is not, roughly in the
+order it is worth doing. Each entry says what it buys and what it costs,
+because on a phone-hosted server those are usually in tension.
+
+### Playback
+
+- **Pre-remux to MP4 on demand.** Cache a stream-copied MP4 beside the cache
+  for files that only fail direct play on their container or audio codec. This
+  is the single highest-value item: it makes those files direct-play, which
+  means the browser seeks them itself and start-up stops waiting on a pipe.
+  It also fixes seek precision, which HLS would not: HLS cuts at segment
+  boundaries, so seeking still snaps, whereas a direct-played file decodes and
+  discards to the exact frame. Costs disk.
+- **Keyframe-aware skip targets.** A stream copy can only begin on a keyframe,
+  so a skip currently lands on the keyframe *before* the target and can replay
+  what you asked to skip. Measured on a ten-second-GOP file, asking to jump
+  seven seconds landed back on the same frame. Rounding forward instead, with
+  a limit so it cannot eat the scene, fixes the case that feels broken.
+- **Audio track switching.** Japanese audio against an English dub. Forces a
+  remux, and browser `audioTracks` support is unreliable, so it needs the
+  server to select the track rather than the client.
+- **Hardware encoders.** NVENC, QuickSync, AMF and VAAPI, detected with a real
+  one-frame encode rather than by reading `ffmpeg -encoders`, which lists
+  encoders that then fail at runtime. Worth a lot on a desktop GPU and very
+  little on the Android box, where the encoders are mostly unreachable.
+
+### Library
+
+- **Mark watched and unwatched.** The progress store already records a
+  `finished` flag and the API already accepts it; there is simply no control
+  for it. Small, and removes the need to scrub to the end of something you
+  have already seen.
+- **Paging or streaming the library payload.** The whole library is sent in one
+  response. That is fine for hundreds of files and will not be for thousands,
+  on a device with this much memory.
+- **Prune orphaned artwork.** Downloaded posters, backdrops and portraits are
+  never removed, so art for deleted media lingers in the cache forever.
+- **Cast as a way in.** Portraits are shown but do nothing. The data to filter
+  a library by actor is already fetched and cached.
+- **Better search.** Matching is a plain substring test, so accents, initials
+  and word order all defeat it.
+
+### Interface
+
+- **Test the browser code.** `app.js` is around 2,500 lines with no automated
+  coverage at all, and a call to a function that did not exist reached a real
+  user because a `ReferenceError` only fires when the button is pressed. A
+  headless smoke test of the main journeys would have caught it.
+- **Subtitle timing offset.** Audio delay can be nudged from the player;
+  subtitles cannot, and a badly muxed file often needs exactly that.
+- **A real suggestion.** The home hero currently picks the best-looking
+  unstarted title and rotates daily. It is a spotlight, not a recommendation.
+  Genres and watch history are both already available to do better.
+
+### Operations
+
+- **Clear the metadata cache from the admin page.** Records carry a schema
+  version now, so an upgrade refetches them automatically, but there is still
+  no way to force a refresh when a lookup matched the wrong show.
+- **Back up and restore settings.** `settings.json` and `credentials.json` are
+  the whole configuration; exporting them should not require a file manager.
+- **Optional server statistics.** CPU, memory and active streams on the admin
+  page. Genuinely useful on a phone that may be thermally throttling, and
+  deliberately absent today rather than faked.
 
 ---
 
