@@ -28,8 +28,8 @@ from . import settings as user_settings
 from .chapters import read_chapters, skippable
 from .config import load_config
 from .enrich import Enricher
-from .ffmpeg import (HWACCEL_CHOICES, QUALITY_LADDER, FFmpegTools, popen_quiet,
-                     resolve_quality, stream_mime)
+from .ffmpeg import (AUDIO_MODES, HWACCEL_CHOICES, QUALITY_LADDER, FFmpegTools,
+                     popen_quiet, resolve_quality, stream_mime)
 from .library import (
     Library, build_continue_watching, episode_order, next_episode,
     previous_episode,
@@ -139,6 +139,11 @@ def _audio_delay_ms(info, plan, query) -> float:
     except (TypeError, ValueError):
         delay = 0.0
     return max(-5000.0, min(5000.0, delay))
+
+
+def _audio_mode(query) -> str:
+    mode = query.get("level", [""])[0].lower()
+    return mode if mode in AUDIO_MODES else "off"
 
 
 def _audio_index(info, query) -> int | None:
@@ -1007,7 +1012,9 @@ class Routes:
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
         audio_index = _audio_index(info, query)
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality, audio_index)
+        audio_mode = _audio_mode(query)
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality,
+                                       audio_index, audio_mode)
         tracks = discover_subtitles(path, info)
 
         requested_sub = query.get("sub", [""])[0]
@@ -1020,6 +1027,8 @@ class Routes:
             params["quality"] = quality.id
         if audio_index is not None:
             params["audio"] = audio_index
+        if audio_mode != "off":
+            params["level"] = audio_mode
         manual_offset = query.get("adelay", ["0"])[0]
         try:
             if float(manual_offset):
@@ -1057,6 +1066,7 @@ class Routes:
                             else info.audio_codec),
             "audio_tracks": _audio_tracks(info),
             "audio": chosen.index if chosen else -1,
+            "audio_level": audio_mode,
             "video_action": plan.video_action,
             "audio_action": plan.audio_action,
             "audio_delay_ms": round(_audio_delay_ms(info, plan, query), 1),
@@ -1120,7 +1130,7 @@ class Routes:
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
         plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality,
-                                       _audio_index(info, query))
+                                       _audio_index(info, query), _audio_mode(query))
         forward = query.get("dir", [""])[0] == "forward"
         # Re-encoding can start anywhere; a stream copy snaps to a keyframe.
         start = target
@@ -1161,7 +1171,9 @@ class Routes:
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
         audio_index = _audio_index(info, query)
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality, audio_index)
+        audio_mode = _audio_mode(query)
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality,
+                                       audio_index, audio_mode)
 
         burn_index = None
         requested_sub = query.get("sub", [""])[0]
@@ -1175,7 +1187,7 @@ class Routes:
             path, plan, app.config.transcode, start=start,
             burn_subtitle_index=burn_index, quality=quality,
             audio_delay_ms=_audio_delay_ms(info, plan, query), info=info,
-            audio_index=audio_index,
+            audio_index=audio_index, audio_mode=audio_mode,
         )
         h.pump_process(cmd, label=f"{video.name} @ {start:.0f}s ({plan.mode}/{quality.id})")
 
