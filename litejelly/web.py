@@ -143,7 +143,6 @@ def _audio_index(info, query) -> int | None:
 
 _CHANNEL_NAMES = {1: "Mono", 2: "Stereo", 6: "5.1", 8: "7.1"}
 
-
 def _audio_tracks(info) -> list[dict]:
     tracks = []
     for stream in info.audios:
@@ -164,6 +163,20 @@ def _audio_tracks(info) -> list[dict]:
             "default": stream.default,
         })
     return tracks
+
+
+def _cached_shows(app) -> list[dict]:
+    """One entry per series, for the admin page's per-show cache reset."""
+    seen: dict[str, dict] = {}
+    for video in app.library.videos:
+        if not video.series_id or video.series_id in seen:
+            continue
+        seen[video.series_id] = {
+            "series_id": video.series_id,
+            "title": video.title or video.name,
+            "category": video.category,
+        }
+    return sorted(seen.values(), key=lambda row: row["title"].lower())
 
 
 def _drive_roots() -> list[dict]:
@@ -305,6 +318,10 @@ class Application:
             ("POST", "/api/progress"): Routes.progress_post,
             ("GET", "/api/admin/settings"): Routes.admin_settings_get,
             ("POST", "/api/admin/settings"): Routes.admin_settings_post,
+            ("GET", "/api/admin/settings/export"): Routes.admin_settings_export,
+            ("POST", "/api/admin/settings/import"): Routes.admin_settings_import,
+            ("POST", "/api/admin/metadata/clear"): Routes.admin_metadata_clear,
+            ("POST", "/api/admin/metadata/forget"): Routes.admin_metadata_forget,
             ("GET", "/api/admin/session"): Routes.admin_session,
             ("POST", "/api/admin/setup"): Routes.admin_setup,
             ("POST", "/api/admin/login"): Routes.admin_login,
@@ -617,6 +634,11 @@ class Routes:
             "settings_file": str(user_settings.settings_path(config.app_dir)),
             "library": h.app.library.status,
             "local_ip": get_local_ip(),
+            "metadata": {
+                "enabled": h.app.metadata is not None,
+                "records": h.app.metadata.cache.count() if h.app.metadata else 0,
+                "shows": _cached_shows(h.app),
+            },
             "ffmpeg": {
                 "available": h.app.tools.available,
                 "can_probe": h.app.tools.can_probe,
@@ -763,6 +785,104 @@ class Routes:
             return
         log.info("Log file cleared from the admin page")
         h.send_json({"ok": True})
+
+    @staticmethod
+    def admin_settings_export(h, query):
+        """Hand back settings.json so an install can be rebuilt after a wipe."""
+        if not h.require_admin(query):
+            return
+        overrides = user_settings.load_overrides(h.app.config.app_dir)
+        payload = json.dumps(overrides, indent=2, ensure_ascii=False).encode("utf-8")
+        stamp = time.strftime("%Y%m%d")
+        h.send_bytes(
+            payload,
+            content_type="application/json; charset=utf-8",
+            cache_control="no-store",
+            extra={"Content-Disposition":
+                   f'attachment; filename="litejelly-settings-{stamp}.json"'},
+        )
+
+    @staticmethod
+    def admin_settings_import(h, query):
+        """Replace the saved settings with an exported file.
+
+        Credentials are not part of settings.json, so a restore can never
+        carry an account from one machine to another.
+        """
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        incoming = body.get("settings") if isinstance(body.get("settings"), dict) else body
+
+        clean, errors = user_settings.validate(incoming)
+        if errors:
+            h.send_json({"ok": False, "errors": errors}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if not clean:
+            h.send_json({"ok": False, "errors": ["That file has no settings in it"]},
+                        status=HTTPStatus.BAD_REQUEST)
+            return
+
+        app_dir = h.app.config.app_dir
+        needs_restart = user_settings.restart_required(
+            {"port": h.app.config.port, "host": h.app.config.host}, clean)
+        try:
+            user_settings.save_overrides(app_dir, clean)
+        except OSError as exc:
+            h.send_json({"ok": False, "errors": [f"Could not save settings: {exc}"]},
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        new_config, warnings = load_config(app_dir)
+        h.app.apply_config(new_config)
+        log.info("Settings restored from a file on the admin page")
+        h.send_json({
+            "ok": True,
+            "settings": h.app.config.to_admin_dict(),
+            "warnings": warnings,
+            "restart_required": needs_restart,
+        })
+
+    @staticmethod
+    def admin_metadata_clear(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        app = h.app
+        if app.metadata is None:
+            h.send_api_error(HTTPStatus.SERVICE_UNAVAILABLE, "Online metadata is off")
+            return
+        removed = app.metadata.cache.clear()
+        app.metadata.prune_artwork()
+        app.library.request_scan(force=True)
+        log.info("Metadata cache cleared from the admin page (%d records)", removed)
+        h.send_json({"ok": True, "removed": removed})
+
+    @staticmethod
+    def admin_metadata_forget(h, query):
+        """Re-ask the providers about one show, rather than the whole library."""
+        if not h.require_admin(query, write=True):
+            return
+        app = h.app
+        if app.metadata is None:
+            h.send_api_error(HTTPStatus.SERVICE_UNAVAILABLE, "Online metadata is off")
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+
+        series_id = str(body.get("series_id") or "")
+        video = next((v for v in app.library.videos if v.series_id == series_id), None)
+        if video is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No such show")
+            return
+
+        removed = app.metadata.forget_series(video.title, video.category == "anime")
+        app.metadata.prune_artwork()
+        app.library.request_scan(force=True)
+        log.info("Metadata forgotten for %s (%d records)", video.title, removed)
+        h.send_json({"ok": True, "removed": removed, "title": video.title})
 
     @staticmethod
     def progress_get(h, query):

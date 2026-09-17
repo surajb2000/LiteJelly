@@ -264,6 +264,110 @@
       showBanner('ffmpeg was not found. Only browser-native files will play, ' +
                  'and thumbnails and embedded subtitles are unavailable.', 'warn');
     }
+    fillMetadata(data.metadata || {});
+  }
+
+  // -- metadata cache ------------------------------------------------------
+
+  function fillMetadata(meta) {
+    text($('meta-count'), meta.enabled ? (meta.records || 0) : 'Online metadata is off');
+    var select = $('meta-show');
+    var chosen = select.value;
+    clear(select);
+    var shows = meta.shows || [];
+    for (var i = 0; i < shows.length; i++) {
+      var option = document.createElement('option');
+      option.value = shows[i].series_id;
+      option.appendChild(document.createTextNode(shows[i].title));
+      select.appendChild(option);
+    }
+    if (chosen) { select.value = chosen; }
+    var idle = !meta.enabled || !shows.length;
+    $('meta-forget').disabled = idle;
+    $('meta-clear').disabled = !meta.enabled;
+  }
+
+  function metadataStatus(message, kind) {
+    var node = $('meta-status');
+    node.className = 'save-status' + (kind ? ' ' + kind : '');
+    text(node, message);
+  }
+
+  function forgetShow() {
+    var seriesId = $('meta-show').value;
+    if (!seriesId) { return; }
+    metadataStatus('Clearing…');
+    request('POST', '/api/admin/metadata/forget', { series_id: seriesId })
+      .then(function (result) {
+        if (!result.ok) {
+          metadataStatus((result.data && result.data.error) || 'Failed', 'error');
+          return;
+        }
+        metadataStatus('Cleared ' + result.data.title + ', rescanning', 'ok');
+        window.setTimeout(load, 1500);
+      });
+  }
+
+  function clearMetadata() {
+    if (!window.confirm('Forget every cached lookup? They will be fetched again.')) {
+      return;
+    }
+    metadataStatus('Clearing…');
+    request('POST', '/api/admin/metadata/clear', {}).then(function (result) {
+      if (!result.ok) {
+        metadataStatus((result.data && result.data.error) || 'Failed', 'error');
+        return;
+      }
+      metadataStatus('Removed ' + result.data.removed + ' records', 'ok');
+      window.setTimeout(load, 1500);
+    });
+  }
+
+  // -- backup --------------------------------------------------------------
+
+  function backupStatus(message, kind) {
+    var node = $('backup-status');
+    node.className = 'save-status' + (kind ? ' ' + kind : '');
+    text(node, message);
+  }
+
+  function exportSettings() {
+    backupStatus('Preparing…');
+    // A plain navigation carries the session cookie and keeps the filename
+    // the server chose.
+    window.location.href = '/api/admin/settings/export';
+    backupStatus('Downloaded', 'ok');
+  }
+
+  function importSettings(file) {
+    if (!file) { return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try {
+        parsed = JSON.parse(String(reader.result));
+      } catch (e) {
+        backupStatus('That file is not settings JSON', 'error');
+        return;
+      }
+      backupStatus('Restoring…');
+      request('POST', '/api/admin/settings/import', { settings: parsed })
+        .then(function (result) {
+          if (!result.ok) {
+            var errors = (result.data && result.data.errors) || ['Failed'];
+            backupStatus(errors.join(' '), 'error');
+            return;
+          }
+          backupStatus('Restored', 'ok');
+          if (result.data.restart_required && result.data.restart_required.length) {
+            showBanner('Restart LiteJelly to apply: ' +
+                       result.data.restart_required.join(', ') + '.', 'warn');
+          }
+          load();
+        });
+    };
+    reader.onerror = function () { backupStatus('Could not read that file', 'error'); };
+    reader.readAsText(file);
   }
 
   // -- logs ----------------------------------------------------------------
@@ -632,6 +736,16 @@
     $('log-filter').addEventListener('change', loadLogs);
     $('tmdb_api_key').addEventListener('input', syncProviderStatus);
     $('omdb_api_key').addEventListener('input', syncProviderStatus);
+    $('meta-forget').addEventListener('click', forgetShow);
+    $('meta-clear').addEventListener('click', clearMetadata);
+    $('settings-export').addEventListener('click', exportSettings);
+    $('settings-import').addEventListener('click', function () {
+      $('settings-file').click();
+    });
+    $('settings-file').addEventListener('change', function () {
+      importSettings(this.files && this.files[0]);
+      this.value = '';
+    });
     $('log-lines').addEventListener('change', loadLogs);
     $('log-auto').addEventListener('change', function () {
       setAutoRefresh(this.checked && !$('panel-logs').hidden);

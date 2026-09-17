@@ -180,6 +180,26 @@
           </p>
         </div>
       </section>
+
+      <section class="card">
+        <h2>Metadata cache</h2>
+        <p class="hint">
+          Answers are kept on disk so a scan never waits on a third party.
+          Clear a show when it was matched to the wrong title.
+        </p>
+        <dl class="status">
+          <dt>Records stored</dt><dd id="meta-count">—</dd>
+        </dl>
+        <div class="field">
+          <label for="meta-show">Refresh one show</label>
+          <select id="meta-show"></select>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn" id="meta-forget">Forget this show</button>
+          <button type="button" class="btn danger" id="meta-clear">Clear everything</button>
+          <span id="meta-status" class="save-status" role="status"></span>
+        </div>
+      </section>
     </div>
 
     <!-- Playback -->
@@ -265,6 +285,20 @@
           <button type="button" class="btn" id="acct-save">Update account</button>
           <span id="acct-status" class="save-status" role="status"></span>
           <p class="hint">Changing this signs out every other device.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Backup</h2>
+        <p class="hint">
+          Everything on these tabs, as a file. The admin username and password
+          are stored separately and are never included.
+        </p>
+        <div class="actions">
+          <button type="button" class="btn" id="settings-export">Download settings</button>
+          <button type="button" class="btn" id="settings-import">Restore from file</button>
+          <input type="file" id="settings-file" accept="application/json,.json" hidden>
+          <span id="backup-status" class="save-status" role="status"></span>
         </div>
       </section>
 

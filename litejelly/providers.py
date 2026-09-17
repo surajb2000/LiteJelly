@@ -217,6 +217,45 @@ class MetadataCache:
                 pass
         return removed
 
+    def count(self) -> int:
+        try:
+            return sum(1 for _ in self.root.rglob("*.json"))
+        except OSError:
+            return 0
+
+    def forget(self, namespace: str, key: str) -> int:
+        path = self._path(namespace, key)
+        try:
+            path.unlink()
+            return 1
+        except OSError:
+            return 0
+
+    def forget_matching(self, namespace: str, matches) -> int:
+        """Drop entries whose lookup key passes ``matches``.
+
+        File names are digests, so the only way to find every episode of one
+        show is to read the key each record stores.
+        """
+        removed = 0
+        folder = self.root / namespace
+        try:
+            entries = list(folder.glob("*.json"))
+        except OSError:
+            return 0
+        for path in entries:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if matches(str(payload.get("key") or "")):
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
+
 
 @dataclass
 class SeriesInfo:
@@ -576,6 +615,29 @@ class MetadataProviders:
             except OSError:
                 continue
         return None
+
+    def forget_series(self, title: str, anime: bool = False) -> int:
+        """Drop everything cached about one show so the next scan re-asks.
+
+        The skip and intro records are keyed by the ids inside the series
+        record, so they have to be read before it is deleted.
+        """
+        if not title.strip():
+            return 0
+        info = self.cached_series(title, anime)
+        removed = self.cache.forget("anilist" if anime else "tvmaze", title)
+        removed += self.cache.forget("tvmaze" if anime else "anilist", title)
+        if info is None:
+            return removed
+        if info.mal_id:
+            prefix = f"{info.mal_id}-"
+            removed += self.cache.forget_matching(
+                "aniskip", lambda key: key.startswith(prefix))
+        if info.imdb_id:
+            imdb = info.imdb_id.lower()
+            removed += self.cache.forget_matching(
+                "introdb", lambda key: key.lower().startswith(imdb))
+        return removed
 
     def prune_artwork(self) -> int:
         """Delete downloaded images no cached record mentions any more.

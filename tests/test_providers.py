@@ -366,6 +366,42 @@ class CacheTests(unittest.TestCase):
         self.assertGreaterEqual(self.cache.clear(), 1)
         self.assertIsNone(self.cache.get("tvmaze", "X"))
 
+    def test_count_reports_stored_records(self):
+        self.assertEqual(self.cache.count(), 0)
+        self.cache.put("tvmaze", "X", {"a": 1})
+        self.cache.put("anilist", "Y", {"a": 2})
+        self.assertEqual(self.cache.count(), 2)
+
+    def test_forget_removes_only_that_key(self):
+        self.cache.put("tvmaze", "Keep", {"a": 1})
+        self.cache.put("tvmaze", "Drop", {"a": 2})
+        self.assertEqual(self.cache.forget("tvmaze", "Drop"), 1)
+        self.assertIsNone(self.cache.get("tvmaze", "Drop"))
+        self.assertIsNotNone(self.cache.get("tvmaze", "Keep"))
+
+    def test_forgetting_an_absent_key_is_not_an_error(self):
+        self.assertEqual(self.cache.forget("tvmaze", "Never stored"), 0)
+
+    def test_forget_matching_reads_the_stored_key(self):
+        # File names are digests, so every episode of one show can only be
+        # found by reading the key back out of each record.
+        for episode in (1, 2, 3):
+            self.cache.put("aniskip", f"1535-{episode}", {"n": episode})
+        self.cache.put("aniskip", "999-1", {"other": True})
+
+        removed = self.cache.forget_matching("aniskip", lambda key: key.startswith("1535-"))
+        self.assertEqual(removed, 3)
+        self.assertIsNone(self.cache.get("aniskip", "1535-2"))
+        self.assertIsNotNone(self.cache.get("aniskip", "999-1"))
+
+    def test_forget_matching_survives_a_corrupt_record(self):
+        self.cache.put("aniskip", "1535-1", {"n": 1})
+        broken = Path(self._tmp.name) / "aniskip" / "broken.json"
+        broken.write_text("{ not json", encoding="utf-8")
+        self.assertEqual(
+            self.cache.forget_matching("aniskip", lambda key: key.startswith("1535-")), 1)
+        self.assertTrue(broken.exists())
+
 
 class _FakeFetcher:
     """Stands in for the network, and records what would have been called."""
@@ -422,6 +458,38 @@ class ProviderTests(unittest.TestCase):
         info = providers.series("Bleach", anime=True)
         self.assertEqual(info.mal_id, 269)
         self.assertIn("graphql", providers.fetcher.calls[0])
+
+    def test_forgetting_a_show_takes_its_skip_times_with_it(self):
+        # A show matched to the wrong title carries wrong opening times too,
+        # and those are keyed by an id that only the series record holds.
+        providers = self._providers({"graphql": ANILIST})
+        providers.series("Bleach", anime=True)
+        mal_id = providers.cached_series("Bleach", anime=True).mal_id
+        for episode in (1, 2):
+            providers.cache.put("aniskip", f"{mal_id}-{episode}", {"n": episode})
+        providers.cache.put("aniskip", "4242-1", {"other": True})
+
+        removed = providers.forget_series("Bleach", anime=True)
+
+        self.assertGreaterEqual(removed, 3)
+        self.assertIsNone(providers.cached_series("Bleach", anime=True))
+        self.assertFalse(providers.has_looked_up_skip(mal_id, 1))
+        self.assertIsNotNone(providers.cache.get("aniskip", "4242-1"))
+
+    def test_forgetting_a_show_leaves_the_others_alone(self):
+        providers = self._providers({"singlesearch": TVMAZE})
+        providers.series("The Mentalist")
+        providers.cache.put("tvmaze", "Another Show", {"title": "Another Show"})
+
+        providers.forget_series("The Mentalist")
+
+        self.assertIsNone(providers.cached_series("The Mentalist"))
+        self.assertIsNotNone(providers.cache.get("tvmaze", "Another Show"))
+
+    def test_forgetting_an_unknown_show_is_harmless(self):
+        providers = self._providers()
+        self.assertEqual(providers.forget_series("Never Watched"), 0)
+        self.assertEqual(providers.forget_series("   "), 0)
 
     def test_a_miss_is_not_retried(self):
         providers = self._providers({})

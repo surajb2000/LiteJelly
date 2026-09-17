@@ -187,6 +187,40 @@ class PopupItemLabelTests(unittest.TestCase):
                          "popup rows must target .popup-item-hint span")
 
 
+class BracketBalanceTests(unittest.TestCase):
+    """A stray brace is a blank page, and nothing else here notices.
+
+    Measured: an extra } left in admin.js killed the whole settings page while
+    every other check still passed, because they only look at names.
+    """
+
+    PAIRS = {"{": "}", "(": ")", "[": "]"}
+
+    def _check(self, filename):
+        code = strip_js(read(filename))
+        stack = []
+        line = 1
+        for char in code:
+            if char == "\n":
+                line += 1
+            elif char in self.PAIRS:
+                stack.append((char, line))
+            elif char in self.PAIRS.values():
+                self.assertTrue(stack, f"{filename}: unmatched {char} on line {line}")
+                opened, opened_line = stack.pop()
+                self.assertEqual(
+                    self.PAIRS[opened], char,
+                    f"{filename}: {opened} on line {opened_line} closed by {char} "
+                    f"on line {line}")
+        self.assertEqual(stack, [], f"{filename}: never closed {stack}")
+
+    def test_app_js_is_balanced(self):
+        self._check("app.js")
+
+    def test_admin_js_is_balanced(self):
+        self._check("admin.js")
+
+
 class RailScrollTests(unittest.TestCase):
     """A hidden scrollbar has to come with another way to scroll.
 

@@ -358,6 +358,91 @@ class LiveServerTests(unittest.TestCase):
         self.assertEqual((ahead["start"], ahead["direction"]), (50.0, "forward"))
         self.assertEqual((behind["start"], behind["direction"]), (40.0, "backward"))
 
+    def test_settings_export_is_admin_guarded(self):
+        # settings.json names every media directory on the machine.
+        conn = self.connect()
+        conn.request("GET", "/api/admin/settings/export")
+        response = conn.getresponse()
+        self.assertEqual(response.status, 401)
+        response.read()
+        conn.close()
+
+    def test_settings_export_downloads_a_named_file(self):
+        conn, cookie = self.authed()
+        conn.request("GET", "/api/admin/settings/export", headers={"Cookie": cookie})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        disposition = response.getheader("Content-Disposition") or ""
+        payload = json.loads(response.read())
+        conn.close()
+        self.assertIn("attachment", disposition)
+        self.assertIn(".json", disposition)
+        self.assertIsInstance(payload, dict)
+        self.assertNotIn("password_hash", json.dumps(payload))
+
+    def test_settings_import_applies_a_backup(self):
+        conn, cookie = self.authed()
+        conn.request("POST", "/api/admin/settings/import",
+                     body=json.dumps({"settings": {"server_name": "Restored"}}),
+                     headers=dict(WRITE_HEADERS, Cookie=cookie))
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        payload = json.loads(response.read())
+        conn.close()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(self.app.config.server_name, "Restored")
+
+    def test_settings_import_refuses_rubbish(self):
+        conn, cookie = self.authed()
+        before = self.app.config.server_name
+        conn.request("POST", "/api/admin/settings/import",
+                     body=json.dumps({"settings": {"port": "not a port"}}),
+                     headers=dict(WRITE_HEADERS, Cookie=cookie))
+        response = conn.getresponse()
+        self.assertEqual(response.status, 400)
+        self.assertIn("errors", json.loads(response.read()))
+        conn.close()
+        self.assertEqual(self.app.config.server_name, before)
+
+    def test_settings_import_is_admin_guarded(self):
+        conn = self.connect()
+        conn.request("POST", "/api/admin/settings/import",
+                     body=json.dumps({"settings": {"server_name": "Hijacked"}}),
+                     headers=WRITE_HEADERS)
+        response = conn.getresponse()
+        self.assertEqual(response.status, 401)
+        response.read()
+        conn.close()
+
+    def test_metadata_endpoints_are_admin_guarded(self):
+        conn = self.connect()
+        for path in ("/api/admin/metadata/clear", "/api/admin/metadata/forget"):
+            conn.request("POST", path, body="{}", headers=WRITE_HEADERS)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 401, path)
+            response.read()
+        conn.close()
+
+    def test_metadata_clear_reports_when_lookups_are_off(self):
+        # Online metadata is opt-in, so there is nothing cached to clear.
+        conn, cookie = self.authed()
+        conn.request("POST", "/api/admin/metadata/clear", body="{}",
+                     headers=dict(WRITE_HEADERS, Cookie=cookie))
+        response = conn.getresponse()
+        self.assertEqual(response.status, 503)
+        response.read()
+        conn.close()
+
+    def test_admin_settings_lists_shows_for_the_cache_reset(self):
+        conn, cookie = self.authed()
+        conn.request("GET", "/api/admin/settings", headers={"Cookie": cookie})
+        payload = json.loads(conn.getresponse().read())
+        conn.close()
+        meta = payload["metadata"]
+        self.assertIn("records", meta)
+        titles = [show["title"] for show in meta["shows"]]
+        self.assertIn("Some Show", titles)
+
 
 if __name__ == "__main__":
     unittest.main()
