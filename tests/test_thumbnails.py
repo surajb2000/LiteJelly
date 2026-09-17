@@ -165,6 +165,40 @@ class ThumbnailServiceTests(unittest.TestCase):
         self.service.close()
         self.service.close()
 
+    def _freeze_workers(self):
+        """Keep the workers unstarted so the queue fills instead of draining."""
+        self.service._ensure_workers = lambda: None
+
+    def test_the_queue_refuses_work_it_will_never_reach(self):
+        """The endpoint takes no account, so the backlog has to have an end."""
+        from litejelly.thumbnails import QUEUE_LIMIT
+
+        self._freeze_workers()
+        accepted = 0
+        for index in range(QUEUE_LIMIT + 50):
+            video = self.root / f"clip{index}.mkv"
+            video.write_bytes(b"x" * 16)
+            if self.service.request(video):
+                accepted += 1
+
+        self.assertLessEqual(accepted, QUEUE_LIMIT + self.service._worker_count + 1)
+        self.assertGreaterEqual(accepted, QUEUE_LIMIT)
+
+    def test_a_refused_file_can_be_asked_for_again(self):
+        # A full queue is a moment in time, not a verdict on the file.
+        from litejelly.thumbnails import QUEUE_LIMIT
+
+        self._freeze_workers()
+        for index in range(QUEUE_LIMIT + 20):
+            video = self.root / f"fill{index}.mkv"
+            video.write_bytes(b"x" * 16)
+            self.service.request(video)
+
+        late = self.root / "late.mkv"
+        late.write_bytes(b"x" * 16)
+        self.assertFalse(self.service.request(late))
+        self.assertNotIn(self.service._cache_path(late).name, self.service._pending)
+
 
 if __name__ == "__main__":
     unittest.main()

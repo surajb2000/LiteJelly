@@ -65,6 +65,26 @@ def clear_cookie() -> str:
     return f"{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
 
 
+def foreign_origin(headers, host: str) -> bool:
+    """True when a browser says the write came from another site.
+
+    The public endpoints cannot demand the custom header the admin ones do:
+    progress is saved with sendBeacon on page hide, which cannot set headers.
+    A browser always sends Origin on a cross-origin POST, so a mismatch is
+    enough to refuse, and a missing one is left alone for other clients.
+    """
+    if headers is None:
+        return False
+    origin = headers.get("Origin")
+    if not origin:
+        return False
+    try:
+        origin_host = origin.split("//", 1)[1]
+    except IndexError:
+        return True
+    return origin_host != (host or "").strip()
+
+
 def same_origin(headers, host: str) -> bool:
     """Reject cross-site writes.
 

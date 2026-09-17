@@ -22,16 +22,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
+# A slash begins a regex where a value cannot already have ended, so these are
+# what may appear just before one. After a name, a number or a closing bracket
+# it is division instead.
+_REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%^~<>")
+_REGEX_KEYWORDS = {
+    "return", "typeof", "case", "in", "of", "new", "delete", "void",
+    "instanceof", "do", "else", "yield", "await",
+}
+
+
+def _starts_regex(last: str, last_word: str) -> bool:
+    if not last:
+        return True
+    if last_word in _REGEX_KEYWORDS:
+        return True
+    return last in _REGEX_PRECEDERS
+
+
 def strip_js(source: str) -> str:
     """Remove comments, strings and regex literals.
 
-    Everything here scans for code, and a word inside a message or a comment
-    is not code. Regex literals are skipped by treating a slash after an
-    operator as the start of one.
+    Everything here scans for code, and a word inside a message is not code.
+    Regex literals have to be recognised properly rather than skipped: a
+    character class holding a quote used to be read as the start of a string,
+    which swallowed the rest of the file and hid every function in it.
     """
     out = []
     i = 0
     n = len(source)
+    last = ""        # last significant character kept
+    last_word = ""   # identifier immediately before it, for keyword checks
     while i < n:
         char = source[i]
         nxt = source[i + 1] if i + 1 < n else ""
@@ -52,8 +73,34 @@ def strip_js(source: str) -> str:
                 i += 1
             i += 1
             out.append('""')
+            last, last_word = '"', ""
+        elif char == "/" and _starts_regex(last, last_word):
+            i += 1
+            in_class = False
+            while i < n:
+                current = source[i]
+                if current == "\\":
+                    i += 2
+                    continue
+                if current == "\n":
+                    break
+                if current == "[":
+                    in_class = True
+                elif current == "]":
+                    in_class = False
+                elif current == "/" and not in_class:
+                    break
+                i += 1
+            i += 1
+            while i < n and source[i].isalpha():
+                i += 1
+            out.append("0")
+            last, last_word = "0", ""
         else:
             out.append(char)
+            if not char.isspace():
+                last = char
+                last_word = last_word + char if (char.isalnum() or char in "_$") else ""
             i += 1
     return "".join(out)
 
@@ -185,6 +232,45 @@ class PopupItemLabelTests(unittest.TestCase):
                 offenders.append(slug)
         self.assertEqual(offenders, [],
                          "popup rows must target .popup-item-hint span")
+
+
+class StripJsTests(unittest.TestCase):
+    """The scanner every other check is built on.
+
+    Measured: a regex whose character class held a quote was read as the start
+    of a string, which swallowed the rest of the file, so three real functions
+    were reported as never defined.
+    """
+
+    def test_a_quote_inside_a_regex_is_not_a_string(self):
+        code = strip_js("""var re = /['"]+/g;\nfunction alive() {}""")
+        self.assertIn("function alive", code)
+
+    def test_a_slash_inside_a_character_class_is_not_the_end(self):
+        code = strip_js("""var re = /[/]/g;\nfunction alive() {}""")
+        self.assertIn("function alive", code)
+
+    def test_division_is_not_a_regex(self):
+        code = strip_js("var half = total / 2; var rest = (a + b) / c; keep();")
+        self.assertIn("keep()", code)
+        self.assertIn("/", code)
+
+    def test_a_regex_after_a_keyword_is_recognised(self):
+        code = strip_js("function f() { return /a{2}/.test(x); }\nfunction alive() {}")
+        self.assertIn("function alive", code)
+
+    def test_strings_lose_their_contents(self):
+        code = strip_js("var s = 'function ghost() {}';")
+        self.assertNotIn("ghost", code)
+
+    def test_comments_are_dropped(self):
+        self.assertNotIn("ghost", strip_js("// function ghost() {}\nreal();"))
+        self.assertNotIn("ghost", strip_js("/* function ghost() {} */ real();"))
+
+    def test_regex_brackets_do_not_unbalance_the_source(self):
+        code = strip_js("var re = /[{(]/g; function alive() {}")
+        self.assertEqual(code.count("{"), code.count("}"))
+        self.assertEqual(code.count("("), code.count(")"))
 
 
 class BracketBalanceTests(unittest.TestCase):

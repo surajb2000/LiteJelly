@@ -3,6 +3,7 @@
 Run with:  python -m unittest discover -s tests
 """
 
+import os
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from litejelly.library import parse_title, human_size, display_name
 from litejelly.ffmpeg import fit_within, resolve_quality, QUALITY_BY_ID
 from litejelly.paths import resolve_within, safe_resolve
-from litejelly.subtitles import srt_to_vtt, shift_vtt, language_from_token
+from litejelly.subtitles import (SubtitleService, srt_to_vtt, shift_vtt,
+                                 language_from_token)
 from litejelly.web import parse_range
 
 
@@ -228,6 +230,47 @@ class QualityTests(unittest.TestCase):
     def test_auto_and_original_have_no_cap(self):
         self.assertEqual(QUALITY_BY_ID["auto"].height, 0)
         self.assertEqual(QUALITY_BY_ID["original"].height, 0)
+
+
+class SubtitleCacheTests(unittest.TestCase):
+    """Converted tracks were kept for ever. The name includes the video's
+    mtime, so re-encoding a library left every old conversion behind."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.service = SubtitleService(None, self.root)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _fill(self, count, start=0):
+        folder = self.service.cache_dir
+        folder.mkdir(parents=True, exist_ok=True)
+        for index in range(start, start + count):
+            entry = folder / f"{index:040x}.vtt"
+            entry.write_text("WEBVTT\n", encoding="utf-8")
+            os.utime(entry, (index + 1, index + 1))
+
+    def test_a_small_cache_is_left_alone(self):
+        self._fill(5)
+        self.service._prune_cache()
+        self.assertEqual(len(list(self.service.cache_dir.glob("*.vtt"))), 5)
+
+    def test_the_oldest_conversions_are_dropped(self):
+        from litejelly.subtitles import CACHE_LIMIT
+
+        self._fill(CACHE_LIMIT + 10)
+        self.service._prune_cache()
+        remaining = sorted(self.service.cache_dir.glob("*.vtt"),
+                           key=lambda path: path.stat().st_mtime)
+        self.assertEqual(len(remaining), CACHE_LIMIT)
+        # The newest survive: the oldest ten were written first.
+        self.assertNotIn(f"{0:040x}.vtt", [p.name for p in remaining])
+        self.assertIn(f"{CACHE_LIMIT + 9:040x}.vtt", [p.name for p in remaining])
+
+    def test_pruning_an_absent_cache_is_harmless(self):
+        self.service._prune_cache()
 
 
 if __name__ == "__main__":

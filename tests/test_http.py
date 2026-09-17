@@ -96,6 +96,10 @@ class LiveServerTests(unittest.TestCase):
         self.assertIsNotNone(cookie, "sign-in failed")
         return conn, cookie
 
+    def video_id(self, conn):
+        conn.request("GET", "/api/library")
+        return json.loads(conn.getresponse().read())["videos"][0]["id"]
+
     def test_library_is_served(self):
         conn = self.connect()
         conn.request("GET", "/api/library")
@@ -442,6 +446,165 @@ class LiveServerTests(unittest.TestCase):
         self.assertIn("records", meta)
         titles = [show["title"] for show in meta["shows"]]
         self.assertIn("Some Show", titles)
+
+    def test_infinity_cannot_poison_the_library(self):
+        """Measured: json.loads accepts a bare Infinity, max(0.0, inf) keeps it,
+        SQLite stores it, and json.dumps writes it back out as Infinity, which
+        no browser will parse. One unauthenticated POST broke every client's
+        library until the row was deleted by hand."""
+        conn = self.connect()
+        video_id = self.video_id(conn)
+
+        for bad in ('{"id": "%s", "position": 0, "duration": Infinity}' % video_id,
+                    '{"id": "%s", "position": NaN, "duration": 1}' % video_id,
+                    '{"id": "%s", "position": -Infinity, "duration": 1}' % video_id):
+            conn.request("POST", "/api/progress", body=bad, headers=WRITE_HEADERS)
+            response = conn.getresponse()
+            self.assertEqual(response.status, 400, bad)
+            response.read()
+
+        conn.request("GET", "/api/library")
+        payload = conn.getresponse().read().decode()
+        conn.close()
+        for token in ("Infinity", "NaN"):
+            self.assertNotIn(token, payload, "the library must stay parseable")
+        json.loads(payload, parse_constant=_no_constants)
+
+    def test_a_huge_position_is_clamped_rather_than_stored(self):
+        conn = self.connect()
+        video_id = self.video_id(conn)
+        conn.request("POST", "/api/progress",
+                     body=json.dumps({"id": video_id, "position": 1e30,
+                                      "duration": 1e30}),
+                     headers=WRITE_HEADERS)
+        saved = json.loads(conn.getresponse().read())
+        conn.close()
+        self.assertLess(saved["position"], 1e30)
+        self.assertLess(saved["duration"], 1e30)
+
+    def test_another_site_cannot_write_progress(self):
+        # No account guards this route, so a page you visit could otherwise
+        # post to the server on your network.
+        conn = self.connect()
+        video_id = self.video_id(conn)
+        conn.request("POST", "/api/progress",
+                     body=json.dumps({"id": video_id, "position": 10, "duration": 100}),
+                     headers={"Content-Type": "application/json",
+                              "Origin": "http://evil.example"})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 403)
+        response.read()
+        conn.close()
+
+    def test_another_site_cannot_trigger_a_rescan(self):
+        conn = self.connect()
+        conn.request("POST", "/api/rescan", body="{}",
+                     headers={"Content-Type": "application/json",
+                              "Origin": "http://evil.example"})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 403)
+        response.read()
+        conn.close()
+
+    def test_the_player_can_still_save_progress(self):
+        # sendBeacon cannot set headers, so a same-origin post has to pass on
+        # the Origin alone.
+        conn = self.connect()
+        video_id = self.video_id(conn)
+        host = f"127.0.0.1:{self.port}"
+        conn.request("POST", "/api/progress",
+                     body=json.dumps({"id": video_id, "position": 30, "duration": 100}),
+                     headers={"Content-Type": "text/plain", "Origin": f"http://{host}"})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        response.read()
+        conn.close()
+
+    def test_rescan_is_not_free_to_ask_for(self):
+        """A forced rescan walks every media folder, so one page could
+        otherwise keep the disk busy indefinitely."""
+        self.app._last_rescan = 0.0
+        conn = self.connect()
+        conn.request("POST", "/api/rescan", body="{}", headers=WRITE_HEADERS)
+        first = conn.getresponse()
+        self.assertEqual(first.status, 200)
+        first.read()
+
+        conn.request("POST", "/api/rescan", body="{}", headers=WRITE_HEADERS)
+        second = conn.getresponse()
+        self.assertEqual(second.status, 429)
+        self.assertTrue(second.getheader("Retry-After"))
+        second.read()
+        conn.close()
+        self.app._last_rescan = 0.0
+
+    def test_an_admin_can_still_rescan_at_will(self):
+        conn, cookie = self.authed()
+        self.app._last_rescan = 0.0
+        for _ in range(2):
+            conn.request("POST", "/api/rescan", body="{}",
+                         headers=dict(WRITE_HEADERS, Cookie=cookie))
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+        conn.close()
+        self.app._last_rescan = 0.0
+
+    def test_a_finished_stream_is_not_tracked(self):
+        encoder = _FakeProcess()
+        self.app.track_stream(encoder)
+        self.app.forget_stream(encoder)
+        self.assertNotIn(encoder, self.app._streams)
+
+
+class ShutdownTests(unittest.TestCase):
+    """Stopping the server does not reap ffmpeg on Windows, so an encoder could
+    keep running against the media files after it exited."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        (root / "media").mkdir()
+        (root / "config.json").write_text(json.dumps({
+            "port": 0, "host": "127.0.0.1", "media_dirs": [str(root / "media")],
+        }), encoding="utf-8")
+        config, _ = load_config(root)
+        config.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.app = Application(config)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_shutdown_reaps_a_running_encoder(self):
+        encoder = _FakeProcess()
+        self.app.track_stream(encoder)
+        self.app.shutdown()
+        self.assertTrue(encoder.terminated)
+
+    def test_shutdown_without_streams_is_fine(self):
+        self.app.shutdown()
+
+
+class _FakeProcess:
+    """Stands in for a running ffmpeg without spawning one."""
+
+    stdout = None
+
+    def __init__(self):
+        self.terminated = False
+
+    def poll(self):
+        return 0 if self.terminated else None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _no_constants(name):
+    raise AssertionError(f"library payload contained {name}")
 
 
 if __name__ == "__main__":

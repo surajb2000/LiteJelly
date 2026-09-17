@@ -352,6 +352,19 @@ class ForwardSeekTests(unittest.TestCase):
         self.assertEqual(self._run(probe, 47.5, True), 50.0)
         self.assertEqual(self._run(probe, 47.5, False), 40.0)
 
+    def test_a_full_cache_keeps_half_rather_than_emptying(self):
+        """The endpoint is unauthenticated: clearing the lot would let anyone
+        throw away the answers real playback is relying on."""
+        from litejelly.ffmpeg import KEYFRAME_CACHE_LIMIT
+
+        probe = FakeProbeFile([0, 10, 20, 30, 40, 50])
+        with mock.patch("litejelly.ffmpeg.run_quiet", probe):
+            for target in range(1, KEYFRAME_CACHE_LIMIT + 3):
+                self.tools.seek_landing(self.path, float(target))
+        held = len(self.tools._keyframe_cache)
+        self.assertGreater(held, KEYFRAME_CACHE_LIMIT // 2)
+        self.assertLessEqual(held, KEYFRAME_CACHE_LIMIT + 2)
+
 
 class MseStreamTests(unittest.TestCase):
     """The piped fMP4 must be something MediaSource can append and describe."""

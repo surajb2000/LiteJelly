@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import threading
 import time
@@ -13,6 +14,18 @@ log = logging.getLogger("litejelly.store")
 # Below this, treat playback as "not started"; above, as "finished".
 MIN_RESUME_SECONDS = 15.0
 FINISHED_FRACTION = 0.96
+# Longer than any real recording; anything past it is a broken client.
+MAX_SECONDS = 366 * 24 * 3600.0
+
+
+def _seconds(value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return max(0.0, min(MAX_SECONDS, number))
 
 
 class ProgressStore:
@@ -35,8 +48,10 @@ class ProgressStore:
 
     def save(self, video_id: str, position: float, duration: float = 0.0,
              finished: bool | None = None) -> dict:
-        position = max(0.0, float(position))
-        duration = max(0.0, float(duration))
+        # An infinity stored here comes back out of every later response, and
+        # json.dumps writes it as a bare Infinity that no browser will parse.
+        position = _seconds(position)
+        duration = _seconds(duration)
         if finished is None:
             finished = duration > 0 and position >= duration * FINISHED_FRACTION
         if finished:

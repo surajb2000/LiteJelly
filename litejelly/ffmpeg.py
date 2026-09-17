@@ -29,6 +29,7 @@ BITMAP_SUBTITLE_CODECS = {
 }
 
 FRAGMENT_MICROSECONDS = 2_000_000
+KEYFRAME_CACHE_LIMIT = 500
 
 # RFC 6381 codec strings for MediaSource.isTypeSupported. ffprobe profile
 # names map to profile_idc (h264) or general_profile_idc + compatibility
@@ -543,8 +544,11 @@ class FFmpegTools:
                     break
 
         with self._probe_lock:
-            if len(self._keyframe_cache) > 500:
-                self._keyframe_cache.clear()
+            # Half, not all: the endpoint is unauthenticated, so clearing the
+            # lot would let anyone throw away the answers real playback needs.
+            if len(self._keyframe_cache) > KEYFRAME_CACHE_LIMIT:
+                for key in list(self._keyframe_cache)[:KEYFRAME_CACHE_LIMIT // 2]:
+                    del self._keyframe_cache[key]
             self._keyframe_cache[cache_key] = resolved
         return resolved
 

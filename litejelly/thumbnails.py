@@ -15,6 +15,7 @@ log = logging.getLogger("litejelly.thumbnails")
 
 THUMB_WIDTH = 480
 THUMB_HEIGHT = 270
+QUEUE_LIMIT = 500
 
 
 class ThumbnailService:
@@ -28,7 +29,9 @@ class ThumbnailService:
     def __init__(self, tools, cache_dir: Path, workers: int = 2):
         self.tools = tools
         self.cache_dir = cache_dir / "thumbnails"
-        self._queue: queue.Queue = queue.Queue()
+        # Bounded: the endpoint is unauthenticated, and a backlog no worker
+        # will reach this decade is not worth the memory.
+        self._queue: queue.Queue = queue.Queue(maxsize=QUEUE_LIMIT)
         self._pending: set[str] = set()
         self._failed: dict[str, int] = {}
         self._lock = threading.Lock()
@@ -70,7 +73,12 @@ class ThumbnailService:
             self._pending.add(key)
 
         self._ensure_workers()
-        self._queue.put((key, video_path, cache_path, duration))
+        try:
+            self._queue.put_nowait((key, video_path, cache_path, duration))
+        except queue.Full:
+            with self._lock:
+                self._pending.discard(key)
+            return False
         return True
 
     def get(self, video_path: Path, duration: float = 0.0,

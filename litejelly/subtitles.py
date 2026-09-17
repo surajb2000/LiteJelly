@@ -23,6 +23,8 @@ SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".sub", ".sbv", ".smi"}
 # Converted by ffmpeg rather than in-process.
 FFMPEG_ONLY_EXTENSIONS = {".ass", ".ssa", ".sub", ".sbv", ".smi"}
 SUBTITLE_DIR_NAMES = {"subs", "subtitles", "sub"}
+# Converted tracks kept on disk before the oldest are dropped.
+CACHE_LIMIT = 2000
 
 LANGUAGE_NAMES = {
     "en": "English", "eng": "English", "english": "English",
@@ -313,9 +315,33 @@ class SubtitleService:
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(vtt, encoding="utf-8")
+                self._prune_cache()
             except OSError as exc:
                 log.debug("Could not cache subtitle: %s", exc)
         return vtt
+
+    def _prune_cache(self) -> None:
+        """Keep the newest conversions only.
+
+        Every track of every file gets its own copy, and the name includes the
+        video's mtime, so re-encoding a library would otherwise leave the old
+        conversions behind for ever.
+        """
+        try:
+            files = list(self.cache_dir.glob("*.vtt"))
+        except OSError:
+            return
+        if len(files) <= CACHE_LIMIT:
+            return
+        try:
+            files.sort(key=lambda path: path.stat().st_mtime)
+        except OSError:
+            return
+        for path in files[:len(files) - CACHE_LIMIT]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     def _build_vtt(self, video_path: Path, track_id: str) -> str | None:
         kind, _, raw_index = track_id.partition(":")

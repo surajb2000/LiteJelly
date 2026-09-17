@@ -450,10 +450,8 @@
    */
   const COMBINING_MARKS = /[\u0300-\u036f]/g;
   // Only punctuation is replaced: a class of "not a-z0-9" would erase
-  // Japanese and Cyrillic titles entirely. Quotes are written as escapes so
-  // the frontend test's comment stripper does not read them as strings.
-  const PUNCTUATION =
-    /[\s\-_.,:;!?()\[\]{}\x27\x22\u2018\u2019\u201c\u201d\/\\|~\x60@#$%^&*+=<>]+/g;
+  // Japanese and Cyrillic titles entirely.
+  const PUNCTUATION = /[\s\-_.,:;!?()[\]{}'"’‘“”/\\|~`@#$%^&*+=<>]+/g;
   const EPISODE_TOKEN = /^s?(\d{1,3})[xe](\d{1,3})$/;
 
   function normalizeText(value) {

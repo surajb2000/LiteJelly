@@ -158,15 +158,6 @@ def read_nfo(path: Path) -> Metadata | None:
     return parse_nfo(text)
 
 
-def _first_existing(folder: Path, stems) -> Path | None:
-    for stem in stems:
-        for suffix in ARTWORK_SUFFIXES:
-            candidate = folder / f"{stem}{suffix}"
-            if candidate.is_file():
-                return candidate
-    return None
-
-
 class ArtworkIndex:
     """Artwork lookup backed by one directory listing per folder.
 

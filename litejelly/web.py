@@ -7,6 +7,7 @@ import hmac
 import http.server
 import json
 import logging
+import math
 import mimetypes
 import os
 import socket
@@ -47,6 +48,13 @@ mimetypes.add_type("font/woff", ".woff")
 
 CHUNK_SIZE = 256 * 1024
 MAX_BODY_BYTES = 64 * 1024
+# A forced rescan re-walks every media folder; this is how often that is free.
+RESCAN_COOLDOWN = 30.0
+
+
+def _refuse_constant(name: str):
+    """json.loads accepts Infinity and NaN; nothing here should."""
+    raise ValueError(f"{name} is not a number")
 DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 SECURITY_HEADERS = {
@@ -293,6 +301,9 @@ class Application:
         self.sessions = admin_accounts.SessionStore()
         self.throttle = admin_accounts.LoginThrottle()
         self.credentials = admin_accounts.load_credentials(config.app_dir)
+        self._last_rescan = 0.0
+        self._streams: set = set()
+        self._streams_lock = threading.Lock()
         if self.enricher is not None:
             self.enricher.on_updated = lambda: self.library.request_scan(force=True)
 
@@ -394,12 +405,33 @@ class Application:
             return None
         return Path(dirs[video.dir_index].path)
 
+    def rescan_cooldown_remaining(self) -> float:
+        return max(0.0, RESCAN_COOLDOWN - (time.monotonic() - self._last_rescan))
+
+    def note_rescan(self) -> None:
+        self._last_rescan = time.monotonic()
+
+    def track_stream(self, process) -> None:
+        with self._streams_lock:
+            self._streams.add(process)
+
+    def forget_stream(self, process) -> None:
+        with self._streams_lock:
+            self._streams.discard(process)
+
     def shutdown(self) -> None:
         self.library.stop()
         if self.enricher is not None:
             self.enricher.stop()
         self.thumbnails.close()
         self.progress.close()
+        # Terminating the server does not reap ffmpeg on Windows, so a stopped
+        # server could leave encoders running against the media files.
+        with self._streams_lock:
+            live = list(self._streams)
+            self._streams.clear()
+        for process in live:
+            RequestHandler._terminate(process)
 
 
 class Routes:
@@ -441,10 +473,22 @@ class Routes:
 
     @staticmethod
     def rescan(h, query):
+        if h.cross_site_write():
+            return
+        app = h.app
+        # A forced rescan walks every media folder, so it cannot be free to
+        # ask for: without this one page could keep the disk busy for ever.
+        wait = app.rescan_cooldown_remaining()
+        if wait > 0 and not h.is_admin():
+            h.send_api_error(HTTPStatus.TOO_MANY_REQUESTS,
+                             f"A rescan just ran. Try again in {wait:.0f}s.",
+                             extra={"Retry-After": str(int(wait) + 1)})
+            return
         # Forced: the button says rescan, so it should not quietly do nothing
         # when the folder fingerprint happens to be unchanged.
-        h.app.library.request_scan(force=True)
-        h.send_json({"ok": True, "status": h.app.library.status})
+        app.note_rescan()
+        app.library.request_scan(force=True)
+        h.send_json({"ok": True, "status": app.library.status})
 
     # -- admin ------------------------------------------------------------
     @staticmethod
@@ -894,6 +938,8 @@ class Routes:
 
     @staticmethod
     def progress_post(h, query):
+        if h.cross_site_write():
+            return
         body = h.read_json_body()
         if body is None:
             return
@@ -906,6 +952,9 @@ class Routes:
             duration = float(body.get("duration", 0))
         except (TypeError, ValueError):
             h.send_api_error(HTTPStatus.BAD_REQUEST, "position/duration must be numbers")
+            return
+        if not (math.isfinite(position) and math.isfinite(duration)):
+            h.send_api_error(HTTPStatus.BAD_REQUEST, "position/duration must be finite")
             return
         finished = body.get("finished")
         saved = h.app.progress.save(
@@ -1422,12 +1471,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._write(payload)
 
     def send_json(self, data, status=HTTPStatus.OK, extra_headers: dict | None = None):
-        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        # allow_nan would emit bare Infinity, which no browser's JSON.parse
+        # accepts, so one poisoned value would break the whole response.
+        payload = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.send_bytes(payload, "application/json; charset=utf-8", status,
                         extra=extra_headers)
 
-    def send_api_error(self, status, message: str):
-        self.send_json({"error": message, "status": int(status)}, status=status)
+    def send_api_error(self, status, message: str, extra: dict | None = None):
+        self.send_json({"error": message, "status": int(status)}, status=status,
+                       extra_headers=extra)
 
     def discard_body(self) -> None:
         """Consume an unread request body so the connection stays in sync."""
@@ -1450,7 +1502,21 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 return
             remaining -= len(chunk)
 
-    # -- admin guard ------------------------------------------------------
+    # -- write guards -----------------------------------------------------
+    def cross_site_write(self) -> bool:
+        """Refuse a write a browser says came from another page.
+
+        These routes take no account, so any site you happen to visit could
+        otherwise post to the server on your network.
+        """
+        if admin_auth.foreign_origin(self.headers, self.headers.get("Host", "")):
+            self.send_api_error(HTTPStatus.FORBIDDEN, "Cross-site request refused.")
+            return True
+        return False
+
+    def is_admin(self) -> bool:
+        return self.app.sessions.validate(admin_auth.session_token(self.headers)) is not None
+
     def require_admin(self, query, write: bool = False) -> bool:
         """Gate every admin route. Sends the error response when denied."""
         app = self.app
@@ -1483,7 +1549,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_api_error(HTTPStatus.BAD_REQUEST, "Missing or oversized body")
             return None
         try:
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"),
+                              parse_constant=_refuse_constant)
         except (ValueError, UnicodeDecodeError):
             self._body_read = True
             self.send_api_error(HTTPStatus.BAD_REQUEST, "Body must be valid JSON")
@@ -1611,7 +1678,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         sem = self.app.tools.transcode_sem
         if not sem.acquire(timeout=20):
             self.send_api_error(HTTPStatus.SERVICE_UNAVAILABLE,
-                                "Server is busy transcoding. Try again shortly.")
+                                "Server is busy transcoding. Try again shortly.",
+                                extra={"Retry-After": "5"})
             return
 
         process = None
@@ -1621,7 +1689,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             except OSError as exc:
                 self.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"ffmpeg failed: {exc}")
                 return
-
+            self.app.track_stream(process)
             log.info("Streaming %s", label)
             self.close_connection = True
             self._begin(HTTPStatus.OK, {
@@ -1650,6 +1718,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 reader.close()
         finally:
             if process is not None:
+                self.app.forget_stream(process)
                 self._terminate(process)
             sem.release()
             log.info("Stream ended: %s", label)
