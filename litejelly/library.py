@@ -213,6 +213,10 @@ class Video:
         data = asdict(self)
         # The hero needs to know a backdrop exists without asking per item.
         data["has_backdrop"] = bool(self.backdrop_path)
+        # Enough of the metadata to filter by, without the plot's thousands
+        # of characters riding along in every listing.
+        genres = (self.meta or {}).get("genres") or []
+        data["genres"] = [str(name) for name in genres[:6] if str(name).strip()]
         for internal in ("meta", "poster_path", "backdrop_path", "mal_id"):
             data.pop(internal, None)
         # Nothing in the client reads these, and the listing is unauthenticated:

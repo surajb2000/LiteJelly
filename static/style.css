@@ -1241,6 +1241,10 @@ select:focus:not(:focus-visible) {
   color: #fff;
 }
 
+.genre-control.hidden {
+  display: none;
+}
+
 .rail-section {
   margin-bottom: 36px;
 }

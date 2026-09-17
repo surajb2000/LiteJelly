@@ -119,6 +119,8 @@
   };
 
   const SEEK_SMALL = 10;
+  // Matches the server's MIN_RESUME_SECONDS: below this nothing was watched.
+  const MIN_RESUME = 15;
   const VOLUME_STEP = 0.1;
   const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
   const PROGRESS_SAVE_INTERVAL = 10000;
@@ -132,7 +134,8 @@
     filtered: [],
     entries: [],
     progress: {},
-    filter: 'all',
+    watch: 'all',
+    genre: 'all',
     category: 'all',
     sort: 'recent',
     query: '',
@@ -316,6 +319,7 @@
         ? data.continue_watching : [];
       state.ffmpegAvailable = !!data.ffmpeg_available;
       renderCategoryChips();
+      renderGenreFilter();
       applyFilters();
     } catch (err) {
       showToast('Could not load library: ' + err.message, 5000);
@@ -523,6 +527,52 @@
     return !query.tokens.length && !!query.flat && flat.indexOf(query.flat) !== -1;
   }
 
+  // --- Browsing filters -------------------------------------------------
+
+  /* The chips used to sort by container - MP4, MKV, Other - which answers a
+   * question about the file rather than about the viewing. What is actually
+   * wanted is "what have I not seen yet".
+   */
+  function watchStateOf(video) {
+    const entry = state.progress[video.id];
+    if (!entry) return 'unwatched';
+    if (entry.finished) return 'watched';
+    return entry.position > MIN_RESUME ? 'started' : 'unwatched';
+  }
+
+  function genreList() {
+    const counts = {};
+    state.videos.forEach(video => {
+      (video.genres || []).forEach(name => {
+        counts[name] = (counts[name] || 0) + 1;
+      });
+    });
+    return Object.keys(counts)
+      .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b))
+      .slice(0, 20);
+  }
+
+  function renderGenreFilter() {
+    const genres = genreList();
+    // Nothing to choose between when the library has no metadata.
+    el.genreControl.classList.toggle('hidden', genres.length < 2);
+    if (genres.indexOf(state.genre) === -1) state.genre = 'all';
+
+    const select = el.genreSelect;
+    select.replaceChildren();
+    const all = document.createElement('option');
+    all.value = 'all';
+    all.textContent = 'All genres';
+    select.appendChild(all);
+    genres.forEach(name => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      select.appendChild(option);
+    });
+    select.value = state.genre;
+  }
+
   function applyFilters() {
     let list = state.videos;
 
@@ -549,11 +599,12 @@
       list = list.filter(video => video.category === state.category);
     }
 
-    if (state.filter !== 'all') {
-      list = list.filter(video => {
-        const ext = (video.extension || '').toLowerCase();
-        return state.filter === 'other' ? ext !== 'mp4' && ext !== 'mkv' : ext === state.filter;
-      });
+    if (state.watch !== 'all') {
+      list = list.filter(video => watchStateOf(video) === state.watch);
+    }
+
+    if (state.genre !== 'all') {
+      list = list.filter(video => (video.genres || []).indexOf(state.genre) !== -1);
     }
 
     if (state.query) {
@@ -576,7 +627,7 @@
    */
   function isHomeView() {
     return !state.seriesId && !state.query && state.category === 'all'
-      && state.filter === 'all';
+      && state.watch === 'all' && state.genre === 'all';
   }
 
   function renderHome() {
@@ -702,8 +753,17 @@
     el.heroBrowse.classList.toggle('hidden', !video.series_id);
     el.heroBrowse.onclick = () => openSeries(video.series_id);
 
-    // A suggestion is by definition unstarted, so there is no progress to show.
-    el.heroProgress.classList.add('hidden');
+    // Normally the hero is something unstarted and there is nothing to show.
+    // Once every title has been begun the pool falls back to all of them, and
+    // then it can be a title with progress.
+    const resume = state.progress[target.id];
+    const fraction = resume && resume.duration > 0 && !resume.finished
+      ? resume.position / resume.duration : 0;
+    el.heroProgress.classList.toggle('hidden', fraction <= 0.01);
+    if (fraction > 0.01) {
+      el.heroProgressFill.style.width = Math.min(100, fraction * 100).toFixed(1) + '%';
+      el.heroPlay.textContent = '\u25b6  Resume ' + formatTime(resume.position);
+    }
 
     // The poster is portrait, so it gets its own card rather than being
     // stretched across the backdrop.
@@ -3516,7 +3576,9 @@
     el.seriesPlot = $('#series-plot');
     el.seriesBack = $('#series-back');
     el.categoryChips = $('#category-chips');
-    el.formatChips = $('#format-chips');
+    el.watchChips = $('#watch-chips');
+    el.genreControl = $('#genre-control');
+    el.genreSelect = $('#genre-select');
     el.seasonChips = $('#season-chips');
     el.seriesHero = $('#series-hero');
     el.seriesBackdrop = $('#series-backdrop');
@@ -3647,7 +3709,11 @@
       applyFilters();
     });
 
-    bindChipGroup(el.formatChips, 'filter');
+    bindChipGroup(el.watchChips, 'watch');
+    el.genreSelect.addEventListener('change', event => {
+      state.genre = event.target.value;
+      applyFilters();
+    });
     $$('.nav-link', el.mainNav).forEach(link => {
       link.addEventListener('click', () => selectCategory(link.dataset.category));
     });

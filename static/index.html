@@ -86,12 +86,16 @@
           <button class="chip" data-category="anime" aria-pressed="false">Anime</button>
           <button class="chip" data-category="movies" aria-pressed="false">Movies</button>
         </div>
-        <div id="format-chips" class="filter-chips" role="group" aria-label="Filter by format">
-          <button class="chip active" data-filter="all" aria-pressed="true">All</button>
-          <button class="chip" data-filter="mp4" aria-pressed="false">MP4</button>
-          <button class="chip" data-filter="mkv" aria-pressed="false">MKV</button>
-          <button class="chip" data-filter="other" aria-pressed="false">Other</button>
+        <div id="watch-chips" class="filter-chips" role="group" aria-label="Filter by what you have watched">
+          <button class="chip active" data-watch="all" aria-pressed="true">All</button>
+          <button class="chip" data-watch="unwatched" aria-pressed="false">Unwatched</button>
+          <button class="chip" data-watch="started" aria-pressed="false">In progress</button>
+          <button class="chip" data-watch="watched" aria-pressed="false">Watched</button>
         </div>
+        <label class="sort-control genre-control hidden" id="genre-control">
+          <span class="sr-only">Filter by genre</span>
+          <select id="genre-select"></select>
+        </label>
         <label class="sort-control">
           <span class="sr-only">Sort by</span>
           <select id="sort-select">
