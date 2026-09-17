@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly import auth
 from litejelly.config import load_config
+from litejelly.ffmpeg import MediaInfo
 from litejelly.web import Application, create_server
 
 for name in ("litejelly", "litejelly.web", "litejelly.library", "litejelly.admin",
@@ -329,6 +330,33 @@ class LiveServerTests(unittest.TestCase):
         self.assertEqual(response.status, 206)
         self.assertEqual(len(response.read()), 100)
         conn.close()
+
+    def test_seekpoint_forwards_the_direction(self):
+        conn = self.connect()
+        conn.request("GET", "/api/library")
+        video_id = json.loads(conn.getresponse().read())["videos"][0]["id"]
+
+        tools = self.app.tools
+        seen = []
+        original = (tools.probe, tools.seek_landing, tools.ffmpeg)
+        tools.probe = lambda path: MediaInfo(
+            duration=600.0, container="matroska", video_codec="h264",
+            audio_codec="aac", probed=True)
+        tools.seek_landing = lambda path, target, forward=False: (
+            seen.append(forward) or (50.0 if forward else 40.0))
+        tools.ffmpeg = tools.ffmpeg or "ffmpeg"
+        try:
+            conn.request("GET", f"/api/seekpoint?id={video_id}&t=47.5&dir=forward")
+            ahead = json.loads(conn.getresponse().read())
+            conn.request("GET", f"/api/seekpoint?id={video_id}&t=47.5")
+            behind = json.loads(conn.getresponse().read())
+        finally:
+            tools.probe, tools.seek_landing, tools.ffmpeg = original
+            conn.close()
+
+        self.assertEqual(seen, [True, False])
+        self.assertEqual((ahead["start"], ahead["direction"]), (50.0, "forward"))
+        self.assertEqual((behind["start"], behind["direction"]), (40.0, "backward"))
 
 
 if __name__ == "__main__":

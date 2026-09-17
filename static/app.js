@@ -145,6 +145,9 @@
     scrubbing: false,
     seekTimer: null,
     pendingSeek: null,
+    pendingForward: false,
+    transport: 'direct',      // 'direct' | 'mse' | 'classic' for the current playback
+    mseFailures: 0,
     osdTimer: null,
     lastSave: 0,
     lastSavedPosition: -1,
@@ -1430,7 +1433,8 @@
     if (!segment) return;
     el.skipSegment.classList.add('hidden');
     state.skipSegment = null;
-    seekTo(segment.end);
+    // Landing before the end would put us back inside the segment.
+    seekTo(segment.end, true);
   }
 
   // A lookup that was still in flight when playback began; ask again rather
@@ -1647,7 +1651,361 @@
     showOSD();
   }
 
-  async function loadSource(time, initial) {
+  // Where a restarted pipe will really begin. Send the requested time as-is:
+  // snapping it onto a keyframe makes ffmpeg rewind a whole GOP. Ask only where
+  // it will land, so the clock and subtitles match the stream. A forward
+  // landing is a verified entry point, so that one is safe to send instead.
+  async function resolveLanding(plan, target, forward) {
+    let landing = target;
+    let ss = target.toFixed(2);
+    if (target > 0 && plan.exact_seek === false) {
+      try {
+        const point = await getJSON(API.seekpoint + '?id=' + encodeURIComponent(plan.id) +
+          '&t=' + target.toFixed(2) + '&quality=' + encodeURIComponent(state.quality) +
+          (forward ? '&dir=forward' : ''));
+        if (typeof point.start === 'number') {
+          landing = point.start;
+          if (forward && landing > target) ss = landing.toFixed(3);
+        }
+      } catch (err) { /* fall back to the requested time */ }
+    }
+    return { landing: landing, ss: ss };
+  }
+
+  function streamUrl(plan, ss) {
+    const separator = plan.url.indexOf('?') === -1 ? '?' : '&';
+    return plan.url + separator + 'ss=' + ss;
+  }
+
+  function beginPlayback(video) {
+    video.load();
+    const started = video.play();
+    if (started && started.catch) {
+      // Auto-advance calls play() without a fresh gesture, which a browser may
+      // refuse. Say so rather than leaving a black screen.
+      started.catch(() => {
+        showOSD(true);
+        showToast('Press play to start', 4000);
+      });
+    }
+  }
+
+  // --- MediaSource transport -------------------------------------------
+  //
+  // A piped fMP4 handed straight to <video src> has no timeline the browser
+  // can seek within: every seek restarts ffmpeg and the clock is faked with
+  // state.offset. Feeding the same pipe through MediaSource gives the browser
+  // absolute timestamps, so a seek inside the buffer is instant and a stream
+  // copy can start at the keyframe before the target while the browser
+  // decodes up to the exact frame. Anything that goes wrong drops back to the
+  // plain <video src> path for the rest of that playback.
+  const MSE_AHEAD_MAX = 90;      // stop pulling once this much is buffered ahead
+  const MSE_AHEAD_RESUME = 30;   // pull again when the reserve falls to this
+  const MSE_BEHIND_KEEP = 30;    // seconds kept behind the playhead for back-seeks
+  const MSE_POLL_MS = 500;
+  const MSE_QUEUE_MAX = 8;
+
+  const mse = {
+    source: null, buffer: null, objectUrl: null, reader: null,
+    queue: [], serial: 0, plan: null, resumed: false, quotaRetries: 0
+  };
+
+  function transportPreference() {
+    try { return localStorage.getItem('litejelly_transport') || 'auto'; }
+    catch (err) { return 'auto'; }
+  }
+
+  function mseSupported(plan) {
+    if (!plan || !plan.mime || plan.native_seek) return false;
+    if (state.mseFailures >= 2 || transportPreference() === 'classic') return false;
+    if (!window.MediaSource || typeof MediaSource.isTypeSupported !== 'function') return false;
+    if (!window.fetch || !window.ReadableStream || !window.URL || !URL.createObjectURL) return false;
+    try { return MediaSource.isTypeSupported(plan.mime); } catch (err) { return false; }
+  }
+
+  function mseActive() {
+    return state.transport === 'mse' && !!mse.buffer && !!mse.source &&
+      mse.source.readyState === 'open';
+  }
+
+  function bufferedRangeAt(time) {
+    const ranges = el.video.buffered;
+    for (let i = 0; i < ranges.length; i++) {
+      if (ranges.start(i) <= time + 0.5 && ranges.end(i) >= time - 0.5) {
+        return { start: ranges.start(i), end: ranges.end(i) };
+      }
+    }
+    return null;
+  }
+
+  function mseBufferedAhead() {
+    const range = bufferedRangeAt(el.video.currentTime);
+    return range ? range.end - el.video.currentTime : 0;
+  }
+
+  function mseIsBuffered(time) {
+    const ranges = el.video.buffered;
+    for (let i = 0; i < ranges.length; i++) {
+      // Some runway after the target, or the seek stalls immediately.
+      if (ranges.start(i) <= time + 0.1 && ranges.end(i) >= time + 1) return true;
+    }
+    return false;
+  }
+
+  function mseTeardown() {
+    mse.serial++;
+    if (mse.reader) { try { mse.reader.cancel(); } catch (err) { /* already closed */ } }
+    mse.reader = null;
+    mse.queue = [];
+    if (mse.buffer) {
+      mse.buffer.removeEventListener('updateend', mseFlush);
+      mse.buffer.removeEventListener('error', mseOnBufferError);
+    }
+    if (mse.objectUrl) { try { URL.revokeObjectURL(mse.objectUrl); } catch (err) { /* ignore */ } }
+    mse.source = null;
+    mse.buffer = null;
+    mse.objectUrl = null;
+    mse.plan = null;
+    mse.resumed = false;
+    mse.quotaRetries = 0;
+  }
+
+  function mseOpen(plan, point, target) {
+    mseTeardown();
+    const serial = mse.serial;
+    const source = new MediaSource();
+    mse.source = source;
+    mse.plan = plan;
+    mse.objectUrl = URL.createObjectURL(source);
+    source.addEventListener('sourceopen', () => {
+      if (serial !== mse.serial) return;
+      let buffer;
+      try {
+        buffer = source.addSourceBuffer(plan.mime);
+        if (plan.duration > 0) source.duration = plan.duration;
+      } catch (err) {
+        mseFallback('MediaSource refused ' + plan.mime, target);
+        return;
+      }
+      mse.buffer = buffer;
+      buffer.addEventListener('updateend', mseFlush);
+      buffer.addEventListener('error', mseOnBufferError);
+      msePump(point, target);
+    }, { once: true });
+    el.video.src = mse.objectUrl;
+  }
+
+  function mseIdle(buffer) {
+    if (!buffer.updating) return Promise.resolve();
+    return new Promise(done => buffer.addEventListener('updateend', done, { once: true }));
+  }
+
+  function sleep(ms) {
+    return new Promise(done => setTimeout(done, ms));
+  }
+
+  async function msePump(point, target) {
+    const buffer = mse.buffer;
+    const plan = mse.plan;
+    if (!buffer || !plan) return;
+    const serial = ++mse.serial;
+    if (mse.reader) { try { mse.reader.cancel(); } catch (err) { /* already closed */ } }
+    mse.reader = null;
+    mse.queue = [];
+
+    await mseIdle(buffer);
+    if (serial !== mse.serial) return;
+    try {
+      // abort() drops any half-parsed box from the previous stream; the new
+      // one starts with its own init segment.
+      buffer.abort();
+      buffer.timestampOffset = point.landing;
+    } catch (err) {
+      mseFallback('SourceBuffer reset failed: ' + err.name, target);
+      return;
+    }
+
+    let response;
+    try {
+      response = await fetch(streamUrl(plan, point.ss), { cache: 'no-store' });
+      if (!response.ok || !response.body) throw new Error('HTTP ' + response.status);
+    } catch (err) {
+      if (serial !== mse.serial) return;
+      mseFallback('stream request failed: ' + err.message, target);
+      return;
+    }
+    if (serial !== mse.serial) {
+      try { response.body.cancel(); } catch (err) { /* ignore */ }
+      return;
+    }
+    const reader = response.body.getReader();
+    mse.reader = reader;
+
+    for (;;) {
+      // Backpressure: with enough buffered ahead, stop pulling. The socket
+      // fills, ffmpeg blocks on its pipe and the server stops spending CPU.
+      if (mseBufferedAhead() > MSE_AHEAD_MAX) {
+        while (serial === mse.serial && mseBufferedAhead() > MSE_AHEAD_RESUME) {
+          await sleep(MSE_POLL_MS);
+        }
+      }
+      while (serial === mse.serial && mse.queue.length >= MSE_QUEUE_MAX) {
+        await sleep(50);
+      }
+      if (serial !== mse.serial) return;
+
+      let result;
+      try {
+        result = await reader.read();
+      } catch (err) {
+        result = { done: true };
+      }
+      if (serial !== mse.serial) return;
+      if (result.done) break;
+      mse.queue.push(result.value);
+      mseFlush();
+    }
+    mse.reader = null;
+    mseOnStreamEnd(serial);
+  }
+
+  function mseFlush() {
+    const buffer = mse.buffer;
+    if (!buffer || buffer.updating || !mseActive()) return;
+    const now = el.video.currentTime;
+    const ranges = el.video.buffered;
+    if (ranges.length && ranges.start(0) < now - MSE_BEHIND_KEEP - 10) {
+      try {
+        buffer.remove(0, now - MSE_BEHIND_KEEP);
+        return;
+      } catch (err) { /* fall through and keep appending */ }
+    }
+    if (!mse.queue.length) return;
+    const chunk = mse.queue.shift();
+    try {
+      buffer.appendBuffer(chunk);
+      mse.quotaRetries = 0;
+    } catch (err) {
+      if (err && err.name === 'QuotaExceededError' && mse.quotaRetries < 3) {
+        mse.quotaRetries++;
+        mse.queue.unshift(chunk);
+        mseEvict(now);
+        return;
+      }
+      mseFallback('append failed: ' + (err && err.name), displayTime());
+    }
+  }
+
+  // Free whatever is furthest from the playhead; updateend retries the append.
+  function mseEvict(now) {
+    const buffer = mse.buffer;
+    const ranges = el.video.buffered;
+    if (!buffer || !ranges.length) return;
+    const last = ranges.end(ranges.length - 1);
+    try {
+      if (last > now + MSE_AHEAD_MAX + 30) {
+        buffer.remove(now + MSE_AHEAD_MAX + 30, Infinity);
+      } else if (ranges.start(0) < now - 5) {
+        buffer.remove(0, now - 5);
+      } else {
+        mseFallback('buffer quota exhausted', displayTime());
+      }
+    } catch (err) {
+      mseFallback('eviction failed: ' + (err && err.name), displayTime());
+    }
+  }
+
+  function mseOnStreamEnd(serial) {
+    const finish = () => {
+      if (serial !== mse.serial || !mseActive()) return;
+      if (mse.queue.length || mse.buffer.updating) { setTimeout(finish, 100); return; }
+      const duration = displayDuration();
+      const range = bufferedRangeAt(el.video.currentTime);
+      const end = range ? range.end : 0;
+      if (!duration || end >= duration - 2) {
+        try { mse.source.endOfStream(); } catch (err) { /* already ended */ }
+        return;
+      }
+      // The pipe stopped short (ffmpeg exited, network blip): pick up where
+      // the data ends, once. A second failure is left to stall visibly.
+      if (!mse.resumed && end > 0) {
+        mse.resumed = true;
+        resolveLanding(mse.plan, end, false).then(point => {
+          if (serial === mse.serial && mseActive()) msePump(point, end);
+        });
+      }
+    };
+    finish();
+  }
+
+  function mseOnBufferError() {
+    mseFallback('SourceBuffer error', displayTime());
+  }
+
+  function mseFallback(reason, resumeAt) {
+    if (state.transport !== 'mse') return;
+    const plan = state.playback;
+    state.mseFailures++;
+    mseTeardown();
+    state.transport = 'classic';
+    if (window.console && console.warn) console.warn('MediaSource fallback: ' + reason);
+    showToast('Switched to classic streaming', 3000);
+    if (!plan) return;
+    classicLoad(resumeAt, false).then(() => {
+      if (state.playback === plan) {
+        el.osdBadge.title = describePipeline(plan) + '\n' + describeTransport();
+      }
+    });
+  }
+
+  async function mseLoad(target, initial, forward) {
+    const plan = state.playback;
+    const video = el.video;
+    state.offset = 0;
+    if (!initial && mseActive()) {
+      if (mseIsBuffered(target)) {
+        video.currentTime = target;
+        return;
+      }
+      const point = await resolveLanding(plan, target, forward);
+      if (state.playback !== plan || !mseActive()) return;
+      // The browser waits at the target until data covering it arrives, and
+      // decodes from the keyframe before it on its own.
+      video.currentTime = target;
+      msePump(point, target);
+      return;
+    }
+    const point = await resolveLanding(plan, target, forward);
+    if (state.playback !== plan) return;
+    mseOpen(plan, point, target);
+    if (target > 0) {
+      video.addEventListener('loadedmetadata', () => {
+        if (state.playback === plan && state.transport === 'mse') video.currentTime = target;
+      }, { once: true });
+    }
+    beginPlayback(video);
+    attachSubtitleTracks(0);
+  }
+
+  async function classicLoad(target, forward) {
+    const plan = state.playback;
+    const video = el.video;
+    const point = await resolveLanding(plan, target, forward);
+    if (state.playback !== plan) return;
+    state.offset = point.landing;
+    video.src = streamUrl(plan, point.ss);
+    beginPlayback(video);
+    // Cues are absolute, but a restarted pipe starts at the offset, so re-base them.
+    attachSubtitleTracks(state.offset);
+  }
+
+  function describeTransport() {
+    if (state.transport === 'mse') return 'Delivery: buffered stream (seeks inside the buffer are instant)';
+    if (state.transport === 'classic') return 'Delivery: classic stream (each seek restarts the pipe)';
+    return 'Delivery: direct file';
+  }
+
+  async function loadSource(time, initial, forward) {
     const plan = state.playback;
     if (!plan) return;
     const video = el.video;
@@ -1659,45 +2017,28 @@
         video.currentTime = target;
         return;
       }
+      mseTeardown();
+      state.transport = 'direct';
       video.src = plan.url;
       if (target > 0) {
         video.addEventListener('loadedmetadata', () => { video.currentTime = target; }, { once: true });
       }
+      beginPlayback(video);
+      attachSubtitleTracks(0);
     } else {
-      // Send the requested time as-is: snapping it onto a keyframe makes
-      // ffmpeg rewind a whole GOP. Ask only where it will actually land, so
-      // the clock and subtitles match the stream.
-      let actual = target;
-      if (target > 0 && plan.exact_seek === false) {
-        try {
-          const point = await getJSON(API.seekpoint + '?id=' + encodeURIComponent(plan.id) +
-            '&t=' + target.toFixed(2) + '&quality=' + encodeURIComponent(state.quality));
-          if (typeof point.start === 'number') actual = point.start;
-        } catch (err) { /* fall back to the requested time */ }
+      if (initial) {
+        mseTeardown();
+        state.transport = mseSupported(plan) ? 'mse' : 'classic';
       }
-      if (state.playback !== plan) return;
-      state.offset = actual;
-      const separator = plan.url.indexOf('?') === -1 ? '?' : '&';
-      video.src = plan.url + separator + 'ss=' + target.toFixed(2);
+      if (state.transport === 'mse') await mseLoad(target, initial, forward);
+      else await classicLoad(target, forward);
     }
-
-    video.load();
-    const started = video.play();
-    if (started && started.catch) {
-      // Auto-advance calls play() without a fresh gesture, which a browser may
-      // refuse. Say so rather than leaving a black screen.
-      started.catch(() => {
-        showOSD(true);
-        showToast('Press play to start', 4000);
-      });
+    if (initial && state.playback === plan) {
+      el.osdBadge.title = describePipeline(plan) + '\n' + describeTransport();
     }
-
-    // Cues are absolute, but a restarted pipe starts at the offset, so re-base
-    // them. Direct play keeps the original timeline.
-    attachSubtitleTracks(plan.native_seek ? 0 : state.offset);
   }
 
-  function seekTo(seconds) {
+  function seekTo(seconds, forward) {
     const plan = state.playback;
     if (!plan) return;
     const duration = displayDuration();
@@ -1710,14 +2051,17 @@
     }
 
     state.pendingSeek = target;
+    state.pendingForward = !!forward;
     renderProgress(target, duration, true);
     clearTimeout(state.seekTimer);
     state.seekTimer = setTimeout(() => {
       const value = state.pendingSeek;
+      const ahead = state.pendingForward;
       state.pendingSeek = null;
+      state.pendingForward = false;
       if (value !== null) {
         el.buffering.classList.remove('hidden');
-        loadSource(value, false);
+        loadSource(value, false, ahead);
       }
     }, SEEK_COMMIT_DELAY);
   }
@@ -1758,6 +2102,7 @@
 
     const video = el.video;
     video.pause();
+    mseTeardown();
     video.removeAttribute('src');
     video.load();
     clearSubtitleTracks();
@@ -2464,7 +2809,9 @@
 
     const buffered = el.video.buffered;
     if (buffered && buffered.length && duration > 0) {
-      const end = state.offset + buffered.end(buffered.length - 1);
+      // The range under the playhead, not a stale one left from an earlier seek.
+      const range = bufferedRangeAt(el.video.currentTime);
+      const end = state.offset + (range ? range.end : buffered.end(buffered.length - 1));
       el.progressBuffered.style.width = Math.min(100, (end / duration) * 100).toFixed(2) + '%';
     } else {
       el.progressBuffered.style.width = '0%';
@@ -2525,15 +2872,32 @@
     state.speedIndex = (state.speedIndex + 1) % SPEEDS.length;
     const speed = SPEEDS[state.speedIndex];
     el.video.playbackRate = speed;
-    $('span', el.btnSpeed).textContent = speed + 'x';
+    $('.popup-item-hint span', el.btnSpeed).textContent = speed + 'x';
     showToast('Speed ' + speed + 'x', 1500);
   }
 
   function toggleAspect() {
     state.aspect = state.aspect === 'contain' ? 'cover' : 'contain';
     el.video.style.objectFit = state.aspect;
-    $('span', el.btnAspect).textContent = state.aspect === 'contain' ? 'FIT' : 'FILL';
+    $('.popup-item-hint span', el.btnAspect).textContent =
+      state.aspect === 'contain' ? 'FIT' : 'FILL';
     showToast(state.aspect === 'contain' ? 'Fit screen' : 'Zoom to fill', 1500);
+  }
+
+  function updateTransportLabel() {
+    $('.popup-item-hint span', el.btnTransport).textContent =
+      transportPreference() === 'classic' ? 'Classic' : 'Auto';
+  }
+
+  // Rescue switch for a device whose MediaSource misbehaves; Auto is the norm.
+  function toggleTransport() {
+    const next = transportPreference() === 'classic' ? 'auto' : 'classic';
+    try { localStorage.setItem('litejelly_transport', next); } catch (err) { /* private mode */ }
+    if (next === 'auto') state.mseFailures = 0;
+    updateTransportLabel();
+    showToast(next === 'classic' ? 'Classic streaming' : 'Buffered streaming when possible', 2000);
+    const plan = state.playback;
+    if (plan && !plan.native_seek) startPlayback(plan, displayTime());
   }
 
   // --- Keyboard / D-pad -------------------------------------------------
@@ -2783,6 +3147,7 @@
     el.volumeRange = $('#volume-range');
     el.btnSpeed = $('#btn-speed');
     el.btnAspect = $('#btn-aspect');
+    el.btnTransport = $('#btn-transport');
     el.btnPrevEpisode = $('#btn-prev-episode');
     el.btnNextEpisode = $('#btn-next-episode');
     el.skipSegment = $('#skip-segment');
@@ -2874,6 +3239,7 @@
     $('#btn-rewind').addEventListener('click', () => seekBy(-SEEK_SMALL));
     $('#btn-forward').addEventListener('click', () => seekBy(SEEK_SMALL));
     el.btnAspect.addEventListener('click', toggleAspect);
+    el.btnTransport.addEventListener('click', toggleTransport);
     el.btnSpeed.addEventListener('click', cycleSpeed);
     el.btnMute.addEventListener('click', () =>
       applyVolume(video.muted || video.volume === 0 ? 1 : 0));
@@ -3034,6 +3400,10 @@
     video.addEventListener('error', () => {
       el.buffering.classList.add('hidden');
       if (!video.error || !state.playback) return;
+      if (state.transport === 'mse') {
+        mseFallback('media error ' + video.error.code, displayTime());
+        return;
+      }
       const messages = {
         1: 'Playback aborted.',
         2: 'Network error while streaming.',
@@ -3096,6 +3466,7 @@
     applyVolume(storedVolume);
     updateQualityLabel();
     updateSyncLabel();
+    updateTransportLabel();
 
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('fullscreenchange', syncFullscreenIcons);

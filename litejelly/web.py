@@ -27,7 +27,7 @@ from . import settings as user_settings
 from .chapters import read_chapters, skippable
 from .config import load_config
 from .enrich import Enricher
-from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality
+from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality, stream_mime
 from .library import (
     Library, build_continue_watching, episode_order, next_episode,
     previous_episode,
@@ -833,6 +833,8 @@ class Routes:
             "native_seek": mode == "direct",
             # A re-encode can start anywhere; a stream copy snaps to a keyframe.
             "exact_seek": plan.video_action == "encode",
+            # Empty when the codec string is not known; the client then avoids MSE.
+            "mime": stream_mime(info, plan, app.config.transcode, burn_track is not None),
             "url": url,
             "subtitles": [t.to_dict() for t in tracks],
             "resume": app.progress.get(video.id) or {},
@@ -877,12 +879,18 @@ class Routes:
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
         plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality)
+        forward = query.get("dir", [""])[0] == "forward"
 
         # Re-encoding can start anywhere; a stream copy snaps to a keyframe.
         start = target
         if plan.video_action == "copy" and target > 0:
-            start = app.tools.seek_landing(path, target)
-        h.send_json({"requested": target, "start": start, "exact": plan.video_action != "copy"})
+            start = app.tools.seek_landing(path, target, forward=forward)
+        h.send_json({
+            "requested": target,
+            "start": start,
+            "exact": plan.video_action != "copy",
+            "direction": "forward" if forward else "backward",
+        })
 
     @staticmethod
     def stream(h, query):
@@ -924,7 +932,7 @@ class Routes:
         cmd = app.tools.build_stream_command(
             path, plan, app.config.transcode, start=start,
             burn_subtitle_index=burn_index, quality=quality,
-            audio_delay_ms=_audio_delay_ms(info, plan, query),
+            audio_delay_ms=_audio_delay_ms(info, plan, query), info=info,
         )
         h.pump_process(cmd, label=f"{video.name} @ {start:.0f}s ({plan.mode}/{quality.id})")
 

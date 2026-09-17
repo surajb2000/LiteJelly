@@ -1470,6 +1470,7 @@ select:focus:not(:focus-visible) {
 
 .speed-btn,
 .aspect-btn,
+.transport-btn,
 .quality-btn {
   width: auto;
   padding: 0 14px;

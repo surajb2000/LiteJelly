@@ -7,14 +7,17 @@ refactor cannot quietly reintroduce them.
 Run with:  python -m unittest discover -s tests
 """
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly.config import TranscodeSettings
-from litejelly.ffmpeg import FFmpegTools, MediaInfo, PlaybackPlan, resolve_quality
+from litejelly.ffmpeg import (FFmpegTools, MediaInfo, PlaybackPlan, resolve_quality,
+                              stream_mime)
 from litejelly.web import _audio_delay_ms
 
 
@@ -258,6 +261,193 @@ class PlanTests(unittest.TestCase):
         for quality in ("auto", "original"):
             plan = self.tools.plan_playback(self._info(), quality=resolve_quality(quality))
             self.assertEqual(plan.video_action, "copy")
+
+
+class FakeProbeFile:
+    """Stands in for ffprobe on a file with a 10 s GOP.
+
+    ``entry_points`` are real IDR frames; ``cra`` frames are flagged as
+    keyframes but seeking to one rewinds to the previous entry point, which is
+    what x265's open-GOP output does.
+    """
+
+    def __init__(self, entry_points, cra=()):
+        self.entry_points = sorted(entry_points)
+        self.cra = sorted(cra)
+        self.calls = []
+
+    def landing(self, target):
+        return max([t for t in self.entry_points if t <= target + 1e-6], default=0.0)
+
+    def __call__(self, cmd, timeout=None):
+        self.calls.append(cmd)
+        interval = cmd[cmd.index("-read_intervals") + 1]
+        start_text, _, span_text = interval.partition("%+")
+        start = float(start_text)
+        if "-skip_frame" in cmd:
+            span = float(span_text)
+            first = self.landing(start)
+            frames = [t for t in self.entry_points + self.cra if first <= t < start + span]
+        else:
+            frames = [self.landing(start)]
+        stdout = "".join(f"{t:.6f}\n" for t in sorted(frames)).encode()
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
+
+
+class ForwardSeekTests(unittest.TestCase):
+    """Skipping an intro used the backward landing and dropped the viewer back
+    inside it by up to a GOP (skip to 47.5 on a 10 s GOP started at 40)."""
+
+    def setUp(self):
+        self.tools = _tools()
+        self.path = Path("show.mkv")
+
+    def _run(self, probe, target, forward):
+        with mock.patch("litejelly.ffmpeg.run_quiet", probe):
+            return self.tools.seek_landing(self.path, target, forward=forward)
+
+    def test_backward_landing_is_unchanged(self):
+        probe = FakeProbeFile([0, 10, 20, 30, 40, 50])
+        self.assertEqual(self._run(probe, 47.5, False), 40.0)
+
+    def test_forward_landing_never_precedes_the_target(self):
+        probe = FakeProbeFile([0, 10, 20, 30, 40, 50])
+        self.assertEqual(self._run(probe, 47.5, True), 50.0)
+
+    def test_forward_on_an_entry_point_stays_put(self):
+        probe = FakeProbeFile([0, 10, 20, 30, 40, 50])
+        self.assertEqual(self._run(probe, 40.0, True), 40.0)
+        self.assertEqual(len(probe.calls), 1, "no keyframe scan was needed")
+
+    def test_forward_keeps_a_landing_just_short_of_the_target(self):
+        # Measured on the reference clip: a "10 s" GOP at 23.976 fps puts
+        # keyframes at 39.873, not 40.0. Skipping to 40 must not jump to 49.8.
+        probe = FakeProbeFile([0, 9.968, 19.937, 29.905, 39.873, 49.841])
+        self.assertEqual(self._run(probe, 40.0, True), 39.873)
+        self.assertEqual(self._run(probe, 47.5, True), 49.841)
+
+    def test_forward_rejects_open_gop_cra_frames(self):
+        probe = FakeProbeFile([0, 10, 20, 30, 40, 50], cra=[45])
+        self.assertEqual(self._run(probe, 43.0, True), 50.0)
+
+    def test_forward_widens_the_window_for_long_gops(self):
+        probe = FakeProbeFile([0, 40, 80])
+        self.assertEqual(self._run(probe, 43.0, True), 80.0)
+        scans = [c for c in probe.calls if "-skip_frame" in c]
+        self.assertEqual(len(scans), 2)
+
+    def test_forward_falls_back_to_backward_when_nothing_follows(self):
+        probe = FakeProbeFile([0, 40])
+        self.assertEqual(self._run(probe, 43.0, True), 40.0)
+
+    def test_forward_rounds_up_so_ss_cannot_undershoot(self):
+        probe = FakeProbeFile([0, 40, 47.5475])
+        landed = self._run(probe, 43.0, True)
+        self.assertGreaterEqual(landed, 47.5475)
+        self.assertLess(landed, 47.5475 + 0.001)
+
+    def test_directions_are_cached_separately(self):
+        probe = FakeProbeFile([0, 10, 20, 30, 40, 50])
+        self.assertEqual(self._run(probe, 47.5, False), 40.0)
+        self.assertEqual(self._run(probe, 47.5, True), 50.0)
+        self.assertEqual(self._run(probe, 47.5, False), 40.0)
+
+
+class MseStreamTests(unittest.TestCase):
+    """The piped fMP4 must be something MediaSource can append and describe."""
+
+    def setUp(self):
+        self.tools = _tools()
+        self.settings = TranscodeSettings()
+
+    def _info(self, **kwargs):
+        base = dict(duration=600.0, container="matroska", video_codec="h264",
+                    audio_codec="aac", profile="High", level=40,
+                    audio_profile="LC", probed=True)
+        base.update(kwargs)
+        return MediaInfo(**base)
+
+    def test_fragments_are_time_bounded(self):
+        # Measured: frag_keyframe alone gave 7 fragments for a 60 s clip with a
+        # 10 s GOP; with -frag_duration 2000000 it gave 31.
+        cmd = self.tools.build_stream_command(Path("m.mkv"), COPY_PLAN, self.settings)
+        self.assertEqual(_arg_after(cmd, "-frag_duration"), "2000000")
+        self.assertIn("empty_moov", _arg_after(cmd, "-movflags"))
+        self.assertIn("default_base_moof", _arg_after(cmd, "-movflags"))
+
+    def test_copied_hevc_is_tagged_hvc1(self):
+        cmd = self.tools.build_stream_command(
+            Path("m.mkv"), COPY_PLAN, self.settings, info=self._info(video_codec="hevc"))
+        self.assertEqual(_arg_after(cmd, "-tag:v"), "hvc1")
+
+    def test_copied_h264_is_not_retagged(self):
+        cmd = self.tools.build_stream_command(
+            Path("m.mkv"), COPY_PLAN, self.settings, info=self._info())
+        self.assertNotIn("-tag:v", cmd)
+
+    def test_encoded_hevc_is_not_tagged(self):
+        cmd = self.tools.build_stream_command(
+            Path("m.mkv"), ENCODE_PLAN, self.settings, info=self._info(video_codec="hevc"))
+        self.assertNotIn("-tag:v", cmd)
+
+    def test_h264_copy_mime_carries_profile_and_level(self):
+        copy_both = PlaybackPlan("remux", "copy", "copy", "", False)
+        self.assertEqual(stream_mime(self._info(), copy_both, self.settings),
+                         'video/mp4; codecs="avc1.640028, mp4a.40.2"')
+        self.assertEqual(
+            stream_mime(self._info(profile="Main", level=31), copy_both, self.settings),
+            'video/mp4; codecs="avc1.4D001F, mp4a.40.2"')
+        self.assertEqual(
+            stream_mime(self._info(profile="Constrained Baseline", level=30),
+                        copy_both, self.settings),
+            'video/mp4; codecs="avc1.42401E, mp4a.40.2"')
+
+    def test_hevc_copy_mime(self):
+        copy_both = PlaybackPlan("remux", "copy", "copy", "", False)
+        self.assertEqual(
+            stream_mime(self._info(video_codec="hevc", profile="Main", level=120),
+                        copy_both, self.settings),
+            'video/mp4; codecs="hvc1.1.6.L120.B0, mp4a.40.2"')
+        self.assertEqual(
+            stream_mime(self._info(video_codec="hevc", profile="Main 10", level=153),
+                        copy_both, self.settings),
+            'video/mp4; codecs="hvc1.2.4.L153.B0, mp4a.40.2"')
+
+    def test_encoded_audio_is_described_by_the_encoder(self):
+        self.assertEqual(
+            stream_mime(self._info(audio_codec="ac3", audio_profile=""), COPY_PLAN,
+                        self.settings),
+            'video/mp4; codecs="avc1.640028, mp4a.40.2"')
+
+    def test_encoded_video_is_described_by_the_encoder(self):
+        self.assertEqual(stream_mime(self._info(video_codec="mpeg4"), ENCODE_PLAN,
+                                     self.settings),
+                         'video/mp4; codecs="avc1.640028, mp4a.40.2"')
+
+    def test_burned_subtitles_mean_encoded_video(self):
+        self.assertEqual(
+            stream_mime(self._info(), COPY_PLAN, self.settings, burning=True),
+            'video/mp4; codecs="avc1.640028, mp4a.40.2"')
+
+    def test_video_only_source_has_no_audio_string(self):
+        plan = PlaybackPlan("remux", "copy", "copy", "", False)
+        self.assertEqual(stream_mime(self._info(audio_codec=""), plan, self.settings),
+                         'video/mp4; codecs="avc1.640028"')
+
+    def test_unknown_codecs_give_no_mime(self):
+        copy_both = PlaybackPlan("remux", "copy", "copy", "", False)
+        self.assertEqual(stream_mime(self._info(video_codec="vp8"), copy_both,
+                                     self.settings), "")
+        self.assertEqual(stream_mime(self._info(audio_codec="vorbis"), copy_both,
+                                     self.settings), "")
+        odd = TranscodeSettings(video_codec="libsvtav1")
+        self.assertEqual(stream_mime(self._info(), ENCODE_PLAN, odd), "")
+
+    def test_unknown_profile_falls_back_to_a_playable_string(self):
+        copy_both = PlaybackPlan("remux", "copy", "copy", "", False)
+        self.assertEqual(stream_mime(self._info(profile="", level=0), copy_both,
+                                     self.settings),
+                         'video/mp4; codecs="avc1.640028, mp4a.40.2"')
 
 
 if __name__ == "__main__":

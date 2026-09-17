@@ -72,6 +72,7 @@ BROWSER_GLOBALS = {
     "isFinite", "isNaN", "parseFloat", "parseInt", "requestAnimationFrame",
     "cancelAnimationFrame", "setInterval", "setTimeout", "alert",
     "IntersectionObserver", "MutationObserver", "AbortController", "Image",
+    "MediaSource",
     "URLSearchParams", "FormData", "Headers", "Request", "Response", "Blob",
     "FileReader", "TextDecoder", "TextEncoder", "CustomEvent", "Event",
     "document", "window", "navigator", "location", "history", "localStorage",
@@ -140,6 +141,27 @@ class ElementIdTests(unittest.TestCase):
 
     def test_admin_ids_exist(self):
         self._check("admin.js", "admin.html")
+
+
+class PopupItemLabelTests(unittest.TestCase):
+    """Measured: $('span', button) matched the *label* span, so pressing Speed
+    relabelled the row "1.25x" and the word "Speed" was gone until reload.
+    Popup rows all start with a label span, so the value must be addressed by
+    its own class."""
+
+    def test_popup_rows_are_updated_by_hint_class(self):
+        code = strip_js_keep_strings(read("app.js"))
+        buttons = re.findall(r"""\$\(\s*['"]span['"]\s*,\s*el\.(\w+)\)""", code)
+        markup = read("index.html")
+        offenders = []
+        for name in set(buttons):
+            slug = re.sub(r"(?<!^)(?=[A-Z])", "-", name).lower()
+            row = re.search(r'<button id="%s".*?</button>' % re.escape(slug),
+                            markup, re.S)
+            if row and "popup-item-label" in row.group(0):
+                offenders.append(slug)
+        self.assertEqual(offenders, [],
+                         "popup rows must target .popup-item-hint span")
 
 
 def strip_js_keep_strings(source: str) -> str:

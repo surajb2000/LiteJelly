@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -26,6 +27,75 @@ TEXT_SUBTITLE_CODECS = {
 BITMAP_SUBTITLE_CODECS = {
     "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub",
 }
+
+FRAGMENT_MICROSECONDS = 2_000_000
+
+# RFC 6381 codec strings for MediaSource.isTypeSupported. ffprobe profile
+# names map to profile_idc (h264) or general_profile_idc + compatibility
+# flags (hevc).
+_H264_PROFILE_IDC = {
+    "baseline": 0x42, "constrained baseline": 0x42, "main": 0x4D,
+    "extended": 0x58, "high": 0x64, "high 10": 0x6E, "high 4:2:2": 0x7A,
+    "high 4:4:4 predictive": 0xF4,
+}
+_HEVC_PROFILES = {"main": (1, "6"), "main 10": (2, "4"), "main still picture": (3, "C")}
+_AAC_PROFILES = {"lc": "mp4a.40.2", "main": "mp4a.40.1", "he-aac": "mp4a.40.5",
+                 "he-aacv2": "mp4a.40.29"}
+_ENCODER_VIDEO_STRINGS = {"libx264": "avc1.640028", "h264": "avc1.640028",
+                          "libx265": "hvc1.1.6.L120.B0", "hevc": "hvc1.1.6.L120.B0"}
+_ENCODER_AUDIO_STRINGS = {"aac": "mp4a.40.2", "libfdk_aac": "mp4a.40.2", "libopus": "opus",
+                          "opus": "opus", "libmp3lame": "mp4a.6B", "mp3": "mp4a.6B"}
+
+
+def _video_codec_string(codec: str, profile: str, level: int) -> str:
+    codec, profile = codec.lower(), profile.lower().strip()
+    if codec == "h264":
+        idc = _H264_PROFILE_IDC.get(profile, 0x64)
+        constraint = 0x40 if profile.startswith("constrained") else 0x00
+        lvl = level if 9 < level < 256 else 40
+        return f"avc1.{idc:02X}{constraint:02X}{lvl:02X}"
+    if codec == "hevc":
+        idc, compat = _HEVC_PROFILES.get(profile, (1, "6"))
+        return f"hvc1.{idc}.{compat}.L{level if level > 0 else 120}.B0"
+    if codec == "vp9":
+        digit = profile[-1] if profile[-1:].isdigit() else "0"
+        return f"vp09.0{digit}.10.{'10' if digit in '23' else '08'}"
+    if codec == "av1":
+        return "av01.0.08M.08"
+    return ""
+
+
+def _audio_codec_string(codec: str, profile: str) -> str:
+    codec = codec.lower()
+    if codec == "aac":
+        return _AAC_PROFILES.get(profile.lower().strip(), "mp4a.40.2")
+    return {"mp3": "mp4a.6B", "opus": "opus", "flac": "flac",
+            "ac3": "ac-3", "eac3": "ec-3"}.get(codec, "")
+
+
+def stream_mime(info: MediaInfo, plan: PlaybackPlan, settings, burning: bool = False) -> str:
+    """MIME type of the piped stream, or "" when it cannot be stated safely.
+
+    An empty result tells the client to use a plain <video src> rather than
+    MediaSource, so an unknown codec never breaks playback.
+    """
+    if plan.video_action == "copy" and not burning:
+        video = _video_codec_string(info.video_codec, info.profile, info.level)
+    else:
+        video = _ENCODER_VIDEO_STRINGS.get(str(settings.video_codec).lower(), "")
+    if not video:
+        return ""
+    parts = [video]
+    if info.audio_codec:
+        if plan.audio_action == "copy":
+            audio = _audio_codec_string(info.audio_codec, info.audio_profile)
+        else:
+            audio = _ENCODER_AUDIO_STRINGS.get(str(settings.audio_codec).lower(), "")
+        if not audio:
+            return ""
+        parts.append(audio)
+    return f'video/mp4; codecs="{", ".join(parts)}"'
+
 
 # Keep ffmpeg from flashing a console window on Windows.
 _CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -79,6 +149,17 @@ def _scale_filter(width: int, height: int) -> str:
     )
 
 
+def _parse_times(stdout: bytes) -> list[float]:
+    """Seconds from ffprobe ``csv=p=0`` output, skipping N/A and side-data noise."""
+    times = []
+    for line in stdout.decode("utf-8", "replace").splitlines():
+        try:
+            times.append(float(line.strip().rstrip(",")))
+        except ValueError:
+            continue
+    return times
+
+
 def run_quiet(cmd: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
@@ -130,6 +211,9 @@ class MediaInfo:
     height: int = 0
     has_b_frames: int = 0
     fps: float = 0.0
+    profile: str = ""          # ffprobe wording, e.g. "High", "Main 10"
+    level: int = 0             # h264: 40 = 4.0; hevc: 120 = 4.0
+    audio_profile: str = ""    # aac only: "LC", "HE-AAC", "HE-AACv2"
     subtitles: list[SubtitleStream] = field(default_factory=list)
     probed: bool = False
 
@@ -290,6 +374,11 @@ class FFmpegTools:
                 info.width = int(stream.get("width") or 0)
                 info.height = int(stream.get("height") or 0)
                 info.has_b_frames = int(stream.get("has_b_frames") or 0)
+                info.profile = str(stream.get("profile") or "")
+                try:
+                    info.level = int(stream.get("level") or 0)
+                except (TypeError, ValueError):
+                    info.level = 0
                 rate = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "")
                 numerator, _, denominator = rate.partition("/")
                 try:
@@ -299,6 +388,7 @@ class FFmpegTools:
                     info.fps = 0.0
             elif kind == "audio" and not info.audio_codec:
                 info.audio_codec = codec
+                info.audio_profile = str(stream.get("profile") or "")
             elif kind == "subtitle":
                 tags = stream.get("tags") or {}
                 disp = stream.get("disposition") or {}
@@ -363,7 +453,8 @@ class FFmpegTools:
             return None
         return (str(path), stat.st_mtime_ns)
 
-    def seek_landing(self, path: Path, target: float, _window: float = 20.0) -> float:
+    def seek_landing(self, path: Path, target: float, forward: bool = False,
+                     _window: float = 30.0, _tolerance: float = 2.0) -> float:
         """Where a seek to ``target`` will actually start.
 
         ffprobe performs the same seek as ffmpeg, so this matches the stream the
@@ -371,6 +462,12 @@ class FFmpegTools:
         encodes (x265's default) mark CRA frames as keyframes even though they
         are not valid entry points, and passing one as -ss makes ffmpeg rewind
         a whole GOP.
+
+        ``forward`` picks the first valid entry point at or after ``target``
+        instead, so a skip never lands well inside the segment being skipped.
+        A landing just short of the target is kept: on the measured 10 s GOP,
+        skipping to 40.0 would otherwise drop 10 s of content to avoid 0.13 s
+        of intro tail.
         """
         if not self.ffprobe or target <= 0:
             return 0.0
@@ -379,12 +476,29 @@ class FFmpegTools:
             mtime = path.stat().st_mtime_ns
         except OSError:
             mtime = 0
-        cache_key = (str(path), mtime, round(target, 1))
+        cache_key = (str(path), mtime, round(target, 1), forward)
         with self._probe_lock:
             cached = self._keyframe_cache.get(cache_key)
         if cached is not None:
             return cached
 
+        resolved = self._probe_landing(path, target)
+        if forward and resolved < target - _tolerance:
+            for candidate in self._keyframes_after(path, target, _window):
+                # Round up so the -ss string cannot fall a hair before the frame.
+                entry = math.ceil(candidate * 1000) / 1000
+                # A CRA frame seeks back a whole GOP; a real entry point lands on itself.
+                if self._probe_landing(path, entry) >= candidate - 0.05:
+                    resolved = entry
+                    break
+
+        with self._probe_lock:
+            if len(self._keyframe_cache) > 500:
+                self._keyframe_cache.clear()
+            self._keyframe_cache[cache_key] = resolved
+        return resolved
+
+    def _probe_landing(self, path: Path, target: float) -> float:
         cmd = [
             self.ffprobe, "-v", "error",
             "-select_streams", "v:0",
@@ -397,20 +511,29 @@ class FFmpegTools:
         except (subprocess.SubprocessError, OSError) as exc:
             log.debug("Seek probe failed for %s: %s", path.name, exc)
             return target
+        times = _parse_times(result.stdout)
+        return times[0] if times else target
 
-        resolved = target
-        for line in result.stdout.decode("utf-8", "replace").splitlines():
+    def _keyframes_after(self, path: Path, target: float, window: float) -> list[float]:
+        """Keyframe times at or after ``target``, widening once for long GOPs."""
+        for span in (window, window * 3):
+            cmd = [
+                self.ffprobe, "-v", "error",
+                "-skip_frame", "nokey",
+                "-select_streams", "v:0",
+                "-show_entries", "frame=pts_time",
+                "-read_intervals", f"{target:.3f}%+{span:.0f}",
+                "-of", "csv=p=0", str(path),
+            ]
             try:
-                resolved = float(line.strip().rstrip(","))
-                break
-            except ValueError:
-                continue
-
-        with self._probe_lock:
-            if len(self._keyframe_cache) > 500:
-                self._keyframe_cache.clear()
-            self._keyframe_cache[cache_key] = resolved
-        return resolved
+                result = run_quiet(cmd, timeout=30)
+            except (subprocess.SubprocessError, OSError) as exc:
+                log.debug("Keyframe probe failed for %s: %s", path.name, exc)
+                return []
+            times = sorted(t for t in _parse_times(result.stdout) if t >= target - 0.01)
+            if times:
+                return times
+        return []
 
     def output_size(self, info: MediaInfo, plan: PlaybackPlan, settings,
                     quality: QualityLevel | None = None) -> tuple[int, int]:
@@ -432,6 +555,7 @@ class FFmpegTools:
         burn_subtitle_index: int | None = None,
         quality: QualityLevel | None = None,
         audio_delay_ms: float = 0.0,
+        info: MediaInfo | None = None,
     ) -> list[str]:
         """ffmpeg command producing a fragmented MP4 on stdout."""
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -469,6 +593,9 @@ class FFmpegTools:
 
         if plan.video_action == "copy" and not burning:
             cmd += ["-c:v", "copy"]
+            if info is not None and info.video_codec == "hevc":
+                # Browsers refuse the default hev1 sample entry.
+                cmd += ["-tag:v", "hvc1"]
         else:
             cmd += [
                 "-c:v", settings.video_codec,
@@ -503,6 +630,9 @@ class FFmpegTools:
 
         cmd += [
             "-avoid_negative_ts", "make_zero",
+            # Measured: frag_keyframe alone gave one fragment per GOP (10 s on
+            # the reference clip); MSE cannot play a fragment until it is whole.
+            "-frag_duration", str(FRAGMENT_MICROSECONDS),
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-f", "mp4",
             "pipe:1",
