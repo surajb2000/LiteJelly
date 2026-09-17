@@ -57,6 +57,8 @@ class Config:
     scan_interval: int = 60
     thumbnail_workers: int = 2
     allow_hevc_direct: bool = False
+    trickplay: bool = True
+    trickplay_interval: int = 10
     online_metadata: bool = False
     tmdb_api_key: str = ""
     omdb_api_key: str = ""
@@ -112,6 +114,8 @@ class Config:
             "scan_interval": self.scan_interval,
             "thumbnail_workers": self.thumbnail_workers,
             "allow_hevc_direct": self.allow_hevc_direct,
+            "trickplay": self.trickplay,
+            "trickplay_interval": self.trickplay_interval,
             "online_metadata": self.online_metadata,
             "tmdb_api_key": self.tmdb_api_key,
             "omdb_api_key": self.omdb_api_key,
@@ -169,6 +173,8 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
     cfg.scan_interval = max(5, _coerce_int(raw.get("scan_interval"), 60))
     cfg.thumbnail_workers = max(1, _coerce_int(raw.get("thumbnail_workers"), 2))
     cfg.allow_hevc_direct = bool(raw.get("allow_hevc_direct", False))
+    cfg.trickplay = bool(raw.get("trickplay", True))
+    cfg.trickplay_interval = max(2, _coerce_int(raw.get("trickplay_interval"), 10))
     cfg.online_metadata = bool(raw.get("online_metadata", False))
     cfg.tmdb_api_key = str(raw.get("tmdb_api_key") or "").strip()
     cfg.omdb_api_key = str(raw.get("omdb_api_key") or "").strip()

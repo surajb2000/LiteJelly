@@ -156,6 +156,9 @@
     $('thumbnail_workers').value = settings.thumbnail_workers || '';
     $('stream_buffer_mb').value = settings.stream_buffer_mb || '';
     $('allow_hevc_direct').checked = !!settings.allow_hevc_direct;
+    $('trickplay').checked = settings.trickplay !== false;
+    $('trickplay_interval').value = settings.trickplay_interval == null
+      ? '' : settings.trickplay_interval;
     $('online_metadata').checked = !!settings.online_metadata;
     $('tmdb_api_key').value = settings.tmdb_api_key || '';
     $('omdb_api_key').value = settings.omdb_api_key || '';
@@ -213,6 +216,7 @@
       host: $('host').value.trim(),
       media_dirs: readDirs(),
       allow_hevc_direct: $('allow_hevc_direct').checked,
+      trickplay: $('trickplay').checked,
       online_metadata: $('online_metadata').checked,
       tmdb_api_key: $('tmdb_api_key').value.trim(),
       omdb_api_key: $('omdb_api_key').value.trim(),
@@ -233,6 +237,7 @@
       port: 'port',
       scan_interval: 'scan_interval',
       thumbnail_workers: 'thumbnail_workers',
+      trickplay_interval: 'trickplay_interval',
       stream_buffer_mb: 'stream_buffer_mb',
       log_max_mb: 'log_max_mb',
       log_backups: 'log_backups'

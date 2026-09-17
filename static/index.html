@@ -227,7 +227,10 @@
           </div>
           <input id="seek-range" class="seek-range" type="range" min="0" max="1000" value="0" step="1"
                  aria-label="Seek" aria-valuetext="0:00">
-          <div id="scrub-preview" class="scrub-preview hidden"></div>
+          <div id="scrub-preview" class="scrub-preview hidden">
+            <div id="scrub-thumb" class="scrub-thumb hidden" aria-hidden="true"></div>
+            <span id="scrub-time">0:00</span>
+          </div>
         </div>
 
         <div class="osd-controls-row">

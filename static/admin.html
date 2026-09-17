@@ -230,6 +230,30 @@
           </p>
         </div>
       </section>
+
+      <section class="card">
+        <h2>Scrub previews</h2>
+        <div class="field check">
+          <label>
+            <input type="checkbox" id="trickplay" name="trickplay">
+            Show a picture while seeking
+          </label>
+          <p class="hint">
+            One sheet of small frames is built per file the first time it is
+            played, in the background. Measured on a desktop: about seven
+            seconds and 224 KB for a 24 minute episode.
+          </p>
+        </div>
+        <div class="field">
+          <label for="trickplay_interval">Seconds between preview frames</label>
+          <input type="number" id="trickplay_interval" name="trickplay_interval"
+                 min="2" max="120">
+          <p class="hint">
+            Smaller means a finer preview and a larger sheet. Existing sheets
+            are rebuilt on next play after a change.
+          </p>
+        </div>
+      </section>
     </div>
 
     <!-- General -->

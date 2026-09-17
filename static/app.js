@@ -110,6 +110,7 @@
     skip: '/api/skip',
     progress: '/api/progress',
     thumbnail: '/api/thumbnail',
+    trickplay: '/api/trickplay',
     artwork: '/api/artwork',
     image: '/api/image',
     series: '/api/series',
@@ -158,6 +159,8 @@
     audioTracks: [],
     audioTrack: -1,
     trackScope: '',
+    trickplay: null,
+    trickplayTimer: null,
     activeSubtitle: 'off',
     quality: 'auto',
     qualities: [],
@@ -1753,6 +1756,10 @@
 
     // A restart passes an explicit time; only a fresh play picks a default.
     const fresh = typeof startAt !== 'number';
+    if (fresh) {
+      resetTrickplay();
+      loadTrickplay(plan, 0);
+    }
     buildSubtitleMenu(plan, fresh);
 
     const resume = plan.resume && plan.resume.position > 15 ? plan.resume.position : 0;
@@ -2171,6 +2178,7 @@
     state.pendingSeek = target;
     state.pendingForward = !!forward;
     renderProgress(target, duration, true);
+    showSeekPreview(target);
     clearTimeout(state.seekTimer);
     state.seekTimer = setTimeout(() => {
       const value = state.pendingSeek;
@@ -2178,6 +2186,7 @@
       state.pendingSeek = null;
       state.pendingForward = false;
       if (value !== null) {
+        hideScrubPreview();
         el.buffering.classList.remove('hidden');
         loadSource(value, false, ahead);
       }
@@ -2212,6 +2221,8 @@
   function exitPlayer(skipHistory) {
     cancelUpNext();
     cancelSkipRetry();
+    resetTrickplay();
+    hideScrubPreview();
     el.skipSegment.classList.add('hidden');
     state.skipSegment = null;
     saveProgress(true);
@@ -3089,20 +3100,88 @@
     el.seekRange.setAttribute('aria-valuetext', formatTime(current) + ' of ' + formatTime(duration));
   }
 
+  // --- Scrub previews ---------------------------------------------------
+  //
+  // The server builds one sheet holding every preview frame, so the right
+  // cell is shown by moving the background rather than fetching an image per
+  // position. Until it exists the bubble is just the time, as before.
+  const TRICKPLAY_RETRIES = [4000, 12000, 30000];
+
+  function cancelTrickplay() {
+    if (state.trickplayTimer) clearTimeout(state.trickplayTimer);
+    state.trickplayTimer = null;
+  }
+
+  function resetTrickplay() {
+    cancelTrickplay();
+    state.trickplay = null;
+    el.scrubThumb.classList.add('hidden');
+    el.scrubThumb.style.backgroundImage = '';
+  }
+
+  async function loadTrickplay(plan, attempt) {
+    cancelTrickplay();
+    try {
+      const sheet = await getJSON(API.trickplay + '?id=' + encodeURIComponent(plan.id));
+      if (state.playback !== plan) return;
+      if (sheet.status === 'ready') {
+        state.trickplay = sheet;
+        el.scrubThumb.style.width = sheet.tile_width + 'px';
+        el.scrubThumb.style.height = sheet.tile_height + 'px';
+        el.scrubThumb.style.backgroundImage = 'url("' + sheet.url + '")';
+        return;
+      }
+      if (sheet.status !== 'building' || attempt >= TRICKPLAY_RETRIES.length) return;
+    } catch (err) {
+      return;
+    }
+    state.trickplayTimer = setTimeout(() => {
+      if (state.playback === plan) loadTrickplay(plan, attempt + 1);
+    }, TRICKPLAY_RETRIES[attempt]);
+  }
+
+  function paintScrubThumb(seconds) {
+    const sheet = state.trickplay;
+    if (!sheet || !sheet.count) {
+      el.scrubThumb.classList.add('hidden');
+      return;
+    }
+    const index = Math.max(0, Math.min(sheet.count - 1,
+      Math.floor(seconds / sheet.interval)));
+    const column = index % sheet.columns;
+    const row = Math.floor(index / sheet.columns);
+    el.scrubThumb.style.backgroundPosition =
+      (-column * sheet.tile_width) + 'px ' + (-row * sheet.tile_height) + 'px';
+    el.scrubThumb.classList.remove('hidden');
+  }
+
+  function showScrubPreviewAt(seconds, ratio) {
+    const rect = el.progressWrap.getBoundingClientRect();
+    if (!rect.width) return;
+    el.scrubTime.textContent = formatTime(seconds);
+    paintScrubThumb(seconds);
+    el.scrubPreview.classList.remove('hidden');
+    // Measured after the contents are set, and kept inside the bar so the
+    // bubble is not clipped at either end.
+    const half = el.scrubPreview.offsetWidth / 2;
+    const x = Math.max(half, Math.min(rect.width - half, ratio * rect.width));
+    el.scrubPreview.style.left = x.toFixed(1) + 'px';
+  }
+
   function showScrubPreview(clientX) {
     const duration = displayDuration();
     if (!duration) return;
     const rect = el.progressWrap.getBoundingClientRect();
     if (!rect.width) return;
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    showScrubPreviewAt(ratio * duration, ratio);
+  }
 
-    el.scrubPreview.textContent = formatTime(ratio * duration);
-    el.scrubPreview.classList.remove('hidden');
-    // Measured after the text is set, and kept inside the bar so the label
-    // is not clipped at either end.
-    const half = el.scrubPreview.offsetWidth / 2;
-    const x = Math.max(half, Math.min(rect.width - half, ratio * rect.width));
-    el.scrubPreview.style.left = x.toFixed(1) + 'px';
+  // A remote has no pointer, so the preview follows the seek being composed.
+  function showSeekPreview(seconds) {
+    const duration = displayDuration();
+    if (!duration) return;
+    showScrubPreviewAt(seconds, Math.max(0, Math.min(1, seconds / duration)));
   }
 
   function hideScrubPreview() {
@@ -3437,6 +3516,8 @@
     el.osdBadge = $('#osd-badge');
     el.progressWrap = $('#progress-container');
     el.scrubPreview = $('#scrub-preview');
+    el.scrubThumb = $('#scrub-thumb');
+    el.scrubTime = $('#scrub-time');
     el.progressFill = $('#progress-fill');
     el.progressBuffered = $('#progress-buffered');
     el.segmentMarkers = $('#segment-markers');

@@ -38,6 +38,7 @@ from .providers import MetadataProviders, artwork_digest
 from .store import ProgressStore
 from .subtitles import SubtitleService, discover as discover_subtitles, language_from_token
 from .thumbnails import ThumbnailService
+from .trickplay import TrickplayService
 
 log = logging.getLogger("litejelly.web")
 
@@ -296,6 +297,8 @@ class Application:
         self.subtitles = SubtitleService(self.tools, config.cache_dir)
         self.thumbnails = ThumbnailService(self.tools, config.cache_dir,
                                            config.thumbnail_workers)
+        self.trickplay = TrickplayService(self.tools, config.cache_dir,
+                                          config.trickplay, config.trickplay_interval)
         self.static_dir = config.static_dir.resolve()
 
         self.sessions = admin_accounts.SessionStore()
@@ -320,6 +323,8 @@ class Application:
             ("GET", "/api/seekpoint"): Routes.seekpoint,
             ("GET", "/api/skip"): Routes.skip,
             ("GET", "/api/thumbnail"): Routes.thumbnail,
+            ("GET", "/api/trickplay"): Routes.trickplay,
+            ("GET", "/media/trickplay"): Routes.trickplay_sheet,
             ("GET", "/api/artwork"): Routes.artwork,
             ("GET", "/api/image"): Routes.image,
             ("GET", "/api/series"): Routes.series,
@@ -363,6 +368,7 @@ class Application:
                 ffprobe_path=new_config.ffprobe_path,
             )
             old_thumbnails = self.thumbnails
+            old_trickplay = self.trickplay
             old_enricher = self.enricher
             metadata, enricher = _build_metadata(new_config)
             self.config = new_config
@@ -372,10 +378,14 @@ class Application:
             self.subtitles = SubtitleService(tools, new_config.cache_dir)
             self.thumbnails = ThumbnailService(tools, new_config.cache_dir,
                                                new_config.thumbnail_workers)
+            self.trickplay = TrickplayService(tools, new_config.cache_dir,
+                                              new_config.trickplay,
+                                              new_config.trickplay_interval)
             self.static_dir = new_config.static_dir.resolve()
             self.library.metadata = metadata
             self.library.enricher = enricher
             old_thumbnails.close()
+            old_trickplay.close()
             if old_enricher is not None:
                 old_enricher.stop()
             del old_tools
@@ -424,6 +434,7 @@ class Application:
         if self.enricher is not None:
             self.enricher.stop()
         self.thumbnails.close()
+        self.trickplay.close()
         self.progress.close()
         # Terminating the server does not reap ffmpeg on Windows, so a stopped
         # server could leave encoders running against the media files.
@@ -1168,6 +1179,53 @@ class Routes:
             h.send_json({"status": "generating"}, status=HTTPStatus.ACCEPTED)
         else:
             h.send_api_error(HTTPStatus.NOT_FOUND, "No thumbnail available")
+
+    @staticmethod
+    def trickplay(h, query):
+        """Where the scrub previews for a video are, building one if needed."""
+        app = h.app
+        video, path = app.resolve_video(query)
+        if path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+        if not app.trickplay.enabled:
+            h.send_json({"status": "off"})
+            return
+
+        sheet = app.trickplay.cached(path)
+        if sheet is not None:
+            payload = sheet.to_dict()
+            # The key is in the URL, so a rebuilt sheet is a different address
+            # and the old one can be cached hard.
+            payload["url"] = ("/media/trickplay?"
+                              + urllib.parse.urlencode({"id": video.id, "k": sheet.key}))
+            payload["status"] = "ready"
+            h.send_json(payload)
+            return
+
+        duration = app.tools.probe(path).duration
+        queued = app.trickplay.request(path, duration)
+        h.send_json({"status": "building" if queued else "unavailable"},
+                    status=HTTPStatus.ACCEPTED if queued else HTTPStatus.OK)
+
+    @staticmethod
+    def trickplay_sheet(h, query):
+        app = h.app
+        video, path = app.resolve_video(query)
+        if path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+        requested = query.get("k", [""])[0]
+        # Recomputed rather than trusted: the key names a file in the cache.
+        if requested != app.trickplay.key_for(path):
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No preview sheet")
+            return
+        target = app.trickplay.sheet_path(requested)
+        if target is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "No preview sheet")
+            return
+        h.serve_static_file(target, cache_control="public, max-age=604800",
+                            content_type="image/jpeg")
 
     @staticmethod
     def artwork(h, query):

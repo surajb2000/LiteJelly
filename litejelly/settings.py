@@ -207,6 +207,14 @@ def validate(payload: dict) -> tuple[dict, list[str]]:
     if "allow_hevc_direct" in payload:
         clean["allow_hevc_direct"] = bool(payload["allow_hevc_direct"])
 
+    if "trickplay" in payload:
+        clean["trickplay"] = bool(payload["trickplay"])
+
+    if "trickplay_interval" in payload:
+        number = _as_int(payload["trickplay_interval"], 2, 120, "trickplay_interval", errors)
+        if number is not None:
+            clean["trickplay_interval"] = number
+
     if "online_metadata" in payload:
         clean["online_metadata"] = bool(payload["online_metadata"])
 
