@@ -1915,36 +1915,6 @@ html.no-flex-gap .subtitle-layer > * + * { margin-top: 2px; }
               0 0 0 calc(var(--focus-ring) + 5px) var(--accent-glow);
 }
 
-.hero-progress {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.hero-progress > * { margin-right: 14px; }
-
-.hero-progress-track {
-  display: block;
-  width: 320px;
-  max-width: 46vw;
-  height: 8px;
-  border-radius: 99px;
-  background: rgba(255, 255, 255, 0.2);
-  overflow: hidden;
-}
-
-.hero-progress-fill {
-  display: block;
-  height: 100%;
-  width: 0%;
-  background: linear-gradient(to right, var(--accent), var(--accent-secondary));
-}
-
-.hero-remaining {
-  font-size: var(--fs-meta);
-  color: var(--text-secondary);
-}
-
 [data-profile="tv"] .hero {
   min-height: 68vh;
 }

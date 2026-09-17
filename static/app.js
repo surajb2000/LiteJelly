@@ -645,10 +645,18 @@
       return;
     }
 
-    renderHero();
+    const pool = suggestionPool();
+    const featured = renderHero(pool);
     syncTopbar();
 
     const fragment = document.createDocumentFragment();
+    // The hero used to rank eight candidates and throw seven away, which made
+    // its one slot look like the whole idea. They go here instead.
+    const rest = buildRail({
+      label: pool.rewatch ? 'Watch again' : 'Start something new',
+      entries: suggestionEntries(pool, featured)
+    });
+    if (rest) fragment.appendChild(rest);
     RAILS.forEach(rail => {
       const section = buildRail(rail);
       if (section) fragment.appendChild(section);
@@ -668,41 +676,62 @@
   /* The hero suggests something, it does not repeat the Continue watching
    * rail sitting directly beneath it. Resuming already has a row of its own,
    * so the one large slot on the page is better spent on a title you have
-   * not started.
+   * not started - and it carries no progress bar for the same reason.
    *
    * There is no recommendation engine here and inventing one would be
-   * dishonest, so the pick is simply the best-looking unwatched title, with
-   * a rotation that changes by the day rather than on every render. A hero
-   * that reshuffles whenever the library rescans is unusable.
+   * dishonest, so the eyebrow does not claim one. The pool is simply what you
+   * have not begun, ranked by how well it presents, with a rotation that
+   * changes by the day rather than on every render. A hero that reshuffles
+   * whenever the library rescans is unusable.
    */
-  function heroSubject() {
-    const started = {};
-    Object.keys(state.progress).forEach(id => {
-      const entry = state.progress[id];
-      if (entry && (entry.finished || entry.position > 15)) started[id] = true;
+  function suggestionPool() {
+    // Judged per show, not per episode. Counting only the episode meant a
+    // series you were three episodes into could still be offered as something
+    // new, via an episode you had not reached yet.
+    const groups = {};
+    state.videos.forEach(video => {
+      const key = video.series_id || video.id;
+      const group = groups[key] || (groups[key] = { total: 0, started: 0, done: 0 });
+      group.total += 1;
+      const entry = state.progress[video.id];
+      if (!entry) return;
+      if (entry.finished) group.done += 1;
+      if (entry.finished || entry.position > MIN_RESUME) group.started += 1;
     });
 
-    // One candidate per series, so a long show cannot flood the shortlist.
+    // One candidate per show, so a long series cannot flood the list.
     const seen = {};
     const fresh = [];
+    const again = [];
     sortVideos(state.videos).forEach(video => {
-      if (started[video.id]) return;
       const key = video.series_id || video.id;
       if (seen[key]) return;
-      seen[key] = true;
-      fresh.push(video);
+      const group = groups[key];
+      if (!group.started) {
+        seen[key] = true;
+        fresh.push(video);
+      } else if (group.done === group.total) {
+        // Seen to the end, so Continue watching does not carry it either.
+        seen[key] = true;
+        again.push(video);
+      }
     });
 
-    const pool = fresh.length ? fresh : state.videos;
-    if (!pool.length) return null;
-
-    // Something with artwork and a rating makes a far better hero than a
-    // bare filename, so those sort first.
-    const ranked = pool.slice().sort((a, b) => score(b) - score(a));
-    const shortlist = ranked.slice(0, Math.min(8, ranked.length));
-    const day = Math.floor(Date.now() / 86400000);
-    return { video: shortlist[day % shortlist.length], entry: null };
+    // Anything left is part-watched and already sitting in the rail below.
+    const pool = fresh.length ? fresh : again;
+    return {
+      ranked: pool.slice().sort((a, b) => score(b) - score(a)),
+      rewatch: !fresh.length
+    };
   }
+
+  function heroSubject(pool) {
+    const shortlist = pool.ranked.slice(0, Math.min(8, pool.ranked.length));
+    if (!shortlist.length) return null;
+    const day = Math.floor(Date.now() / 86400000);
+    return { video: shortlist[day % shortlist.length], rewatch: pool.rewatch };
+  }
+
 
   function firstEpisodeOf(seriesId) {
     const episodes = state.videos
@@ -721,16 +750,19 @@
     return value;
   }
 
-  function renderHero() {
-    const subject = heroSubject();
+  function renderHero(pool) {
+    const subject = heroSubject(pool);
     if (!subject) {
       el.hero.classList.add('hidden');
-      return;
+      return null;
     }
 
     const video = subject.video;
     el.hero.classList.remove('hidden');
-    el.heroEyebrow.textContent = video.series_id ? 'Suggested show' : 'Suggested film';
+    // Not "Suggested": the pick is ranked by artwork and rotated by the day,
+    // and there is no signal about taste anywhere in it.
+    el.heroEyebrow.textContent = subject.rewatch ? 'Watch it again'
+      : (video.series_id ? 'Show you have not started' : 'Film you have not started');
     el.heroTitle.textContent = video.title || video.name;
 
     const bits = [];
@@ -753,18 +785,6 @@
     el.heroBrowse.classList.toggle('hidden', !video.series_id);
     el.heroBrowse.onclick = () => openSeries(video.series_id);
 
-    // Normally the hero is something unstarted and there is nothing to show.
-    // Once every title has been begun the pool falls back to all of them, and
-    // then it can be a title with progress.
-    const resume = state.progress[target.id];
-    const fraction = resume && resume.duration > 0 && !resume.finished
-      ? resume.position / resume.duration : 0;
-    el.heroProgress.classList.toggle('hidden', fraction <= 0.01);
-    if (fraction > 0.01) {
-      el.heroProgressFill.style.width = Math.min(100, fraction * 100).toFixed(1) + '%';
-      el.heroPlay.textContent = '\u25b6  Resume ' + formatTime(resume.position);
-    }
-
     // The poster is portrait, so it gets its own card rather than being
     // stretched across the backdrop.
     if (video.has_poster) {
@@ -781,6 +801,7 @@
       ? API.artwork + '?id=' + encodeURIComponent(video.id) + '&kind=backdrop'
       : API.thumbnail + '?id=' + encodeURIComponent(video.id);
     setImage(el.heroImage, src);
+    return video;
   }
 
   async function loadHeroPlot(video) {
@@ -797,11 +818,37 @@
     }
   }
 
-  function buildRail(spec) {
-    const list = state.videos.filter(video => video.category === spec.category);
-    if (!list.length) return null;
+  /* The pool holds one episode per show, so a series card built from it alone
+   * would claim the show had a single episode. The counts come from the whole
+   * library instead.
+   */
+  function suggestionEntries(pool, featured) {
+    const series = groupIntoSeries(state.videos);
+    const skip = featured ? (featured.series_id || featured.id) : null;
+    const entries = [];
+    pool.ranked.forEach(video => {
+      const key = video.series_id || video.id;
+      if (key === skip) return;
+      if (!video.series_id) {
+        entries.push(video);
+        return;
+      }
+      const group = series.get(video.series_id);
+      if (!group) return;
+      group.name = group.title;
+      group.modified_ts = group.newestTs;
+      entries.push(group);
+    });
+    return entries;
+  }
 
-    const entries = buildEntries(sortVideos(list)).slice(0, RAIL_LIMIT);
+  function buildRail(spec) {
+    let entries = spec.entries;
+    if (!entries) {
+      const list = state.videos.filter(video => video.category === spec.category);
+      entries = buildEntries(sortVideos(list));
+    }
+    entries = entries.slice(0, RAIL_LIMIT);
     if (!entries.length) return null;
 
     const section = document.createElement('section');
@@ -814,12 +861,15 @@
     heading.textContent = spec.label;
     head.appendChild(heading);
 
-    const more = document.createElement('button');
-    more.type = 'button';
-    more.className = 'rail-more';
-    more.textContent = 'See all';
-    more.addEventListener('click', () => selectCategory(spec.category));
-    head.appendChild(more);
+    // Only a category rail has a full page to send you to.
+    if (spec.category) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'rail-more';
+      more.textContent = 'See all';
+      more.addEventListener('click', () => selectCategory(spec.category));
+      head.appendChild(more);
+    }
     section.appendChild(head);
 
     const row = document.createElement('div');
@@ -3609,9 +3659,6 @@
     el.heroPlot = $('#hero-plot');
     el.heroPlay = $('#hero-play');
     el.heroBrowse = $('#hero-browse');
-    el.heroProgress = $('#hero-progress');
-    el.heroProgressFill = $('#hero-progress-fill');
-    el.heroRemaining = $('#hero-remaining');
     el.sortSelect = $('#sort-select');
     el.player = $('#player');
     el.video = $('#video-player');

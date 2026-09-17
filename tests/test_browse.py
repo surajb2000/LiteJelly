@@ -77,11 +77,54 @@ class MarkupTests(unittest.TestCase):
         produced |= set(re.findall(r"\? '(started)' : ", code))
         self.assertEqual(produced, {"unwatched", "started", "watched"})
 
-    def test_the_hero_progress_bar_is_used(self):
-        # It sat in the markup unused: the hero suggests unstarted titles, so
-        # it only appears once everything has been begun.
+    def test_the_hero_never_shows_progress(self):
+        """The hero is the suggestion slot and Continue watching sits directly
+        beneath it. A progress bar there showed the same title twice, one above
+        the other, which is why the element was removed rather than wired up."""
+        self.assertNotIn("hero-progress", read("index.html"))
+        self.assertNotIn("hero-progress", read("app.js"))
+        self.assertNotIn("hero-progress", read("style.css"))
+
+    def test_the_hero_does_not_claim_to_be_a_recommendation(self):
+        # The pick is ranked by artwork and rotated by the calendar. Nothing
+        # in it knows anything about taste, so it must not say "suggested".
         code = read("app.js")
-        self.assertIn("heroProgressFill.style.width", code)
+        self.assertNotIn("Suggested show", code)
+        self.assertNotIn("Suggested film", code)
+        self.assertIn("have not started", code)
+
+    def test_started_is_judged_per_show_not_per_episode(self):
+        # Counting only the episode let a series you were three episodes into
+        # come back as something new, through an episode you had not reached.
+        code = read("app.js")
+        pool = between(code, "function suggestionPool()", "function heroSubject")
+        self.assertIn("video.series_id || video.id", pool)
+        self.assertIn("if (!group.started) {", pool)
+        # Per-episode progress is read once, while tallying. A second lookup
+        # means the choice itself went back to being per-episode.
+        self.assertEqual(pool.count("state.progress[video.id]"), 1)
+
+    def test_a_part_watched_show_is_never_offered_as_new(self):
+        # It is in Continue watching already; only a finished show comes back.
+        code = read("app.js")
+        pool = between(code, "function suggestionPool()", "function heroSubject")
+        self.assertIn("group.done === group.total", pool)
+
+    def test_the_shortlist_is_a_rail_and_excludes_the_hero(self):
+        # Eight candidates were ranked and seven thrown away, which left one
+        # slot pretending to be the whole idea.
+        code = read("app.js")
+        entries = between(code, "function suggestionEntries", "function buildRail")
+        self.assertIn("if (key === skip) return;", entries)
+        # Counts have to come from the whole library: the pool holds one
+        # episode per show, so a card built from it would claim one episode.
+        self.assertIn("groupIntoSeries(state.videos)", entries)
+        self.assertIn("Start something new", code)
+
+
+def between(text, start, end):
+    head = text.index(start)
+    return text[head:text.index(end, head)]
 
 
 if __name__ == "__main__":
