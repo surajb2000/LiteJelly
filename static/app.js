@@ -306,7 +306,7 @@
     if (!silent) el.loading.classList.remove('hidden');
     try {
       const data = await getJSON(API.library);
-      state.videos = Array.isArray(data.videos) ? data.videos : [];
+      state.videos = indexForSearch(Array.isArray(data.videos) ? data.videos : []);
       state.progress = data.progress || {};
       state.continueWatching = Array.isArray(data.continue_watching)
         ? data.continue_watching : [];
@@ -440,6 +440,87 @@
     syncNav();
   }
 
+  // --- Search ----------------------------------------------------------
+
+  /* Searching used to be a raw substring test against the composed label, so
+   * "pokemon" missed "Pokémon" and "dragon s2e3" missed anything, because the
+   * words had to appear in that order with the punctuation the file happened
+   * to use. Accents are folded, punctuation becomes a gap, and each word is
+   * matched on its own.
+   */
+  const COMBINING_MARKS = /[\u0300-\u036f]/g;
+  // Only punctuation is replaced: a class of "not a-z0-9" would erase
+  // Japanese and Cyrillic titles entirely. Quotes are written as escapes so
+  // the frontend test's comment stripper does not read them as strings.
+  const PUNCTUATION =
+    /[\s\-_.,:;!?()\[\]{}\x27\x22\u2018\u2019\u201c\u201d\/\\|~\x60@#$%^&*+=<>]+/g;
+  const EPISODE_TOKEN = /^s?(\d{1,3})[xe](\d{1,3})$/;
+
+  function normalizeText(value) {
+    let text = String(value == null ? '' : value).toLowerCase();
+    // normalize is Chrome 34+, but a missing one must not break search.
+    if (typeof text.normalize === 'function') {
+      text = text.normalize('NFD').replace(COMBINING_MARKS, '');
+    }
+    return text.replace(PUNCTUATION, ' ').trim();
+  }
+
+  function pad2(value) {
+    const text = String(value);
+    return text.length < 2 ? '0' + text : text;
+  }
+
+  // s2e3, S02E03 and 2x03 all mean the same episode.
+  function canonicalToken(token) {
+    const match = EPISODE_TOKEN.exec(token);
+    return match ? 's' + pad2(match[1]) + 'e' + pad2(match[2]) : token;
+  }
+
+  function indexForSearch(videos) {
+    videos.forEach(video => {
+      const parts = [video.title, video.episode_title, video.name,
+        video.filename, video.folder];
+      if (video.season != null && video.episode != null) {
+        parts.push('s' + pad2(video.season) + 'e' + pad2(video.episode));
+        parts.push(video.season + 'x' + pad2(video.episode));
+      }
+      if (video.year) parts.push(video.year);
+      video.searchText = normalizeText(parts.join(' '));
+      // "S.H.I.E.L.D." becomes "s h i e l d", which the word "shield" cannot
+      // match, so keep a run-together copy as well - the same trick
+      // series_key() uses on the server to group that show.
+      video.searchFlat = video.searchText.split(' ').join('');
+    });
+    return videos;
+  }
+
+  function buildQuery(query) {
+    const text = normalizeText(query);
+    // Single letters match nearly every title, so they only count run
+    // together: "s.h.i.e.l.d" is a word, not six conditions.
+    const tokens = text ? text.split(' ').map(canonicalToken)
+      .filter(token => token.length > 1) : [];
+    return { tokens: tokens, flat: text.split(' ').join('') };
+  }
+
+  function matchesSearch(video, query) {
+    const haystack = video.searchText || '';
+    const flat = video.searchFlat || '';
+    if (query.tokens.length) {
+      let every = true;
+      for (let i = 0; i < query.tokens.length; i++) {
+        const token = query.tokens[i];
+        if (haystack.indexOf(token) === -1 && flat.indexOf(token) === -1) {
+          every = false;
+          break;
+        }
+      }
+      if (every) return true;
+    }
+    // Nothing left to match on when every word was a single letter.
+    return !query.tokens.length && !!query.flat && flat.indexOf(query.flat) !== -1;
+  }
+
   function applyFilters() {
     let list = state.videos;
 
@@ -474,11 +555,10 @@
     }
 
     if (state.query) {
-      const needle = state.query;
-      list = list.filter(video =>
-        (video.name || '').toLowerCase().indexOf(needle) !== -1 ||
-        (video.filename || '').toLowerCase().indexOf(needle) !== -1 ||
-        (video.folder || '').toLowerCase().indexOf(needle) !== -1);
+      const query = buildQuery(state.query);
+      if (query.tokens.length || query.flat) {
+        list = list.filter(video => matchesSearch(video, query));
+      }
     }
 
     state.filtered = sortVideos(list);
@@ -1326,6 +1406,28 @@
     });
     el.continueRow.replaceChildren(fragment);
     el.continueSection.classList.remove('hidden');
+  }
+
+  /* Rails hide their scrollbar, so a wheel has to move them.
+   *
+   * Measured: with the bar visible it ate 10px of every rail, and a wheel
+   * over a rail scrolled the page anyway - dragging the bar was the only way
+   * a mouse could reach the rest of the row. The page still scrolls once the
+   * rail has nothing left to give, so a row never traps the wheel.
+   */
+  function onRailWheel(event) {
+    const rail = event.target.closest && event.target.closest('.rail');
+    if (!rail) return;
+    const limit = rail.scrollWidth - rail.clientWidth;
+    if (limit <= 0) return;
+
+    // Lines rather than pixels on some mice; 16px is roughly one line.
+    const step = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+    if (!step || Math.abs(step) <= Math.abs(event.deltaX)) return;
+    if ((step < 0 && rail.scrollLeft <= 0) || (step > 0 && rail.scrollLeft >= limit)) return;
+
+    rail.scrollLeft = Math.max(0, Math.min(limit, rail.scrollLeft + step));
+    event.preventDefault();
   }
 
   function measureColumns() {
@@ -3410,7 +3512,7 @@
     });
 
     el.searchInput.addEventListener('input', debounce(event => {
-      state.query = event.target.value.toLowerCase().trim();
+      state.query = event.target.value.trim();
       // A search spans the whole library, not the series being browsed.
       if (state.query && state.seriesId) closeSeries();
       applyFilters();
@@ -3699,6 +3801,8 @@
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('fullscreenchange', syncFullscreenIcons);
     document.addEventListener('webkitfullscreenchange', syncFullscreenIcons);
+    // Not passive: the wheel has to be taken over while the rail can move.
+    document.addEventListener('wheel', onRailWheel, { passive: false });
 
     window.addEventListener('popstate', () => {
       if (state.view === 'PLAYER') exitPlayer(true);

@@ -1260,7 +1260,15 @@ select:focus:not(:focus-visible) {
   overflow-y: hidden;
   padding: 6px 4px 14px;
   scroll-snap-type: x proximity;
-  scrollbar-width: thin;
+  /* A bar under every row is noise on a TV, and it ate 10px of each rail.
+     Mouse users scroll it with the wheel instead (see onRailWheel). */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .rail-card {

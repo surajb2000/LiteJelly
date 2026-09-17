@@ -187,6 +187,24 @@ class PopupItemLabelTests(unittest.TestCase):
                          "popup rows must target .popup-item-hint span")
 
 
+class RailScrollTests(unittest.TestCase):
+    """A hidden scrollbar has to come with another way to scroll.
+
+    Measured: the native bar ate 10px of every rail, and a wheel over a rail
+    scrolled the page instead, so dragging that bar was the only way a mouse
+    could reach the rest of a row.
+    """
+
+    def test_rails_hide_the_bar_and_take_the_wheel(self):
+        rail = re.search(r"\.rail\s*\{[^}]*\}", read("style.css"))
+        self.assertIsNotNone(rail, "the .rail rule went missing")
+        self.assertIn("scrollbar-width: none", rail.group(0))
+        code = strip_js_keep_strings(read("app.js"))
+        self.assertIn("onRailWheel", code)
+        # preventDefault is ignored on a passive listener.
+        self.assertIn("passive: false", code)
+
+
 class ClassReuseTests(unittest.TestCase):
     """A class belongs to one widget.
 
