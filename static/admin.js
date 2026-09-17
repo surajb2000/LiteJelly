@@ -12,6 +12,7 @@
   var state = {
     contentTypes: ['mixed'],
     presets: [],
+    hwaccels: ['none'],
     restartFields: [],
     localIp: '',
     port: 0
@@ -104,12 +105,24 @@
       });
   }
 
+  // Capitalising the raw value gives "Qsv" and "Mediafoundation".
+  var LABELS = {
+    none: 'Software (libx264)',
+    auto: 'Auto (measure and pick)',
+    nvenc: 'NVIDIA NVENC',
+    qsv: 'Intel Quick Sync',
+    amf: 'AMD AMF',
+    mediafoundation: 'Windows Media Foundation',
+    videotoolbox: 'Apple VideoToolbox',
+    mediacodec: 'Android MediaCodec'
+  };
+
   function fillSelect(select, values, selected) {
     clear(select);
     for (var i = 0; i < values.length; i++) {
       var option = document.createElement('option');
       option.value = values[i];
-      option.appendChild(document.createTextNode(
+      option.appendChild(document.createTextNode(LABELS[values[i]] ||
         values[i].charAt(0).toUpperCase() + values[i].slice(1)));
       if (values[i] === selected) { option.selected = true; }
       select.appendChild(option);
@@ -173,6 +186,7 @@
 
     var tc = settings.transcode || {};
     fillSelect($('tc_preset'), state.presets, tc.preset);
+    fillSelect($('tc_hwaccel'), state.hwaccels, tc.hwaccel || 'none');
     $('tc_crf').value = tc.crf == null ? '' : tc.crf;
     $('tc_max_concurrent').value = tc.max_concurrent == null ? '' : tc.max_concurrent;
     $('tc_max_video_bitrate').value = tc.max_video_bitrate || '';
@@ -227,6 +241,7 @@
       log_to_console: $('log_to_console').checked,
       transcode: {
         preset: $('tc_preset').value,
+        hwaccel: $('tc_hwaccel').value,
         resolution: $('tc_resolution').value.trim(),
         max_video_bitrate: $('tc_max_video_bitrate').value.trim(),
         audio_bitrate: $('tc_audio_bitrate').value.trim()
@@ -329,6 +344,27 @@
   }
 
   // -- backup --------------------------------------------------------------
+
+  function testEncoder() {
+    var node = $('encoder-status');
+    var choice = $('tc_hwaccel').value;
+    node.className = 'save-status';
+    text(node, 'Encoding ten seconds\u2026');
+    $('encoder-test').disabled = true;
+    request('POST', '/api/admin/encoder/test', { hwaccel: choice })
+      .then(function (result) {
+        $('encoder-test').disabled = false;
+        var data = result.data || {};
+        if (!result.ok || !data.ok) {
+          node.className = 'save-status error';
+          text(node, (data.detail || 'Failed') +
+               (data.encoder ? ' (' + data.encoder + ')' : ''));
+          return;
+        }
+        node.className = 'save-status ' + (data.speed >= 1.5 ? 'ok' : 'error');
+        text(node, data.encoder + ': ' + data.speed + '\u00d7 real time');
+      });
+  }
 
   function backupStatus(message, kind) {
     var node = $('backup-status');
@@ -675,6 +711,7 @@
       }
       state.contentTypes = result.data.content_types || ['mixed'];
       state.presets = result.data.presets || [];
+      state.hwaccels = result.data.hwaccels || ['none'];
       state.restartFields = result.data.restart_required_fields || [];
       state.localIp = result.data.local_ip || '';
       $('denied').hidden = true;
@@ -742,6 +779,7 @@
     $('tmdb_api_key').addEventListener('input', syncProviderStatus);
     $('omdb_api_key').addEventListener('input', syncProviderStatus);
     $('meta-forget').addEventListener('click', forgetShow);
+    $('encoder-test').addEventListener('click', testEncoder);
     $('meta-clear').addEventListener('click', clearMetadata);
     $('settings-export').addEventListener('click', exportSettings);
     $('settings-import').addEventListener('click', function () {

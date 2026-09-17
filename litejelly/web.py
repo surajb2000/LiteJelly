@@ -28,7 +28,8 @@ from . import settings as user_settings
 from .chapters import read_chapters, skippable
 from .config import load_config
 from .enrich import Enricher
-from .ffmpeg import QUALITY_LADDER, FFmpegTools, popen_quiet, resolve_quality, stream_mime
+from .ffmpeg import (HWACCEL_CHOICES, QUALITY_LADDER, FFmpegTools, popen_quiet,
+                     resolve_quality, stream_mime)
 from .library import (
     Library, build_continue_watching, episode_order, next_episode,
     previous_episode,
@@ -338,6 +339,7 @@ class Application:
             ("POST", "/api/admin/settings/import"): Routes.admin_settings_import,
             ("POST", "/api/admin/metadata/clear"): Routes.admin_metadata_clear,
             ("POST", "/api/admin/metadata/forget"): Routes.admin_metadata_forget,
+            ("POST", "/api/admin/encoder/test"): Routes.admin_encoder_test,
             ("GET", "/api/admin/session"): Routes.admin_session,
             ("POST", "/api/admin/setup"): Routes.admin_setup,
             ("POST", "/api/admin/login"): Routes.admin_login,
@@ -685,6 +687,7 @@ class Routes:
             "overrides": user_settings.load_overrides(config.app_dir),
             "content_types": list(user_settings.CONTENT_TYPES),
             "presets": list(user_settings.PRESETS),
+            "hwaccels": list(HWACCEL_CHOICES),
             "restart_required_fields": list(user_settings.RESTART_REQUIRED),
             "settings_file": str(user_settings.settings_path(config.app_dir)),
             "library": h.app.library.status,
@@ -899,6 +902,22 @@ class Routes:
             "warnings": warnings,
             "restart_required": needs_restart,
         })
+
+    @staticmethod
+    def admin_encoder_test(h, query):
+        """Try an encoder for real, because being listed proves nothing."""
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        choice = str(body.get("hwaccel") or "none").lower()
+        if choice not in HWACCEL_CHOICES:
+            h.send_api_error(HTTPStatus.BAD_REQUEST, "Unknown encoder option")
+            return
+        result = h.app.tools.test_encoder(choice if choice != "auto" else "none")
+        result["hwaccel"] = choice
+        h.send_json(result)
 
     @staticmethod
     def admin_metadata_clear(h, query):

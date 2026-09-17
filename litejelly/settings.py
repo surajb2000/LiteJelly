@@ -14,6 +14,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from .ffmpeg import HWACCEL_CHOICES
 from .logs import VERBOSITY
 
 log = logging.getLogger("litejelly.settings")
@@ -29,7 +30,6 @@ PRESETS = (
     "ultrafast", "superfast", "veryfast", "faster", "fast",
     "medium", "slow", "slower", "veryslow",
 )
-
 
 def settings_path(app_dir: Path) -> Path:
     return app_dir / SETTINGS_FILE
@@ -148,6 +148,14 @@ def _clean_transcode(value, errors: list[str]):
         number = _as_int(value["crf"], 0, 51, "transcode.crf", errors)
         if number is not None:
             out["crf"] = number
+
+    if "hwaccel" in value:
+        choice = str(value["hwaccel"] or "none").strip().lower()
+        if choice not in HWACCEL_CHOICES:
+            errors.append("transcode.hwaccel must be one of: "
+                          + ", ".join(HWACCEL_CHOICES))
+        else:
+            out["hwaccel"] = choice
 
     if "max_concurrent" in value:
         number = _as_int(value["max_concurrent"], 1, 16, "transcode.max_concurrent", errors)

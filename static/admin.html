@@ -232,6 +232,28 @@
       </section>
 
       <section class="card">
+        <h2>Encoder</h2>
+        <div class="field">
+          <label for="tc_hwaccel">Use hardware for encoding</label>
+          <select id="tc_hwaccel" name="hwaccel"></select>
+          <p class="hint">
+            Hardware is not automatically faster: on one laptop the software
+            encoder beat Quick Sync, 7.2x against 5.4x. Test before trusting
+            it. Auto measures once in the background and keeps the quickest.
+          </p>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn" id="encoder-test">Test this encoder</button>
+          <span id="encoder-status" class="save-status" role="status"></span>
+        </div>
+        <p class="hint">
+          The test encodes ten seconds of test pattern and reports how many
+          times faster than real time it managed. Anything under about 1.5x
+          will struggle to keep up with playback.
+        </p>
+      </section>
+
+      <section class="card">
         <h2>Scrub previews</h2>
         <div class="field check">
           <label>

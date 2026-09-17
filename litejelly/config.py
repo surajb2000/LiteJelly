@@ -38,6 +38,10 @@ class TranscodeSettings:
     audio_bitrate: str = "160k"
     resolution: str = "1280x720"
     max_concurrent: int = 2
+    # Off by default: the encoder list is a claim, not a promise. Several are
+    # advertised on machines that cannot run them, so this is opted into with
+    # the test button beside it.
+    hwaccel: str = "none"
 
     @property
     def size(self) -> tuple[int, int]:

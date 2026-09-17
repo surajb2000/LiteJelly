@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,6 +31,24 @@ BITMAP_SUBTITLE_CODECS = {
 
 FRAGMENT_MICROSECONDS = 2_000_000
 KEYFRAME_CACHE_LIMIT = 500
+
+# Hardware encoders, each with the rate control it actually understands: none
+# of them take -crf, and they disagree about everything else. "auto" is
+# resolved by trying them, because a build advertising an encoder says nothing
+# about whether the machine can run it - measured on a laptop whose ffmpeg
+# lists NVENC, AMF, VAAPI, D3D12 and Vulkan, of which none work.
+HWACCELS = {
+    "nvenc": ("h264_nvenc", ["-preset", "p4", "-rc", "vbr", "-cq", "{crf}"]),
+    "qsv": ("h264_qsv", ["-global_quality", "{crf}"]),
+    "amf": ("h264_amf", ["-rc", "cqp", "-qp_i", "{crf}", "-qp_p", "{crf}"]),
+    "mediafoundation": ("h264_mf", ["-rate_control", "quality", "-quality", "{mfq}"]),
+    "videotoolbox": ("h264_videotoolbox", ["-q:v", "{crf}"]),
+    "mediacodec": ("h264_mediacodec", ["-b:v", "{bitrate}"]),
+}
+# Tried in this order for "auto"; the software encoder always ends the list.
+HWACCEL_ORDER = ("nvenc", "qsv", "amf", "videotoolbox", "mediacodec",
+                 "mediafoundation")
+HWACCEL_CHOICES = ("none", "auto") + tuple(HWACCELS)
 
 # RFC 6381 codec strings for MediaSource.isTypeSupported. ffprobe profile
 # names map to profile_idc (h264) or general_profile_idc + compatibility
@@ -175,6 +194,44 @@ def run_quiet(cmd: list[str], timeout: float | None = None) -> subprocess.Comple
     )
 
 
+class _TestSettings:
+    """Stand-in settings for the encoder self-test."""
+    video_codec = "libx264"
+    preset = "veryfast"
+    crf = 23
+    max_video_bitrate = "3000k"
+
+
+_TEST_SETTINGS = _TestSettings()
+
+
+def _encoder_for(hwaccel: str, settings) -> tuple[str, list[str]]:
+    """(encoder, rate-control arguments) for a hardware choice."""
+    name = (hwaccel or "none").lower()
+    if name in ("none", ""):
+        return settings.video_codec, ["-preset", settings.preset,
+                                      "-crf", str(settings.crf)]
+    entry = HWACCELS.get(name)
+    if entry is None:
+        return "", []
+    crf = int(getattr(settings, "crf", 23))
+    values = {
+        "crf": str(crf),
+        # MediaFoundation wants 0-100 where higher is better, the opposite of
+        # a CRF, so the scale is turned around rather than passed through.
+        "mfq": str(max(1, min(100, int(round((51 - crf) / 51 * 100))))),
+        "bitrate": str(getattr(settings, "max_video_bitrate", "3000k")),
+    }
+    encoder, template = entry
+    return encoder, [part.format(**values) for part in template]
+
+
+def _last_error(stderr: bytes) -> str:
+    lines = [line.strip() for line in
+             stderr.decode("utf-8", "replace").splitlines() if line.strip()]
+    return lines[-1][:200] if lines else "Failed for no stated reason"
+
+
 def popen_quiet(cmd: list[str], stdout=subprocess.PIPE) -> subprocess.Popen:
     # stdin must not be inherited: ffmpeg puts the controlling terminal into
     # no-echo mode to read its interactive keys, and killing the server before
@@ -318,6 +375,9 @@ class FFmpegTools:
         self._probe_cache: dict[tuple, MediaInfo] = {}
         self._probe_lock = threading.Lock()
         self._keyframe_cache: dict[tuple, float] = {}
+        self._encoders: set[str] | None = None
+        self._auto_choice: str | None = None
+        self._auto_thread: threading.Thread | None = None
 
     @property
     def available(self) -> bool:
@@ -339,6 +399,117 @@ class FFmpegTools:
         except (subprocess.SubprocessError, OSError, IndexError):
             version = "unknown version"
         return f"{version}  ({binary})"
+
+    # -- encoders ---------------------------------------------------------
+    def listed_encoders(self) -> set[str]:
+        """What the build advertises. Says nothing about what runs here."""
+        with self._probe_lock:
+            if self._encoders is not None:
+                return self._encoders
+        found: set[str] = set()
+        if self.ffmpeg:
+            try:
+                result = run_quiet([self.ffmpeg, "-hide_banner", "-encoders"], timeout=20)
+                for line in result.stdout.decode("utf-8", "replace").splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0][:1] == "V":
+                        found.add(parts[1])
+            except (subprocess.SubprocessError, OSError) as exc:
+                log.debug("Could not list encoders: %s", exc)
+        with self._probe_lock:
+            self._encoders = found
+        return found
+
+    def test_encoder(self, hwaccel: str, seconds: int = 10) -> dict:
+        """Encode some test pattern and report what happened.
+
+        The only honest answer to "can this machine use NVENC" is to try it.
+        Ten seconds rather than two: starting a hardware encoder costs enough
+        that a short test makes it look slower than it is - measured at 0.49x
+        over two seconds and 5.39x over twenty on the same machine.
+        """
+        if not self.available:
+            return {"ok": False, "encoder": "", "detail": "ffmpeg was not found"}
+        encoder, rate_args = _encoder_for(hwaccel, _TEST_SETTINGS)
+        if not encoder:
+            return {"ok": False, "encoder": "", "detail": f"Unknown option '{hwaccel}'"}
+        if encoder not in self.listed_encoders():
+            return {"ok": False, "encoder": encoder,
+                    "detail": "This ffmpeg build has no such encoder"}
+
+        cmd = [
+            self.ffmpeg, "-hide_banner", "-nostdin", "-y",
+            "-f", "lavfi", "-i", f"testsrc2=size=1280x720:rate=30:duration={seconds}",
+            "-c:v", encoder, *rate_args,
+        ]
+        if hwaccel in ("none", ""):
+            cmd += ["-pix_fmt", "yuv420p"]
+        cmd += ["-f", "mp4", os.devnull]
+
+        started = time.monotonic()
+        try:
+            result = run_quiet(cmd, timeout=90)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "encoder": encoder, "detail": "Timed out"}
+        except (subprocess.SubprocessError, OSError) as exc:
+            return {"ok": False, "encoder": encoder, "detail": str(exc)}
+
+        elapsed = max(0.001, time.monotonic() - started)
+        if result.returncode != 0:
+            return {"ok": False, "encoder": encoder,
+                    "detail": _last_error(result.stderr)}
+        return {
+            "ok": True,
+            "encoder": encoder,
+            # Against real time, which is what decides whether playback keeps up.
+            "speed": round(seconds / elapsed, 2),
+            "detail": "",
+        }
+
+    def video_encoder(self, settings) -> tuple[str, list[str]]:
+        """The encoder to use and its rate-control arguments."""
+        choice = str(getattr(settings, "hwaccel", "none") or "none").lower()
+        if choice == "auto":
+            choice = self._auto_hwaccel()
+        encoder, args = _encoder_for(choice, settings)
+        if not encoder or (choice != "none" and encoder not in self.listed_encoders()):
+            return settings.video_codec, ["-preset", settings.preset,
+                                          "-crf", str(settings.crf)]
+        return encoder, args
+
+    def _auto_hwaccel(self) -> str:
+        """The fastest encoder that really runs, measured once in the background.
+
+        Hardware is not automatically quicker: on one laptop libx264 at
+        veryfast beat Quick Sync, 7.2x against 5.4x. Until the answer is in,
+        software is used, because stalling the first play by ten seconds to
+        find out would be a worse trade than a few minutes of software
+        encoding.
+        """
+        with self._probe_lock:
+            if self._auto_choice is not None:
+                return self._auto_choice
+            if self._auto_thread is None:
+                self._auto_thread = threading.Thread(
+                    target=self._resolve_auto, name="encoder-probe", daemon=True)
+                self._auto_thread.start()
+        return "none"
+
+    def _resolve_auto(self) -> None:
+        listed = self.listed_encoders()
+        best, best_speed = "none", 0.0
+        software = self.test_encoder("none", seconds=5)
+        if software.get("ok"):
+            best_speed = software["speed"]
+        for name in HWACCEL_ORDER:
+            if HWACCELS[name][0] not in listed:
+                continue
+            result = self.test_encoder(name, seconds=5)
+            if result.get("ok") and result["speed"] > best_speed:
+                best, best_speed = name, result["speed"]
+        log.info("Hardware encoding: %s (%.1fx real time)", best, best_speed)
+        with self._probe_lock:
+            self._auto_choice = best
 
     def probe(self, path: Path) -> MediaInfo:
         """Probe a file, memoising on (path, mtime, size)."""
@@ -653,12 +824,10 @@ class FFmpegTools:
                 # Browsers refuse the default hev1 sample entry.
                 cmd += ["-tag:v", "hvc1"]
         else:
-            cmd += [
-                "-c:v", settings.video_codec,
-                "-preset", settings.preset,
-                "-crf", str(settings.crf),
-                "-pix_fmt", "yuv420p",
-            ]
+            encoder, rate_args = self.video_encoder(settings)
+            cmd += ["-c:v", encoder] + rate_args
+            if encoder == settings.video_codec:
+                cmd += ["-pix_fmt", "yuv420p"]
             if not keep_source:
                 cmd += ["-maxrate", max_rate, "-bufsize", _double_bitrate(max_rate)]
             if not burning and not keep_source:
