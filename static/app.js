@@ -155,6 +155,9 @@
     aspect: 'contain',
     wakeLock: null,
     subtitleTracks: [],
+    audioTracks: [],
+    audioTrack: -1,
+    trackScope: '',
     activeSubtitle: 'off',
     quality: 'auto',
     qualities: [],
@@ -1353,6 +1356,18 @@
     return isFinite(el.video.duration) ? el.video.duration : 0;
   }
 
+  // Every request that rebuilds a plan has to carry the same choices, or
+  // switching one of them silently resets the others.
+  function playbackQuery(videoId, extra) {
+    let query = API.playback + '?id=' + encodeURIComponent(videoId) +
+      '&quality=' + encodeURIComponent((extra && extra.quality) || state.quality) +
+      '&adelay=' + encodeURIComponent(extra && 'adelay' in extra ? extra.adelay : state.audioOffset);
+    const audio = extra && 'audio' in extra ? extra.audio : state.audioTrack;
+    if (audio >= 0) query += '&audio=' + encodeURIComponent(audio);
+    if (extra && extra.sub) query += '&sub=' + encodeURIComponent(extra.sub);
+    return query;
+  }
+
   async function openVideo(videoId) {
     const video = state.videos.find(item => item.id === videoId);
     if (!video) return;
@@ -1365,9 +1380,7 @@
     showOSD(true);
 
     try {
-      const plan = await getJSON(API.playback + '?id=' + encodeURIComponent(videoId) +
-        '&quality=' + encodeURIComponent(state.quality) +
-        '&adelay=' + encodeURIComponent(state.audioOffset));
+      const plan = await getJSON(playbackQuery(videoId, { audio: -1 }));
       startPlayback(plan);
     } catch (err) {
       el.buffering.classList.add('hidden');
@@ -1624,6 +1637,8 @@
     startSubtitleTicker();
     state.qualities = Array.isArray(plan.qualities) ? plan.qualities : [];
     if (plan.quality) state.quality = plan.quality;
+    const current = state.videos.find(item => item.id === plan.id);
+    state.trackScope = (current && (current.series_id || current.id)) || plan.id;
 
     el.osdTitle.textContent = plan.title || '';
     const detail = describeQuality(plan);
@@ -1631,12 +1646,14 @@
     el.osdBadge.title = describePipeline(plan);
     updateQualityLabel();
     renderQualityMenu();
+    syncAudioButton(plan);
     syncEpisodeButtons(plan);
     renderSegmentMarkers(plan);
     scheduleSkipRetry(plan, 0);
 
     // A restart passes an explicit time; only a fresh play picks a default.
-    buildSubtitleMenu(plan, typeof startAt !== 'number');
+    const fresh = typeof startAt !== 'number';
+    buildSubtitleMenu(plan, fresh);
 
     const resume = plan.resume && plan.resume.position > 15 ? plan.resume.position : 0;
     const startTime = typeof startAt === 'number' ? startAt : resume;
@@ -1649,6 +1666,7 @@
     updateMediaSession(plan);
     updateOSD();
     showOSD();
+    if (fresh) autoSelectAudio(plan);
   }
 
   // Where a restarted pipe will really begin. Send the requested time as-is:
@@ -2260,17 +2278,83 @@
     el.subtitleLayer.replaceChildren(fragment);
   }
 
-  // Remembers a language, or 'off' if subtitles were explicitly turned off.
-  function preferredSubtitle(tracks) {
-    let saved = 'en';
-    try {
-      const stored = localStorage.getItem('litejelly_subtitle');
-      if (stored) saved = stored;
-    } catch (err) { /* storage unavailable */ }
-    if (saved === 'off') return 'off';
+  /* Track choices belong to a show, not to the whole library.
+   *
+   * They used to be one global setting, so turning subtitles off for a film
+   * left them off everywhere, silently. They are now remembered per series,
+   * which is where carrying them forward is actually wanted - the dub on
+   * episode 1 is the dub on episode 2 - and both menus say so and offer a
+   * reset. A language is stored rather than a track number because the same
+   * dub is rarely the same stream in every file.
+   */
+  const TRACK_PREF_KEY = 'litejelly_tracks';
+  const TRACK_PREF_LIMIT = 60;
+  const DEFAULT_SUBTITLE_LANGUAGE = 'en';
 
+  function readTrackPrefs() {
+    try {
+      const raw = localStorage.getItem(TRACK_PREF_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function trackPref() {
+    return (state.trackScope && readTrackPrefs()[state.trackScope]) || null;
+  }
+
+  function writeTrackPref(patch) {
+    if (!state.trackScope) return;
+    const all = readTrackPrefs();
+    const keys = Object.keys(all);
+    // Oldest first: a library browsed for years should not grow without end.
+    if (keys.length >= TRACK_PREF_LIMIT && !all[state.trackScope]) {
+      delete all[keys[0]];
+    }
+    all[state.trackScope] = Object.assign({}, all[state.trackScope], patch);
+    store(TRACK_PREF_KEY, JSON.stringify(all));
+  }
+
+  function forgetTrackPref() {
+    const all = readTrackPrefs();
+    delete all[state.trackScope];
+    store(TRACK_PREF_KEY, JSON.stringify(all));
+  }
+
+  function trackScopeLabel() {
+    const video = state.videos.find(item => item.id === (state.playback && state.playback.id));
+    return (video && (video.title || video.name)) || 'this title';
+  }
+
+  // A note naming what is remembered, and a way to drop it.
+  function appendPrefNote(menu, remembered) {
+    if (!remembered) return;
+    const note = document.createElement('div');
+    note.className = 'popup-note';
+
+    const line = document.createElement('div');
+    line.textContent = 'Kept for ' + trackScopeLabel() + '.';
+    note.appendChild(line);
+
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'popup-reset';
+    reset.setAttribute('role', 'menuitem');
+    reset.dataset.role = 'reset';
+    reset.textContent = 'Use the file\u2019s own tracks';
+    note.appendChild(reset);
+    menu.appendChild(note);
+  }
+
+  function preferredSubtitle(tracks) {
     const usable = tracks.filter(track => !track.burn_in_only);
     if (!usable.length) return 'off';
+
+    const pref = trackPref();
+    const saved = (pref && pref.subtitle) || DEFAULT_SUBTITLE_LANGUAGE;
+    if (saved === 'off') return 'off';
 
     const sameLanguage = usable.filter(track =>
       (track.language || '').toLowerCase() === saved.toLowerCase());
@@ -2350,6 +2434,9 @@
         : (track.kind === 'external' ? 'File' : 'Embedded');
       makeItem(track.id, track.label, detail);
     });
+
+    const pref = trackPref();
+    appendPrefNote(menu, pref && pref.subtitle);
   }
 
   /* The button reports the chosen track, not the word "Subtitles".
@@ -2379,7 +2466,7 @@
       : value;
   }
 
-  async function selectSubtitle(trackId) {
+  async function selectSubtitle(trackId, silent) {
     const plan = state.playback;
     if (!plan) return;
 
@@ -2391,8 +2478,7 @@
       showToast('Re-encoding with ' + track.label + '...', 3000);
       closeSubtitleMenu();
       try {
-        const next = await getJSON(API.playback + '?id=' + encodeURIComponent(plan.id) +
-          '&sub=' + encodeURIComponent(trackId));
+        const next = await getJSON(playbackQuery(plan.id, { sub: trackId }));
         startPlayback(next, at);
         state.activeSubtitle = trackId;
         renderSubtitleMenu();
@@ -2403,14 +2489,16 @@
     }
 
     state.activeSubtitle = trackId;
-    try {
-      localStorage.setItem('litejelly_subtitle',
-        trackId === 'off' ? 'off' : ((track && track.language) || 'on'));
-    } catch (err) { /* storage unavailable */ }
+    if (!silent) {
+      writeTrackPref({ subtitle: trackId === 'off' ? 'off' : ((track && track.language) || 'on') });
+    }
     applyActiveSubtitle();
     renderSubtitleMenu();
     closeSubtitleMenu();
-    showToast(trackId === 'off' ? 'Subtitles off' : 'Subtitles: ' + (track ? track.label : ''), 1800);
+    if (!silent) {
+      showToast(trackId === 'off' ? 'Subtitles off'
+        : 'Subtitles: ' + (track ? track.label : ''), 1800);
+    }
   }
   /* Put a popup directly above the control that opened it.
    *
@@ -2451,6 +2539,130 @@
   function closeSubtitleMenu() {
     el.subtitleMenu.classList.add('hidden');
     el.btnSubtitles.setAttribute('aria-expanded', 'false');
+  }
+
+  // --- Audio tracks ----------------------------------------------------
+
+  // A dual-audio show should keep the language across episodes, so the choice
+  // is remembered by language rather than by track number: the dub is not
+  // always the same stream in every file. The tracks are only known once the
+  // plan arrives, so a mismatch costs one extra request.
+  function autoSelectAudio(plan) {
+    if (!plan.audio_tracks || plan.audio_tracks.length < 2) return;
+    const pref = trackPref();
+    const saved = pref && pref.audio;
+    if (!saved) return;
+    const active = plan.audio_tracks.find(t => t.index === plan.audio);
+    if (active && (active.language || '').toLowerCase() === saved.toLowerCase()) return;
+    const match = plan.audio_tracks.find(
+      t => (t.language || '').toLowerCase() === saved.toLowerCase());
+    if (match) selectAudio(match.index, true);
+  }
+
+  function syncAudioButton(plan) {
+    state.audioTracks = (plan && plan.audio_tracks) || [];
+    state.audioTrack = plan && typeof plan.audio === 'number' ? plan.audio : -1;
+    // One track is not a choice; the button would only be in the way.
+    el.btnAudio.classList.toggle('hidden', state.audioTracks.length < 2);
+    updateAudioLabel();
+  }
+
+  function updateAudioLabel() {
+    const active = state.audioTracks.find(t => t.index === state.audioTrack);
+    const full = active ? active.label : 'Default';
+    el.audioLabel.textContent = trimLabel(active ? (active.language || active.label) : 'Audio', 8);
+    el.btnAudio.title = 'Audio: ' + full;
+  }
+
+  function renderAudioMenu() {
+    const menu = el.audioMenu;
+    menu.replaceChildren();
+
+    const heading = document.createElement('div');
+    heading.className = 'popup-heading';
+    heading.textContent = 'Audio';
+    menu.appendChild(heading);
+
+    state.audioTracks.forEach(track => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'popup-item';
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', String(state.audioTrack === track.index));
+      item.dataset.audioIndex = String(track.index);
+
+      const text = document.createElement('span');
+      text.className = 'popup-item-label';
+      text.textContent = track.label;
+      item.appendChild(text);
+
+      const hint = document.createElement('span');
+      hint.className = 'popup-item-hint';
+      hint.textContent = track.codec + (track.default ? ' \u00b7 Default' : '');
+      item.appendChild(hint);
+      menu.appendChild(item);
+    });
+
+    const pref = trackPref();
+    appendPrefNote(menu, pref && pref.audio);
+  }
+
+  async function selectAudio(index, silent) {
+    const plan = state.playback;
+    closeAudioMenu();
+    if (!plan || index === state.audioTrack) return;
+
+    const track = state.audioTracks.find(t => t.index === index);
+    const at = displayTime();
+    const previousSubtitle = state.activeSubtitle;
+    state.audioTrack = index;
+    if (!silent && track && track.language) writeTrackPref({ audio: track.language });
+    el.buffering.classList.remove('hidden');
+
+    try {
+      const next = await getJSON(playbackQuery(plan.id, { audio: index }));
+      startPlayback(next, at);
+      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle, true);
+      if (!silent) showToast('Audio: ' + (track ? track.label : 'default'), 2500);
+    } catch (err) {
+      el.buffering.classList.add('hidden');
+      showToast('Could not switch audio: ' + err.message, 4000);
+    }
+  }
+
+  function toggleAudioMenu() {
+    if (state.audioTracks.length < 2) return;
+    if (el.audioMenu.classList.contains('hidden')) {
+      closeMenus();
+      renderAudioMenu();
+      el.audioMenu.classList.remove('hidden');
+      anchorMenu(el.audioMenu, el.btnAudio);
+      el.btnAudio.setAttribute('aria-expanded', 'true');
+      const first = $('.popup-item', el.audioMenu);
+      if (first) first.focus();
+      showOSD(true);
+    } else {
+      closeAudioMenu();
+    }
+  }
+
+  function closeAudioMenu() {
+    el.audioMenu.classList.add('hidden');
+    el.btnAudio.setAttribute('aria-expanded', 'false');
+  }
+
+  function resetAudioPref() {
+    forgetTrackPref();
+    const fallback = state.audioTracks.find(t => t.default) || state.audioTracks[0];
+    showToast('Using the file\u2019s own tracks', 2000);
+    if (fallback && fallback.index !== state.audioTrack) selectAudio(fallback.index, true);
+    else { renderAudioMenu(); closeAudioMenu(); }
+  }
+
+  function resetSubtitlePref() {
+    forgetTrackPref();
+    showToast('Using the file\u2019s own tracks', 2000);
+    selectSubtitle(preferredSubtitle(state.subtitleTracks), true);
   }
 
   // --- Quality ---------------------------------------------------------
@@ -2529,11 +2741,9 @@
     el.buffering.classList.remove('hidden');
 
     try {
-      const next = await getJSON(API.playback + '?id=' + encodeURIComponent(plan.id) +
-        '&quality=' + encodeURIComponent(qualityId) +
-        '&adelay=' + encodeURIComponent(state.audioOffset));
+      const next = await getJSON(playbackQuery(plan.id, { quality: qualityId }));
       startPlayback(next, at);
-      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle);
+      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle, true);
       showToast('Quality: ' + (describeQuality(next) || qualityId), 2500);
     } catch (err) {
       el.buffering.classList.add('hidden');
@@ -2563,6 +2773,7 @@
 
   function menusOpen() {
     return !el.subtitleMenu.classList.contains('hidden') ||
+      !el.audioMenu.classList.contains('hidden') ||
       !el.qualityMenu.classList.contains('hidden') ||
       !el.optionsMenu.classList.contains('hidden') ||
       !el.timingMenu.classList.contains('hidden');
@@ -2570,6 +2781,7 @@
 
   function closeMenus() {
     closeSubtitleMenu();
+    closeAudioMenu();
     closeQualityMenu();
     closeTimingMenu();
     closeOptionsMenu();
@@ -2677,12 +2889,10 @@
     el.buffering.classList.remove('hidden');
 
     try {
-      const next = await getJSON(API.playback + '?id=' + encodeURIComponent(plan.id) +
-        '&quality=' + encodeURIComponent(state.quality) +
-        '&adelay=' + encodeURIComponent(value));
+      const next = await getJSON(playbackQuery(plan.id, { adelay: value }));
       state.appliedAudioOffset = value;
       startPlayback(next, at);
-      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle);
+      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle, true);
       showToast('Audio ' + formatDelay(value), 2000);
     } catch (err) {
       el.buffering.classList.add('hidden');
@@ -3047,6 +3257,7 @@
       case 'f': toggleFullscreen(); break;
       case 'm': applyVolume(el.video.muted || el.video.volume === 0 ? 1 : 0); break;
       case 'c': toggleSubtitleMenu(); break;
+      case 'b': toggleAudioMenu(); break;
       case 'q': toggleQualityMenu(); break;
       case 'a': toggleTimingMenu(); break;
       case 'n': playSibling('next_id'); break;
@@ -3134,6 +3345,9 @@
     el.totalTime = $('#total-time');
     el.btnSubtitles = $('#btn-subtitles');
     el.subtitleMenu = $('#subtitle-menu');
+    el.btnAudio = $('#btn-audio');
+    el.audioLabel = $('#audio-label');
+    el.audioMenu = $('#audio-menu');
     el.subtitleLabel = $('#subtitle-label');
     el.btnQuality = $('#btn-quality');
     el.qualityMenu = $('#quality-menu');
@@ -3254,8 +3468,21 @@
       toggleOptionsMenu();
     });
     el.subtitleMenu.addEventListener('click', event => {
-      const item = event.target.closest('.popup-item');
-      if (item) selectSubtitle(item.dataset.trackId);
+      const item = event.target.closest('.popup-item, .popup-reset');
+      if (!item) return;
+      if (item.dataset.role === 'reset') resetSubtitlePref();
+      else selectSubtitle(item.dataset.trackId);
+    });
+
+    el.btnAudio.addEventListener('click', event => {
+      event.stopPropagation();
+      toggleAudioMenu();
+    });
+    el.audioMenu.addEventListener('click', event => {
+      const item = event.target.closest('.popup-item, .popup-reset');
+      if (!item) return;
+      if (item.dataset.role === 'reset') resetAudioPref();
+      else selectAudio(parseInt(item.dataset.audioIndex, 10));
     });
 
     el.btnQuality.addEventListener('click', event => {
@@ -3419,6 +3646,7 @@
       if (!menusOpen()) return;
       const insideMenu = event.target.closest('.popup-menu');
       const onToggle = el.btnSubtitles.contains(event.target) ||
+        el.btnAudio.contains(event.target) ||
         el.btnQuality.contains(event.target);
       if (!insideMenu && !onToggle) closeMenus();
     });

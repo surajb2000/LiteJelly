@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from litejelly.library import parse_title, human_size, display_name
 from litejelly.ffmpeg import fit_within, resolve_quality, QUALITY_BY_ID
 from litejelly.paths import resolve_within, safe_resolve
-from litejelly.subtitles import srt_to_vtt, shift_vtt, _language_from_token
+from litejelly.subtitles import srt_to_vtt, shift_vtt, language_from_token
 from litejelly.web import parse_range
 
 
@@ -117,10 +117,10 @@ class SubtitleTests(unittest.TestCase):
         self.assertIn("42", vtt)
 
     def test_language_tokens(self):
-        self.assertEqual(_language_from_token("eng"), ("en", "English"))
-        self.assertEqual(_language_from_token("English"), ("en", "English"))
-        self.assertEqual(_language_from_token("pt-BR")[1], "Portuguese")
-        self.assertEqual(_language_from_token("zzz"), ("", ""))
+        self.assertEqual(language_from_token("eng"), ("en", "English"))
+        self.assertEqual(language_from_token("English"), ("en", "English"))
+        self.assertEqual(language_from_token("pt-BR")[1], "Portuguese")
+        self.assertEqual(language_from_token("zzz"), ("", ""))
 
 
 class SubtitleShiftTests(unittest.TestCase):

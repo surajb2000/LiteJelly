@@ -79,7 +79,7 @@ class SubtitleTrack:
         return asdict(self)
 
 
-def _language_from_token(token: str) -> tuple[str, str]:
+def language_from_token(token: str) -> tuple[str, str]:
     """Map a filename token or ffprobe tag to (srclang, display name)."""
     key = token.strip().lower().replace("_", "-")
     base = key.split("-")[0]
@@ -139,7 +139,7 @@ def _describe_sidecar(video_path: Path, sub_path: Path, position: int) -> Subtit
     sdh = any(t.lower() in {"sdh", "cc", "hi"} for t in tokens)
     srclang, language_name = "", ""
     for token in tokens:
-        srclang, language_name = _language_from_token(token)
+        srclang, language_name = language_from_token(token)
         if language_name:
             break
 
@@ -166,7 +166,7 @@ def discover(video_path: Path, info: MediaInfo) -> list[SubtitleTrack]:
         tracks.append(_describe_sidecar(video_path, sub_path, position))
 
     for stream in info.subtitles:
-        srclang, language_name = _language_from_token(stream.language)
+        srclang, language_name = language_from_token(stream.language)
         label = stream.title or language_name or f"Track {stream.index + 1}"
         if stream.forced and "forced" not in label.lower():
             label += " (Forced)"

@@ -73,7 +73,8 @@ def _audio_codec_string(codec: str, profile: str) -> str:
             "ac3": "ac-3", "eac3": "ec-3"}.get(codec, "")
 
 
-def stream_mime(info: MediaInfo, plan: PlaybackPlan, settings, burning: bool = False) -> str:
+def stream_mime(info: MediaInfo, plan: PlaybackPlan, settings, burning: bool = False,
+                audio_index: int | None = None) -> str:
     """MIME type of the piped stream, or "" when it cannot be stated safely.
 
     An empty result tells the client to use a plain <video src> rather than
@@ -85,10 +86,13 @@ def stream_mime(info: MediaInfo, plan: PlaybackPlan, settings, burning: bool = F
         video = _ENCODER_VIDEO_STRINGS.get(str(settings.video_codec).lower(), "")
     if not video:
         return ""
+    track = info.audio(audio_index)
+    source_codec = track.codec if track is not None else info.audio_codec
+    source_profile = track.profile if track is not None else info.audio_profile
     parts = [video]
-    if info.audio_codec:
+    if source_codec:
         if plan.audio_action == "copy":
-            audio = _audio_codec_string(info.audio_codec, info.audio_profile)
+            audio = _audio_codec_string(source_codec, source_profile)
         else:
             audio = _ENCODER_AUDIO_STRINGS.get(str(settings.audio_codec).lower(), "")
         if not audio:
@@ -184,6 +188,17 @@ def popen_quiet(cmd: list[str], stdout=subprocess.PIPE) -> subprocess.Popen:
 
 
 @dataclass
+class AudioStream:
+    index: int          # index within audio streams only (usable as 0:a:N)
+    codec: str
+    profile: str = ""
+    language: str = ""
+    title: str = ""
+    channels: int = 0
+    default: bool = False
+
+
+@dataclass
 class SubtitleStream:
     index: int          # index within subtitle streams only (usable as 0:s:N)
     codec: str
@@ -214,8 +229,20 @@ class MediaInfo:
     profile: str = ""          # ffprobe wording, e.g. "High", "Main 10"
     level: int = 0             # h264: 40 = 4.0; hevc: 120 = 4.0
     audio_profile: str = ""    # aac only: "LC", "HE-AAC", "HE-AACv2"
+    audios: list[AudioStream] = field(default_factory=list)
     subtitles: list[SubtitleStream] = field(default_factory=list)
     probed: bool = False
+
+    def audio(self, index: int | None = None) -> AudioStream | None:
+        """The requested track, or the one ffmpeg would pick on its own."""
+        if index is not None:
+            for track in self.audios:
+                if track.index == index:
+                    return track
+        for track in self.audios:
+            if track.default:
+                return track
+        return self.audios[0] if self.audios else None
 
     @property
     def reorder_delay(self) -> float:
@@ -364,6 +391,7 @@ class FFmpegTools:
         info.container = path.suffix.lstrip(".").lower() or (names[0] if names else "")
 
         sub_index = 0
+        audio_index = 0
         for stream in payload.get("streams") or []:
             kind = stream.get("codec_type")
             codec = str(stream.get("codec_name") or "").lower()
@@ -386,9 +414,19 @@ class FFmpegTools:
                         info.fps = float(numerator) / float(denominator)
                 except ValueError:
                     info.fps = 0.0
-            elif kind == "audio" and not info.audio_codec:
-                info.audio_codec = codec
-                info.audio_profile = str(stream.get("profile") or "")
+            elif kind == "audio":
+                tags = stream.get("tags") or {}
+                disp = stream.get("disposition") or {}
+                info.audios.append(AudioStream(
+                    index=audio_index,
+                    codec=codec,
+                    profile=str(stream.get("profile") or ""),
+                    language=str(tags.get("language") or "").lower(),
+                    title=str(tags.get("title") or ""),
+                    channels=int(stream.get("channels") or 0),
+                    default=bool(disp.get("default")),
+                ))
+                audio_index += 1
             elif kind == "subtitle":
                 tags = stream.get("tags") or {}
                 disp = stream.get("disposition") or {}
@@ -401,12 +439,18 @@ class FFmpegTools:
                     default=bool(disp.get("default")),
                 ))
                 sub_index += 1
+
+        chosen = info.audio()
+        if chosen is not None:
+            info.audio_codec = chosen.codec
+            info.audio_profile = chosen.profile
         return info
 
     def plan_playback(self, info: MediaInfo, allow_hevc_direct: bool = False,
-                      quality: QualityLevel | None = None) -> PlaybackPlan:
+                      quality: QualityLevel | None = None,
+                      audio_index: int | None = None) -> PlaybackPlan:
         """Pick the cheapest playback path the browser will accept."""
-        plan = self._natural_plan(info, allow_hevc_direct)
+        plan = self._natural_plan(info, allow_hevc_direct, audio_index)
 
         # Picking a numbered rung always re-encodes, even at the source size:
         # it is the escape hatch when a stream copy misbehaves on a client.
@@ -418,7 +462,8 @@ class FFmpegTools:
             return PlaybackPlan("transcode", "encode", "encode", reason, False)
         return plan
 
-    def _natural_plan(self, info: MediaInfo, allow_hevc_direct: bool) -> PlaybackPlan:
+    def _natural_plan(self, info: MediaInfo, allow_hevc_direct: bool,
+                      audio_index: int | None = None) -> PlaybackPlan:
         if not self.available:
             return PlaybackPlan("direct", "copy", "copy", "ffmpeg unavailable", True)
 
@@ -430,15 +475,20 @@ class FFmpegTools:
         video_ok = info.video_codec in DIRECT_VIDEO_CODECS
         if not video_ok and info.video_codec == "hevc" and allow_hevc_direct:
             video_ok = True
-        audio_ok = info.audio_codec in DIRECT_AUDIO_CODECS or not info.audio_codec
+        track = info.audio(audio_index)
+        audio_codec = track.codec if track is not None else info.audio_codec
+        audio_ok = audio_codec in DIRECT_AUDIO_CODECS or not audio_codec
         container_ok = info.container in DIRECT_CONTAINERS
+        # A file plays directly only as ffmpeg would mux it; any other track
+        # has to be selected, which means going through the pipe.
+        default_track = audio_index is None or (track is not None and track is info.audio())
 
-        if container_ok and video_ok and audio_ok:
+        if container_ok and video_ok and audio_ok and default_track:
             return PlaybackPlan("direct", "copy", "copy", "Direct play", True)
 
         if video_ok:
             audio_action = "copy" if audio_ok else "encode"
-            detail = "Remuxed" if audio_ok else f"Remuxed, {info.audio_codec or 'audio'} to aac"
+            detail = "Remuxed" if audio_ok else f"Remuxed, {audio_codec or 'audio'} to aac"
             return PlaybackPlan("remux", "copy", audio_action, detail, False)
 
         return PlaybackPlan(
@@ -556,6 +606,7 @@ class FFmpegTools:
         quality: QualityLevel | None = None,
         audio_delay_ms: float = 0.0,
         info: MediaInfo | None = None,
+        audio_index: int | None = None,
     ) -> list[str]:
         """ffmpeg command producing a fragmented MP4 on stdout."""
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -579,6 +630,7 @@ class FFmpegTools:
 
         burning = burn_subtitle_index is not None
         scale = _scale_filter(width, height)
+        audio_map = f"0:a:{audio_index or 0}?"
 
         if burning:
             # Composite bitmap subtitles at native size, then scale the result;
@@ -587,9 +639,9 @@ class FFmpegTools:
                 graph = f"[0:v][0:s:{burn_subtitle_index}]overlay[v]"
             else:
                 graph = f"[0:v][0:s:{burn_subtitle_index}]overlay[ov];[ov]{scale}[v]"
-            cmd += ["-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?"]
+            cmd += ["-filter_complex", graph, "-map", "[v]", "-map", audio_map]
         else:
-            cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
+            cmd += ["-map", "0:v:0", "-map", audio_map]
 
         if plan.video_action == "copy" and not burning:
             cmd += ["-c:v", "copy"]

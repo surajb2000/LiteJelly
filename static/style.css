@@ -1470,7 +1470,7 @@ select:focus:not(:focus-visible) {
 
 .speed-btn,
 .aspect-btn,
-.transport-btn,
+.stream-btn,
 .quality-btn {
   width: auto;
   padding: 0 14px;
@@ -1587,6 +1587,23 @@ select:focus:not(:focus-visible) {
   font-size: 0.75rem;
   line-height: 1.5;
   color: var(--text-muted);
+}
+
+.popup-reset {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.popup-reset:hover {
+  color: #fff;
 }
 
 /* Subtitle rendering: cues are drawn into our own layer so they can sit above

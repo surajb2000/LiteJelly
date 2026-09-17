@@ -143,6 +143,29 @@ class ElementIdTests(unittest.TestCase):
         self._check("admin.js", "admin.html")
 
 
+class TrackPreferenceTests(unittest.TestCase):
+    """Audio and subtitle choices are scoped to one show.
+
+    They were a single global setting, so turning subtitles off for a film
+    left them off for the whole library with nothing on screen saying so.
+    """
+
+    def test_choices_are_stored_per_series(self):
+        code = strip_js_keep_strings(read("app.js"))
+        self.assertIn("TRACK_PREF_KEY", code)
+        self.assertIn("series_id", code)
+        for gone in ("'litejelly_subtitle'", "'litejelly_audio_lang'"):
+            self.assertNotIn(gone, code,
+                             "track choices must not be stored globally again")
+
+    def test_both_menus_offer_a_reset(self):
+        code = strip_js_keep_strings(read("app.js"))
+        self.assertIn("resetSubtitlePref", code)
+        self.assertIn("resetAudioPref", code)
+        self.assertEqual(code.count("appendPrefNote(menu, pref"), 2,
+                         "each track menu has to say what is remembered")
+
+
 class PopupItemLabelTests(unittest.TestCase):
     """Measured: $('span', button) matched the *label* span, so pressing Speed
     relabelled the row "1.25x" and the word "Speed" was gone until reload.
@@ -162,6 +185,31 @@ class PopupItemLabelTests(unittest.TestCase):
                 offenders.append(slug)
         self.assertEqual(offenders, [],
                          "popup rows must target .popup-item-hint span")
+
+
+class ClassReuseTests(unittest.TestCase):
+    """A class belongs to one widget.
+
+    Measured: a new Options row was given the existing .transport-btn class,
+    which styles the round rewind/play buttons, so the row rendered as a 64px
+    circle inside a list of full-width rows.
+    """
+
+    SHARED = {"hidden", "adjusted", "unavailable", "active"}
+
+    def _classes_by_element(self, html):
+        for match in re.finditer(r'class="([^"]+)"', html):
+            yield set(match.group(1).split())
+
+    def test_popup_rows_do_not_borrow_another_widgets_class(self):
+        html = read("index.html")
+        popup, other = set(), set()
+        for classes in self._classes_by_element(html):
+            (popup if "popup-item" in classes else other).update(classes)
+        popup -= {"popup-item"} | self.SHARED
+        clash = sorted(popup & other)
+        self.assertEqual(clash, [],
+                         "these classes style a different control as well")
 
 
 def strip_js_keep_strings(source: str) -> str:

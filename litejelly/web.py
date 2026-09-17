@@ -35,7 +35,7 @@ from .library import (
 from .paths import is_within
 from .providers import MetadataProviders, artwork_digest
 from .store import ProgressStore
-from .subtitles import SubtitleService, discover as discover_subtitles
+from .subtitles import SubtitleService, discover as discover_subtitles, language_from_token
 from .thumbnails import ThumbnailService
 
 log = logging.getLogger("litejelly.web")
@@ -129,6 +129,41 @@ def _audio_delay_ms(info, plan, query) -> float:
     except (TypeError, ValueError):
         delay = 0.0
     return max(-5000.0, min(5000.0, delay))
+
+
+def _audio_index(info, query) -> int | None:
+    """The requested audio track, or None to let ffmpeg pick the default."""
+    raw = query.get("audio", [""])[0]
+    try:
+        index = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return index if any(t.index == index for t in info.audios) else None
+
+
+_CHANNEL_NAMES = {1: "Mono", 2: "Stereo", 6: "5.1", 8: "7.1"}
+
+
+def _audio_tracks(info) -> list[dict]:
+    tracks = []
+    for stream in info.audios:
+        _, language = language_from_token(stream.language)
+        parts = [stream.title or language or f"Track {stream.index + 1}"]
+        if language and stream.title and language.lower() not in stream.title.lower():
+            parts.append(language)
+        detail = _CHANNEL_NAMES.get(stream.channels, f"{stream.channels}ch"
+                                    if stream.channels else "")
+        if detail:
+            parts.append(detail)
+        tracks.append({
+            "index": stream.index,
+            "label": " \u00b7 ".join(parts),
+            "language": language,
+            "codec": stream.codec,
+            "channels": stream.channels,
+            "default": stream.default,
+        })
+    return tracks
 
 
 def _drive_roots() -> list[dict]:
@@ -772,7 +807,8 @@ class Routes:
         app = h.app
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality)
+        audio_index = _audio_index(info, query)
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality, audio_index)
         tracks = discover_subtitles(path, info)
 
         requested_sub = query.get("sub", [""])[0]
@@ -783,6 +819,8 @@ class Routes:
         params = {"id": video.id}
         if quality.id != "auto":
             params["quality"] = quality.id
+        if audio_index is not None:
+            params["audio"] = audio_index
         manual_offset = query.get("adelay", ["0"])[0]
         try:
             if float(manual_offset):
@@ -816,7 +854,10 @@ class Routes:
             "output_width": out_width,
             "output_height": out_height,
             "video_codec": info.video_codec,
-            "audio_codec": info.audio_codec,
+            "audio_codec": (chosen.codec if (chosen := info.audio(audio_index))
+                            else info.audio_codec),
+            "audio_tracks": _audio_tracks(info),
+            "audio": chosen.index if chosen else -1,
             "video_action": plan.video_action,
             "audio_action": plan.audio_action,
             "audio_delay_ms": round(_audio_delay_ms(info, plan, query), 1),
@@ -834,7 +875,8 @@ class Routes:
             # A re-encode can start anywhere; a stream copy snaps to a keyframe.
             "exact_seek": plan.video_action == "encode",
             # Empty when the codec string is not known; the client then avoids MSE.
-            "mime": stream_mime(info, plan, app.config.transcode, burn_track is not None),
+            "mime": stream_mime(info, plan, app.config.transcode,
+                                burn_track is not None, audio_index),
             "url": url,
             "subtitles": [t.to_dict() for t in tracks],
             "resume": app.progress.get(video.id) or {},
@@ -878,9 +920,9 @@ class Routes:
 
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality)
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality,
+                                       _audio_index(info, query))
         forward = query.get("dir", [""])[0] == "forward"
-
         # Re-encoding can start anywhere; a stream copy snaps to a keyframe.
         start = target
         if plan.video_action == "copy" and target > 0:
@@ -919,7 +961,8 @@ class Routes:
 
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality)
+        audio_index = _audio_index(info, query)
+        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality, audio_index)
 
         burn_index = None
         requested_sub = query.get("sub", [""])[0]
@@ -933,6 +976,7 @@ class Routes:
             path, plan, app.config.transcode, start=start,
             burn_subtitle_index=burn_index, quality=quality,
             audio_delay_ms=_audio_delay_ms(info, plan, query), info=info,
+            audio_index=audio_index,
         )
         h.pump_process(cmd, label=f"{video.name} @ {start:.0f}s ({plan.mode}/{quality.id})")
 
