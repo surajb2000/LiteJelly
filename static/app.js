@@ -146,6 +146,8 @@
     ffmpegAvailable: false,
     playback: null,
     offset: 0,
+    restartAt: null,        // where an in-flight restart is aiming
+    restartToken: 0,
     scrubbing: false,
     seekTimer: null,
     pendingSeek: null,
@@ -1560,8 +1562,46 @@
   // --- Playback --------------------------------------------------------
   function displayTime() {
     if (!state.playback) return 0;
+    // Restarting tears the element down and rebuilds state.offset, so for a
+    // moment both read 0 (measured at 130ms here, longer on a slow box).
+    // Reporting 0 made a second press restart the film from the beginning.
+    if (state.restartAt !== null) return state.restartAt;
     const current = el.video.currentTime || 0;
     return state.playback.native_seek ? current : state.offset + current;
+  }
+
+  /* Rebuilds the plan with one setting changed and resumes where we were.
+   *
+   * Every caller used to read the clock, await, then call startPlayback. Two
+   * of those overlapping raced twice over: the clock reads 0 mid-restart, and
+   * the slower response could land last and win. The token makes the newest
+   * press the only one that can finish.
+   */
+  async function restartStream(extra, keepSubtitle) {
+    const plan = state.playback;
+    if (!plan) return null;
+
+    const at = displayTime();
+    const previousSubtitle = state.activeSubtitle;
+    state.restartAt = at;
+    const token = ++state.restartToken;
+    el.buffering.classList.remove('hidden');
+
+    try {
+      const next = await getJSON(playbackQuery(plan.id, extra));
+      if (token !== state.restartToken) return null;
+      startPlayback(next, at);
+      if (keepSubtitle !== false && previousSubtitle !== 'off') {
+        selectSubtitle(previousSubtitle, true);
+      }
+      return next;
+    } catch (err) {
+      if (token === state.restartToken) {
+        state.restartAt = null;
+        el.buffering.classList.add('hidden');
+      }
+      throw err;
+    }
   }
 
   function displayDuration() {
@@ -1842,6 +1882,8 @@
     state.playback = plan;
     state.pendingSeek = null;
     state.offset = 0;
+    // A fresh play has no target to hold; a restart keeps the one it asked for.
+    state.restartAt = typeof startAt === 'number' ? startAt : null;
     state.activeSubtitle = 'off';
     state.lastCueKey = null;
     // Every request that builds a plan sends the current delay, so whatever
@@ -2281,6 +2323,8 @@
     if (!plan) return;
     const duration = displayDuration();
     const target = Math.max(0, duration ? Math.min(seconds, duration - 1) : seconds);
+    // The clock now belongs to this seek, not to whatever restart was pending.
+    state.restartAt = null;
 
     if (plan.native_seek) {
       el.video.currentTime = target;
@@ -2354,6 +2398,7 @@
 
     state.playback = null;
     state.offset = 0;
+    state.restartAt = null;
     state.view = 'LIBRARY';
     el.player.classList.add('hidden');
     el.player.classList.remove('idle');
@@ -2698,12 +2743,11 @@
 
     if (track && track.burn_in_only) {
       // Bitmap subtitles have to be composited by ffmpeg, so restart the stream.
-      const at = displayTime();
       showToast('Re-encoding with ' + track.label + '...', 3000);
       closeSubtitleMenu();
       try {
-        const next = await getJSON(playbackQuery(plan.id, { sub: trackId }));
-        startPlayback(next, at);
+        const next = await restartStream({ sub: trackId }, false);
+        if (!next) return;
         state.activeSubtitle = trackId;
         renderSubtitleMenu();
       } catch (err) {
@@ -2837,19 +2881,14 @@
     if (!plan || index === state.audioTrack) return;
 
     const track = state.audioTracks.find(t => t.index === index);
-    const at = displayTime();
-    const previousSubtitle = state.activeSubtitle;
     state.audioTrack = index;
     if (!silent && track && track.language) writeTrackPref({ audio: track.language });
-    el.buffering.classList.remove('hidden');
 
     try {
-      const next = await getJSON(playbackQuery(plan.id, { audio: index }));
-      startPlayback(next, at);
-      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle, true);
+      const next = await restartStream({ audio: index });
+      if (!next) return;
       if (!silent) showToast('Audio: ' + (track ? track.label : 'default'), 2500);
     } catch (err) {
-      el.buffering.classList.add('hidden');
       showToast('Could not switch audio: ' + err.message, 4000);
     }
   }
@@ -2955,22 +2994,19 @@
       return;
     }
 
-    const at = displayTime();
-    const previousSubtitle = state.activeSubtitle;
+    const previousQuality = state.quality;
     state.quality = qualityId;
     try {
       localStorage.setItem('litejelly_quality', qualityId);
     } catch (err) { /* storage unavailable */ }
     closeQualityMenu();
-    el.buffering.classList.remove('hidden');
 
     try {
-      const next = await getJSON(playbackQuery(plan.id, { quality: qualityId }));
-      startPlayback(next, at);
-      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle, true);
+      const next = await restartStream({ quality: qualityId });
+      if (!next) return;
       showToast('Quality: ' + (describeQuality(next) || qualityId), 2500);
     } catch (err) {
-      el.buffering.classList.add('hidden');
+      state.quality = previousQuality;
       showToast('Could not switch quality: ' + err.message, 4000);
     }
   }
@@ -3128,19 +3164,13 @@
     store('litejelly_audio_level', next.id);
     updateLevelLabel();
 
-    const plan = state.playback;
-    if (!plan) return;
-    const at = displayTime();
-    const previousSubtitle = state.activeSubtitle;
-    el.buffering.classList.remove('hidden');
+    if (!state.playback) return;
     try {
-      const updated = await getJSON(playbackQuery(plan.id, { level: next.id }));
-      startPlayback(updated, at);
-      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle, true);
+      const updated = await restartStream({ level: next.id });
+      if (!updated) return;
       showToast(next.id === 'off' ? 'Dialogue levelling off'
         : 'Dialogue: ' + next.label, 2200);
     } catch (err) {
-      el.buffering.classList.add('hidden');
       showToast('Could not change levelling: ' + err.message, 4000);
     }
   }
@@ -3150,18 +3180,12 @@
     const value = state.audioOffset;
     if (!plan || value === state.appliedAudioOffset) return;
 
-    const at = displayTime();
-    const previousSubtitle = state.activeSubtitle;
-    el.buffering.classList.remove('hidden');
-
     try {
-      const next = await getJSON(playbackQuery(plan.id, { adelay: value }));
+      const next = await restartStream({ adelay: value });
+      if (!next) return;
       state.appliedAudioOffset = value;
-      startPlayback(next, at);
-      if (previousSubtitle !== 'off') selectSubtitle(previousSubtitle, true);
       showToast('Audio ' + formatDelay(value), 2000);
     } catch (err) {
-      el.buffering.classList.add('hidden');
       showToast('Could not adjust audio: ' + err.message, 4000);
     }
     renderTimingMenu();
@@ -3913,6 +3937,10 @@
       updateOSD();
       saveProgress(false);
     });
+    // The new pipe is now the one that knows the time. Clearing this on a
+    // timeupdate instead would fire while the OLD source is still playing at
+    // the target, which drops the guard before the teardown it exists for.
+    video.addEventListener('loadedmetadata', () => { state.restartAt = null; });
     video.addEventListener('progress', updateOSD);
     video.addEventListener('durationchange', updateOSD);
     video.addEventListener('waiting', () => el.buffering.classList.remove('hidden'));

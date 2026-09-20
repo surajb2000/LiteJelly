@@ -1,5 +1,6 @@
-# Throwaway library for checking the home page by hand. Writes to TEMP, never
-# to the repo. Prints the port it started on.
+# Throwaway library for checking the home page and the player by hand. Writes
+# to TEMP, never to the repo. Prints the port it started on.
+param([int]$Seconds = 90)
 $ErrorActionPreference = 'Continue'
 $root = Join-Path $env:TEMP 'lj-hero-check'
 if (Test-Path $root) { Remove-Item $root -Recurse -Force }
@@ -18,7 +19,7 @@ foreach ($name in $names) {
     $out = Join-Path $root $name
     # Long enough that a resume position can clear the 15s floor.
     & $ffmpeg -hide_banner -loglevel error -y -f lavfi -i testsrc=size=160x90:rate=10 `
-        -f lavfi -i sine=frequency=400 -t 90 -c:v libx264 -preset ultrafast -pix_fmt yuv420p `
+        -f lavfi -i sine=frequency=400 -t $Seconds -c:v libx264 -preset ultrafast -pix_fmt yuv420p `
         -c:a aac -shortest $out 2>&1 | Out-Null
 }
 Get-ChildItem $root | Select-Object Name, Length
