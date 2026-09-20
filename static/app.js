@@ -176,6 +176,7 @@
     timingStep: { subtitle: 10, audio: 50 },
     audioApplyTimer: null,
     subtitleTimer: null,
+    subtitleSignature: null,
     lastCueKey: null,
     lastPointerMove: 0,
     continueWatching: [],
@@ -1884,8 +1885,9 @@
     state.offset = 0;
     // A fresh play has no target to hold; a restart keeps the one it asked for.
     state.restartAt = typeof startAt === 'number' ? startAt : null;
-    state.activeSubtitle = 'off';
-    state.lastCueKey = null;
+    // The chosen subtitle is deliberately left alone: only a fresh play picks
+    // one, in buildSubtitleMenu. Clearing it here disabled the track, and a
+    // disabled track throws its cues away and has to fetch them again.
     // Every request that builds a plan sends the current delay, so whatever
     // is playing now is running with it.
     state.appliedAudioOffset = state.audioOffset;
@@ -2264,7 +2266,7 @@
       }, { once: true });
     }
     beginPlayback(video);
-    attachSubtitleTracks(0);
+    attachSubtitleTracks();
   }
 
   async function classicLoad(target, forward) {
@@ -2275,8 +2277,7 @@
     state.offset = point.landing;
     video.src = streamUrl(plan, point.ss);
     beginPlayback(video);
-    // Cues are absolute, but a restarted pipe starts at the offset, so re-base them.
-    attachSubtitleTracks(state.offset);
+    attachSubtitleTracks();
   }
 
   function describeTransport() {
@@ -2304,7 +2305,7 @@
         video.addEventListener('loadedmetadata', () => { video.currentTime = target; }, { once: true });
       }
       beginPlayback(video);
-      attachSubtitleTracks(0);
+      attachSubtitleTracks();
     } else {
       if (initial) {
         mseTeardown();
@@ -2420,6 +2421,7 @@
   // --- Subtitles -------------------------------------------------------
   function clearSubtitleTracks() {
     $$('track', el.video).forEach(track => track.remove());
+    state.subtitleSignature = null;
     state.lastCueKey = null;
     el.subtitleLayer.replaceChildren();
   }
@@ -2436,26 +2438,75 @@
     state.subtitleTimer = null;
   }
 
-  function attachSubtitleTracks(offset) {
+  /* Cues are fetched once, in the file's own timeline.
+   *
+   * They used to be re-based by the server for whatever time the pipe had
+   * restarted at, so every seek refetched the whole file. Measured: one
+   * aborted fetch leaves the track in readyState ERROR with zero cues, and
+   * nothing retried it, so subtitles stayed gone for the rest of the film
+   * and toggling them off and on could not bring them back. displayTime()
+   * is already absolute on every transport, so one copy serves the whole
+   * playback and a restart no longer touches the network.
+   */
+  function subtitleSignature(plan) {
+    return plan.id + '\u0001' + state.subtitleTracks.map(track => track.id).join(',');
+  }
+
+  function attachSubtitleTracks() {
     const plan = state.playback;
     if (!plan) return;
-    clearSubtitleTracks();
 
+    // A restart calls video.load(), which can reset the modes, but the cues
+    // themselves survive. Re-apply rather than refetch.
+    if (state.subtitleSignature === subtitleSignature(plan) && $$('track', el.video).length) {
+      applyActiveSubtitle();
+      return;
+    }
+
+    clearSubtitleTracks();
+    state.subtitleSignature = subtitleSignature(plan);
     state.subtitleTracks.forEach(track => {
-      if (track.burn_in_only) return;
-      const element = document.createElement('track');
-      element.kind = 'subtitles';
-      element.label = track.label;
-      if (track.language) element.srclang = track.language;
-      element.src = API.subtitle + '?id=' + encodeURIComponent(plan.id) +
-        '&track=' + encodeURIComponent(track.id) +
-        '&offset=' + (offset || 0).toFixed(2);
-      element.dataset.trackId = track.id;
-      element.addEventListener('load', applyActiveSubtitle);
-      el.video.appendChild(element);
+      if (!track.burn_in_only) addSubtitleTrack(plan, track, 0);
     });
 
     applyActiveSubtitle();
+  }
+
+  const SUBTITLE_RETRIES = [2000, 6000, 15000];
+
+  function addSubtitleTrack(plan, track, attempt) {
+    const element = document.createElement('track');
+    element.kind = 'subtitles';
+    element.label = track.label;
+    if (track.language) element.srclang = track.language;
+    element.src = API.subtitle + '?id=' + encodeURIComponent(plan.id) +
+      '&track=' + encodeURIComponent(track.id) +
+      (attempt ? '&retry=' + attempt : '');
+    element.dataset.trackId = track.id;
+    element.addEventListener('load', applyActiveSubtitle);
+    element.addEventListener('error', () => {
+      if (state.playback !== plan) return;
+      // A failed track stays empty for good, so replace the element instead
+      // of re-enabling a dead one.
+      const signature = state.subtitleSignature;
+      element.remove();
+      if (attempt >= SUBTITLE_RETRIES.length) {
+        if (state.activeSubtitle === track.id) {
+          showToast('Could not load ' + track.label + ' subtitles', 4000);
+        }
+        return;
+      }
+      setTimeout(() => {
+        if (state.playback !== plan || state.subtitleSignature !== signature) return;
+        // A rebuild may have replaced this track while the retry was waiting.
+        const already = $$('track', el.video)
+          .some(node => node.dataset.trackId === track.id);
+        if (already) return;
+        addSubtitleTrack(plan, track, attempt + 1);
+        applyActiveSubtitle();
+      }, SUBTITLE_RETRIES[attempt]);
+    });
+    el.video.appendChild(element);
   }
 
   function applyActiveSubtitle() {
@@ -2498,7 +2549,7 @@
       }
       return;
     }
-    paintCues(cuesAt(cues, el.video.currentTime - state.subtitleOffset / 1000));
+    paintCues(cuesAt(cues, displayTime() - state.subtitleOffset / 1000));
   }
 
   function cuesAt(cues, at) {
@@ -2635,8 +2686,12 @@
   }
 
   function buildSubtitleMenu(plan, autoSelect) {
-    clearSubtitleTracks();
     state.subtitleTracks = Array.isArray(plan.subtitles) ? plan.subtitles : [];
+    // Only a different file needs the old cues thrown away. Clearing on every
+    // restart is what forced them to be fetched again.
+    if (state.subtitleSignature && state.subtitleSignature !== subtitleSignature(plan)) {
+      clearSubtitleTracks();
+    }
     const count = state.subtitleTracks.length;
 
     if (autoSelect) {
