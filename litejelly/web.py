@@ -42,6 +42,8 @@ from .store import ProgressStore
 from .subtitles import (SubtitleService, discover as discover_subtitles,
                         language_from_name, language_from_token, save_sidecar,
                         track_id_for)
+from .opensubtitles import Account as OpenSubtitlesAccount, OpenSubtitles, \
+    OpenSubtitlesError, movie_hash
 from .thumbnails import ThumbnailService
 from .trickplay import TrickplayService
 
@@ -317,6 +319,7 @@ class Application:
         self.sessions = admin_accounts.SessionStore()
         self.throttle = admin_accounts.LoginThrottle()
         self.credentials = admin_accounts.load_credentials(config.app_dir)
+        self.opensubtitles = OpenSubtitles(config.app_dir)
         self._last_rescan = 0.0
         self._streams: set = set()
         self._streams_lock = threading.Lock()
@@ -345,6 +348,11 @@ class Application:
             ("GET", "/api/subtitle"): Routes.subtitle,
             ("GET", "/api/subtitles"): Routes.subtitle_list,
             ("POST", "/api/subtitles/upload"): Routes.subtitle_upload,
+            ("GET", "/api/subtitles/search"): Routes.subtitle_search,
+            ("POST", "/api/subtitles/fetch"): Routes.subtitle_fetch,
+            ("GET", "/api/admin/opensubtitles"): Routes.admin_opensubtitles,
+            ("POST", "/api/admin/opensubtitles"): Routes.admin_opensubtitles_save,
+            ("POST", "/api/admin/opensubtitles/test"): Routes.admin_opensubtitles_test,
             ("GET", "/api/progress"): Routes.progress_get,
             ("POST", "/api/progress"): Routes.progress_post,
             ("GET", "/api/admin/settings"): Routes.admin_settings_get,
@@ -1469,6 +1477,132 @@ class Routes:
             "track": track_id_for(path, saved),
             "subtitles": [t.to_dict() for t in tracks],
         })
+
+    @staticmethod
+    def subtitle_search(h, query):
+        """Ask OpenSubtitles what it has for this file.
+
+        Admin-only like the upload, because the result of picking one is a
+        file written into a media folder, and because searching spends the
+        account's own rate limit.
+        """
+        if not h.require_admin(query, write=False):
+            return
+        video, path = h.app.resolve_video(query)
+        if video is None or path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+
+        language = (query.get("language", ["en"])[0] or "en").strip().lower()[:8]
+        text = (query.get("q", [""])[0] or "").strip()[:200]
+        if not text:
+            text = video.title or video.name
+
+        try:
+            found = h.app.opensubtitles.search(
+                text, language, movie_hash(path),
+                season=video.season, episode=video.episode)
+        except OpenSubtitlesError as exc:
+            h.send_json({"ok": False, "error": str(exc)},
+                        status=HTTPStatus.BAD_GATEWAY)
+            return
+        h.send_json({"ok": True, "query": text, "language": language,
+                     "results": [c.to_dict() for c in found]})
+
+    @staticmethod
+    def subtitle_fetch(h, query):
+        """Download one of those results and keep it beside the video."""
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        video, path = h.app.resolve_video({"id": [str(body.get("id") or "")]})
+        if path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+        try:
+            file_id = int(body.get("file_id"))
+        except (TypeError, ValueError):
+            h.send_api_error(HTTPStatus.BAD_REQUEST, "Which subtitle?")
+            return
+
+        try:
+            data, remote_name = h.app.opensubtitles.download(file_id)
+        except OpenSubtitlesError as exc:
+            h.send_json({"ok": False, "error": str(exc)},
+                        status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        # Nothing downloaded is trusted any more than something uploaded: it
+        # goes through the same check before it reaches the folder.
+        language = str(body.get("language") or "") or language_from_name(remote_name)
+        try:
+            saved = save_sidecar(path, data, language)
+        except ValueError as exc:
+            h.send_api_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        except (OSError, FileExistsError) as exc:
+            log.warning("Could not save a subtitle for %s: %s", video.id, exc)
+            h.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR,
+                             "Could not write to that folder")
+            return
+
+        log.info("Subtitle fetched for %s: %s", video.id, saved.name)
+        tracks = discover_subtitles(path, h.app.tools.probe(path))
+        h.send_json({
+            "ok": True,
+            "id": video.id,
+            "track": track_id_for(path, saved),
+            "subtitles": [t.to_dict() for t in tracks],
+        })
+
+    @staticmethod
+    def admin_opensubtitles(h, query):
+        """What is configured, never including the password."""
+        if not h.require_admin(query):
+            return
+        h.send_json({"ok": True,
+                     "opensubtitles": h.app.opensubtitles.account.to_public_dict()})
+
+    @staticmethod
+    def admin_opensubtitles_save(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        current = h.app.opensubtitles.account
+        # A blank password means "leave the stored one alone", so the admin
+        # page never has to hold it in order to change the username.
+        account = OpenSubtitlesAccount(
+            api_key=str(body.get("api_key") or "").strip() or current.api_key,
+            username=str(body.get("username") or "").strip() or current.username,
+            password=str(body.get("password") or "") or current.password,
+        )
+        if body.get("forget"):
+            account = OpenSubtitlesAccount()
+        try:
+            h.app.opensubtitles.set_account(account)
+        except OSError as exc:
+            h.send_json({"ok": False, "error": f"Could not save: {exc}"},
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        log.info("OpenSubtitles account %s",
+                 "cleared" if body.get("forget") else "updated")
+        h.send_json({"ok": True, "opensubtitles": account.to_public_dict()})
+
+    @staticmethod
+    def admin_opensubtitles_test(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        try:
+            result = h.app.opensubtitles.sign_in()
+        except OpenSubtitlesError as exc:
+            h.send_json({"ok": False, "error": str(exc)},
+                        status=HTTPStatus.BAD_GATEWAY)
+            return
+        h.send_json({"ok": True, "username": result.get("username", "")})
 
 
 class ReadAhead:

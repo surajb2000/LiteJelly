@@ -117,7 +117,9 @@
     details: '/api/details',
     subtitle: '/api/subtitle',
     subtitleList: '/api/subtitles',
-    subtitleUpload: '/api/subtitles/upload'
+    subtitleUpload: '/api/subtitles/upload',
+    subtitleSearch: '/api/subtitles/search',
+    subtitleFetch: '/api/subtitles/fetch'
   };
 
   const SEEK_SMALL = 10;
@@ -2795,6 +2797,7 @@
     divider.className = 'popup-divider';
     menu.appendChild(divider);
     action('upload', 'Add a subtitle file\u2026', 'From this device');
+    action('search', 'Search OpenSubtitles\u2026', 'Needs an account');
   }
 
   /* The button reports the chosen track, not the word "Subtitles".
@@ -2909,6 +2912,144 @@
     attachSubtitleTracks();
     renderSubtitleMenu();
     syncSubtitleButton();
+  }
+
+  /* Searching OpenSubtitles from the player.
+   *
+   * Results are listed rather than guessed at: the top hit for a film is
+   * often for a different cut, and the release name is the only way to tell.
+   * Nothing is downloaded until one is picked, because downloads are what the
+   * daily quota counts.
+   */
+  const SUBTITLE_LANGUAGES = [
+    ['en', 'English'], ['hi', 'Hindi'], ['es', 'Spanish'], ['fr', 'French'],
+    ['de', 'German'], ['it', 'Italian'], ['pt', 'Portuguese'], ['ru', 'Russian'],
+    ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'], ['ar', 'Arabic'],
+    ['ta', 'Tamil'], ['te', 'Telugu'], ['bn', 'Bengali'], ['nl', 'Dutch']
+  ];
+
+  function openSubtitleSearch() {
+    if (!state.playback) return;
+    closeSubtitleMenu();
+    const pref = trackPref();
+    state.searchLanguage = state.searchLanguage ||
+      (pref && pref.subtitle && pref.subtitle !== 'off' && pref.subtitle !== 'on'
+        ? pref.subtitle : DEFAULT_SUBTITLE_LANGUAGE);
+    el.searchTitle.textContent = state.playback.title || '';
+    el.searchQuery.value = state.playback.title || '';
+    renderSearchLanguages();
+    el.searchResults.replaceChildren();
+    el.searchStatus.textContent = '';
+    el.searchPanel.classList.remove('hidden');
+    el.searchQuery.focus();
+    runSubtitleSearch();
+  }
+
+  function closeSubtitleSearch() {
+    el.searchPanel.classList.add('hidden');
+  }
+
+  function renderSearchLanguages() {
+    const select = el.searchLanguage;
+    select.replaceChildren();
+    SUBTITLE_LANGUAGES.forEach(pair => {
+      const option = document.createElement('option');
+      option.value = pair[0];
+      option.textContent = pair[1];
+      if (pair[0] === state.searchLanguage) option.selected = true;
+      select.appendChild(option);
+    });
+  }
+
+  async function runSubtitleSearch() {
+    const plan = state.playback;
+    if (!plan) return;
+    state.searchLanguage = el.searchLanguage.value || DEFAULT_SUBTITLE_LANGUAGE;
+    el.searchResults.replaceChildren();
+    el.searchStatus.textContent = 'Searching\u2026';
+
+    const url = API.subtitleSearch + '?id=' + encodeURIComponent(plan.id) +
+      '&language=' + encodeURIComponent(state.searchLanguage) +
+      '&q=' + encodeURIComponent(el.searchQuery.value || '');
+    let body;
+    try {
+      const response = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (response.status === 401 || response.status === 403) {
+        el.searchStatus.textContent = 'Sign in on the admin page to search.';
+        return;
+      }
+      body = await response.json();
+    } catch (err) {
+      el.searchStatus.textContent = 'Could not reach the server.';
+      return;
+    }
+    if (state.playback !== plan) return;
+    if (!body || !body.ok) {
+      el.searchStatus.textContent = (body && body.error) || 'Search failed.';
+      return;
+    }
+    const results = body.results || [];
+    if (!results.length) {
+      el.searchStatus.textContent = 'Nothing found for that title and language.';
+      return;
+    }
+    el.searchStatus.textContent = results.length + ' found';
+    el.searchResults.replaceChildren(buildSearchResults(plan, results));
+  }
+
+  function buildSearchResults(plan, results) {
+    const fragment = document.createDocumentFragment();
+    results.forEach(result => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'search-result';
+      row.dataset.fileId = String(result.file_id);
+      row.dataset.language = result.language || '';
+
+      const name = document.createElement('span');
+      name.className = 'search-result-name';
+      name.textContent = result.release || 'Untitled release';
+      row.appendChild(name);
+
+      const notes = [];
+      if (result.downloads) notes.push(formatCount(result.downloads) + ' downloads');
+      if (result.from_trusted) notes.push('trusted uploader');
+      if (result.hearing_impaired) notes.push('SDH');
+      const hint = document.createElement('span');
+      hint.className = 'search-result-hint';
+      hint.textContent = notes.join(' \u00b7 ');
+      row.appendChild(hint);
+      fragment.appendChild(row);
+    });
+    return fragment;
+  }
+
+  function formatCount(value) {
+    return value >= 1000 ? Math.round(value / 100) / 10 + 'k' : String(value);
+  }
+
+  async function fetchSubtitle(fileId, language) {
+    const plan = state.playback;
+    if (!plan) return;
+    el.searchStatus.textContent = 'Downloading\u2026';
+    let response;
+    try {
+      response = await postJSON(API.subtitleFetch, {
+        id: plan.id, file_id: Number(fileId), language: language
+      });
+    } catch (err) {
+      el.searchStatus.textContent = 'Could not reach the server.';
+      return;
+    }
+    let body = null;
+    try { body = await response.json(); } catch (err) { /* reported below */ }
+    if (!response.ok || !body || !body.ok) {
+      el.searchStatus.textContent = (body && body.error) || 'Could not download it.';
+      return;
+    }
+    adoptSubtitleTracks(plan, body.subtitles, body.track);
+    closeSubtitleSearch();
+    showToast('Subtitle added', 2500);
   }
 
   async function selectSubtitle(trackId, silent) {
@@ -3880,6 +4021,12 @@
     el.btnSubtitles = $('#btn-subtitles');
     el.subtitleMenu = $('#subtitle-menu');
     el.subtitleFile = $('#subtitle-file');
+    el.searchPanel = $('#search-panel');
+    el.searchTitle = $('#search-title');
+    el.searchQuery = $('#search-query');
+    el.searchLanguage = $('#search-language');
+    el.searchStatus = $('#search-status');
+    el.searchResults = $('#search-results');
     el.btnAudio = $('#btn-audio');
     el.audioLabel = $('#audio-label');
     el.audioMenu = $('#audio-menu');
@@ -4013,9 +4160,21 @@
       if (!item) return;
       if (item.dataset.role === 'reset') resetSubtitlePref();
       else if (item.dataset.role === 'upload') pickSubtitleFile();
+      else if (item.dataset.role === 'search') openSubtitleSearch();
       else selectSubtitle(item.dataset.trackId);
     });
     el.subtitleFile.addEventListener('change', onSubtitleFileChosen);
+
+    $('#search-close').addEventListener('click', closeSubtitleSearch);
+    $('#search-go').addEventListener('click', runSubtitleSearch);
+    el.searchLanguage.addEventListener('change', runSubtitleSearch);
+    el.searchQuery.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); runSubtitleSearch(); }
+    });
+    el.searchResults.addEventListener('click', event => {
+      const row = event.target.closest('.search-result');
+      if (row) fetchSubtitle(row.dataset.fileId, row.dataset.language);
+    });
 
     el.btnAudio.addEventListener('click', event => {
       event.stopPropagation();

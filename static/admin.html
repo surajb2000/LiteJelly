@@ -200,6 +200,45 @@
           <span id="meta-status" class="save-status" role="status"></span>
         </div>
       </section>
+
+      <section class="card">
+        <h2>OpenSubtitles</h2>
+        <p class="hint">
+          Lets the player search for subtitles and keep one beside the video.
+          It needs a free consumer API key from opensubtitles.com and the
+          account the key belongs to, because downloads are counted against
+          that account's daily quota. These are kept in their own file rather
+          than in the settings, so exporting your settings never carries the
+          password with it.
+        </p>
+        <dl class="status">
+          <dt>Status</dt><dd id="os-state">—</dd>
+        </dl>
+        <div class="field">
+          <label for="os_api_key">API key</label>
+          <input type="password" id="os_api_key" autocomplete="off"
+                 placeholder="Leave blank to keep the saved one">
+        </div>
+        <div class="field">
+          <label for="os_username">Username</label>
+          <input type="text" id="os_username" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="os_password">Password</label>
+          <input type="password" id="os_password" autocomplete="new-password"
+                 placeholder="Leave blank to keep the saved one">
+          <p class="hint">
+            Stored so the server can sign in for itself; a download token only
+            lasts a day. It is never sent back to this page.
+          </p>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn" id="os-save">Save</button>
+          <button type="button" class="btn" id="os-test">Test sign-in</button>
+          <button type="button" class="btn danger" id="os-forget">Forget these</button>
+          <span id="os-status" class="save-status" role="status"></span>
+        </div>
+      </section>
     </div>
 
     <!-- Playback -->

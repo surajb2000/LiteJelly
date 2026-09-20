@@ -82,6 +82,9 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 - **Fetched once, for the whole film**: Cue timings used to be re-based by the server for whatever point the stream had restarted at, which meant refetching the entire subtitle file on every seek — measured at eight fetches for eight seeks. The player's clock is already absolute, so one copy in the file's own timeline now serves the whole playback and a seek costs nothing.
 - **Survives a failed fetch**: A `<track>` whose download fails is dead permanently — zero cues, and re-enabling it loads nothing, which is why toggling subtitles off and on could not always bring them back. A failed track is replaced rather than re-enabled, and retried at 2s, 6s and 15s before it says so.
 - **Adjustable subtitle delay**: Cues are selected in the browser rather than left to the video element, so the offset can be nudged without refetching anything. Useful when the file itself drifts, which no server-side fix can repair.
+- **Add one from the player**: A file with no subtitles, or with the wrong ones, is fixable without reaching the media folder. The Subtitles menu takes an `.srt`, `.vtt` or `.ass` from whatever device you are watching on and keeps it beside the video. It is offered even when the list is empty, which is when it is actually needed.
+- **Or fetch one from OpenSubtitles**: Search by title, or by the file's own hash, which matches a release far more reliably than a name does. Results are listed with their release name and download count rather than picked for you, because the top hit is often for a different cut. Needs a free API key and the account it belongs to, set up on the admin page; downloads count against that account's daily quota, so nothing is fetched until you choose one.
+- **Neither is taken on trust**: Both paths go through the same check before anything is written. A shell script named `subtitles.srt` is refused, the extension is decided by what the text actually is, the name on disk is built from the video's own path, and an existing file is never overwritten. Adding a subtitle needs an admin session, because it writes into a media folder.
 - **Bitmap Burn-in**: Detects image-based subtitles (PGS / VobSub) and offers clean hardware-assisted video burn-in.
 
 ### 5. TV Remote & 10-Foot User Interface
@@ -185,6 +188,7 @@ lucid-fermi/
 │   ├── library.py          # Media scanner, title cleanup, series grouping, SxxExx parser
 │   ├── logs.py             # Verbosity, rotating log file, and reading it back
 │   ├── metadata.py         # Kodi .nfo sidecars and local artwork discovery
+│   ├── opensubtitles.py    # Subtitle search and download, and the account it needs
 │   ├── paths.py            # Realpath containment and symlink traversal guards
 │   ├── providers.py        # TVmaze, AniList, AniSkip, TheIntroDB, TMDb and OMDb clients with a versioned on-disk cache
 │   ├── settings.py         # settings.json load/save and admin input validation
@@ -221,8 +225,10 @@ lucid-fermi/
 │   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
 │   ├── test_metadata.py    # .nfo parsing and artwork discovery
 │   ├── test_nextup.py      # Next episode selection and the resume rail
+│   ├── test_opensubtitles.py # Search, download and the credential file, against a stub
 │   ├── test_providers.py   # Online metadata parsing, caching and failure handling
 │   ├── test_restart.py     # Restarting the pipe without losing your place
+│   ├── test_subtitle_upload.py # What may be written into a media folder, and by whom
 │   ├── test_subtitles.py   # One fetch per film, and recovery from a failed one
 │   ├── test_thumbnails.py  # Background generation, caching, failure handling
 │   └── test_trickplay.py   # Sprite sheets, tile geometry, queue limits
@@ -233,9 +239,12 @@ lucid-fermi/
     ├── avsync_probe.py     # Diagnostic harness for measuring A/V synchronization drift
     ├── hero_fixture.ps1    # Throwaway library of films and episodes for browser checks
     ├── subtitle_fixture.ps1 # MKV carrying a real embedded subtitle stream
+    ├── upload_fixture.ps1  # A video with no subtitles, and files to add to it
     ├── mutate_browse.ps1   # Breaks each browse assertion to prove the tests catch it
     ├── mutate_restart.ps1  # The same, for the restart race
-    └── mutate_subtitles.ps1 # The same, for the subtitle fetching rules
+    ├── mutate_subtitles.ps1 # The same, for the subtitle fetching rules
+    ├── mutate_subtitle_upload.ps1 # The same, for what may be written to disk
+    └── mutate_opensubtitles.ps1   # The same, for the search and download rules
 ```
 
 ---
@@ -347,7 +356,7 @@ rare ones:
 
 | Tab | Contains |
 | :--- | :--- |
-| **Library** | Media folders and their content types, scan interval, online metadata, manual rescan, clearing or forgetting a wrong metadata match |
+| **Library** | Media folders and their content types, scan interval, online metadata, manual rescan, clearing or forgetting a wrong metadata match, OpenSubtitles account |
 | **Playback** | HEVC direct play, default transcode quality, hardware encoder and its self-test, scrub previews |
 | **General** | Server name, port and bind address, admin account, status, settings backup and restore |
 | **Logs** | Detail level and a viewer for the recent log |
@@ -513,11 +522,19 @@ breaks, so the ones guarding a fixed bug come with a script beside them that
 breaks it deliberately and confirms the suite notices:
 ```bash
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_subtitles.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_subtitle_upload.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_opensubtitles.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_restart.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_browse.ps1
 ```
 This has already earned its keep: one assertion passed happily while the
 behaviour it claimed to pin was inverted, and was rewritten until it did not.
+
+Nothing in the suite touches the network, including the OpenSubtitles tests,
+which run against a stub. That covers the parts that are ours - the credential
+file, the file hash, parsing, the refusal to follow a link that is not https -
+and does not prove the live API still looks the way it did. That leg has to be
+checked with a real key.
 
 `tools/subtitle_fixture.ps1` and `tools/hero_fixture.ps1` generate throwaway
 libraries - an MKV carrying a real embedded subtitle stream, a set of films and

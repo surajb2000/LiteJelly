@@ -343,6 +343,76 @@
     });
   }
 
+  // -- OpenSubtitles -------------------------------------------------------
+
+  function openSubtitlesStatus(message, kind) {
+    var node = $('os-status');
+    node.className = 'save-status' + (kind ? ' ' + kind : '');
+    text(node, message);
+  }
+
+  function renderOpenSubtitles(info) {
+    var state = 'Not set up';
+    if (info && info.configured) { state = 'Ready, as ' + info.username; }
+    else if (info && (info.has_key || info.username || info.has_password)) {
+      state = 'Incomplete: needs a key, a username and a password';
+    }
+    text($('os-state'), state);
+    if (info && info.username) { $('os_username').value = info.username; }
+    // The key and the password are never sent back, so the boxes stay empty
+    // and blank means "keep what is stored".
+    $('os_api_key').value = '';
+    $('os_password').value = '';
+  }
+
+  function loadOpenSubtitles() {
+    request('GET', '/api/admin/opensubtitles').then(function (result) {
+      if (result.ok && result.data) { renderOpenSubtitles(result.data.opensubtitles); }
+    });
+  }
+
+  function saveOpenSubtitles() {
+    openSubtitlesStatus('Saving…');
+    request('POST', '/api/admin/opensubtitles', {
+      api_key: $('os_api_key').value,
+      username: $('os_username').value,
+      password: $('os_password').value
+    }).then(function (result) {
+      if (!result.ok) {
+        openSubtitlesStatus((result.data && result.data.error) || 'Failed', 'error');
+        return;
+      }
+      renderOpenSubtitles(result.data.opensubtitles);
+      openSubtitlesStatus('Saved', 'ok');
+    });
+  }
+
+  function testOpenSubtitles() {
+    openSubtitlesStatus('Signing in…');
+    request('POST', '/api/admin/opensubtitles/test', {}).then(function (result) {
+      if (!result.ok) {
+        openSubtitlesStatus((result.data && result.data.error) || 'Failed', 'error');
+        return;
+      }
+      openSubtitlesStatus('Signed in as ' + result.data.username, 'ok');
+    });
+  }
+
+  function forgetOpenSubtitles() {
+    if (!window.confirm('Forget the OpenSubtitles key and account?')) { return; }
+    openSubtitlesStatus('Clearing…');
+    request('POST', '/api/admin/opensubtitles', { forget: true })
+      .then(function (result) {
+        if (!result.ok) {
+          openSubtitlesStatus((result.data && result.data.error) || 'Failed', 'error');
+          return;
+        }
+        $('os_username').value = '';
+        renderOpenSubtitles(result.data.opensubtitles);
+        openSubtitlesStatus('Cleared', 'ok');
+      });
+  }
+
   // -- backup --------------------------------------------------------------
 
   function testEncoder() {
@@ -717,6 +787,8 @@
       $('denied').hidden = true;
       fillStatus(result.data);
       fillForm(result.data.settings || {});
+      // Kept in their own file, so they come from their own route.
+      loadOpenSubtitles();
       setStatus('');
     });
   }
@@ -781,6 +853,9 @@
     $('meta-forget').addEventListener('click', forgetShow);
     $('encoder-test').addEventListener('click', testEncoder);
     $('meta-clear').addEventListener('click', clearMetadata);
+    $('os-save').addEventListener('click', saveOpenSubtitles);
+    $('os-test').addEventListener('click', testOpenSubtitles);
+    $('os-forget').addEventListener('click', forgetOpenSubtitles);
     $('settings-export').addEventListener('click', exportSettings);
     $('settings-import').addEventListener('click', function () {
       $('settings-file').click();

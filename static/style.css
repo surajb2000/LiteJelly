@@ -1596,6 +1596,121 @@ select:focus:not(:focus-visible) {
   background: var(--glass-border);
 }
 
+/* Subtitle search sits over the picture rather than in the menu: a list of
+   releases needs room, and the menu is sized for one-line choices. */
+.search-panel {
+  position: absolute;
+  top: 8%;
+  right: 4%;
+  bottom: 18%;
+  width: 520px;
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 22px;
+  border-radius: 16px;
+  border: 1px solid var(--glass-border);
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  z-index: 40;
+}
+
+.search-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.search-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.search-title {
+  margin: 2px 0 12px;
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+.search-controls {
+  display: flex;
+  align-items: center;
+}
+
+.search-controls > * { margin-right: 8px; }
+.search-controls > *:last-child { margin-right: 0; }
+
+.search-query {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(2, 6, 23, 0.8);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.search-language {
+  padding: 10px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(2, 6, 23, 0.8);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.search-status {
+  margin: 12px 0 6px;
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+.search-results {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.search-result {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.7);
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.search-result:hover,
+.search-result:focus {
+  border-color: var(--accent);
+  background: rgba(51, 65, 85, 0.9);
+}
+
+.search-result-name {
+  display: block;
+  word-break: break-word;
+}
+
+.search-result-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+
+[data-profile="phone"] .search-panel {
+  top: 6%;
+  right: 3%;
+  left: 3%;
+  bottom: 12%;
+  width: auto;
+}
+
 .popup-note {
   position: sticky;
   bottom: -8px;

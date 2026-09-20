@@ -17,6 +17,10 @@ settings.json
 # Admin username and password hash
 credentials.json
 
+# OpenSubtitles API key and account, kept out of settings.json so that
+# exporting settings never carries a third-party password with it
+opensubtitles.json
+
 # Rotating log files
 logs/
 

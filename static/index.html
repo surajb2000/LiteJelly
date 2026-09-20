@@ -286,6 +286,23 @@
       <!-- Opened by the Subtitles menu; never shown in the layout itself. -->
       <input type="file" id="subtitle-file" class="hidden"
              accept=".srt,.vtt,.ass,.ssa,text/plain" aria-hidden="true" tabindex="-1">
+
+      <div id="search-panel" class="search-panel hidden" role="dialog"
+           aria-modal="true" aria-labelledby="search-heading">
+        <div class="search-head">
+          <h2 id="search-heading">Search OpenSubtitles</h2>
+          <button type="button" id="search-close" class="icon-btn" aria-label="Close search">&#10005;</button>
+        </div>
+        <p id="search-title" class="search-title"></p>
+        <div class="search-controls">
+          <input type="search" id="search-query" class="search-query"
+                 aria-label="Title to search for" autocomplete="off">
+          <select id="search-language" class="search-language" aria-label="Subtitle language"></select>
+          <button type="button" id="search-go" class="btn-primary">Search</button>
+        </div>
+        <p id="search-status" class="search-status" role="status"></p>
+        <div id="search-results" class="search-results"></div>
+      </div>
       <div id="audio-menu" class="popup-menu hidden" role="menu" aria-label="Audio tracks"></div>
       <div id="quality-menu" class="popup-menu hidden" role="menu" aria-label="Video quality"></div>
 
