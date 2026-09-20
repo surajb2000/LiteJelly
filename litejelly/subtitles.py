@@ -25,6 +25,9 @@ FFMPEG_ONLY_EXTENSIONS = {".ass", ".ssa", ".sub", ".sbv", ".smi"}
 SUBTITLE_DIR_NAMES = {"subs", "subtitles", "sub"}
 # Converted tracks kept on disk before the oldest are dropped.
 CACHE_LIMIT = 2000
+# Bumped when a past version could have written a bad conversion, so those are
+# never read back. v2 retires the ones written with \r\n doubled into \r\r\n.
+CACHE_VERSION = 2
 
 LANGUAGE_NAMES = {
     "en": "English", "eng": "English", "english": "English",
@@ -325,7 +328,11 @@ def srt_to_vtt(text: str) -> str:
 
 
 def _ensure_vtt_header(text: str) -> str:
-    text = text.lstrip("\ufeff")
+    # Line endings are flattened here because this is what every path that is
+    # not srt_to_vtt goes through. A file that already held \r\n came back out
+    # of the cache as \n\n, and a blank line between a timing and its text ends
+    # the cue - so the cue kept its timing and lost every word.
+    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
     if not text.lstrip().upper().startswith("WEBVTT"):
         return "WEBVTT\n\n" + text
     return text
@@ -390,7 +397,7 @@ class SubtitleService:
             stat = video_path.stat()
         except OSError:
             return None
-        key = f"{video_path}|{stat.st_mtime_ns}|{track_id}"
+        key = f"v{CACHE_VERSION}|{video_path}|{stat.st_mtime_ns}|{track_id}"
         # "ext:0" only means "the first sidecar", and which file that is
         # changes the moment one is added or replaced. The video's own mtime
         # does not move when that happens, so the sidecar has to be named in
@@ -433,7 +440,9 @@ class SubtitleService:
         if vtt and cache_path:
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(vtt, encoding="utf-8")
+                # newline="" so the \n written here is not turned into \r\n on
+                # Windows, which read back as an extra blank line.
+                cache_path.write_text(vtt, encoding="utf-8", newline="")
                 self._prune_cache()
             except OSError as exc:
                 log.debug("Could not cache subtitle: %s", exc)

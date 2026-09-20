@@ -5,6 +5,8 @@
 $ErrorActionPreference = 'Continue'
 $target = 'static/app.js'
 $backup = 'static/app.js.mutbak'
+$subs = 'litejelly/subtitles.py'
+$subsBackup = 'litejelly/subtitles.py.mutbak'
 
 $mutations = @(
     @{ name = 'offset back in the URL';     from = "'&track=' + encodeURIComponent(track.id) +";            to = "'&track=' + encodeURIComponent(track.id) + '&offset=0.00' +" }
@@ -16,23 +18,31 @@ $mutations = @(
     @{ name = 'silent give-up';             from = "showToast('Could not load ' + track.label + ' subtitles', 4000);"; to = 'void 0;' }
     @{ name = 'reuse the dead element';     from = '      element.remove();';                               to = '      void 0;' }
     @{ name = 'retry duplicates the track'; from = 'node.dataset.trackId === track.id';                     to = 'false' }
+    @{ file = $true; name = 'cache writer translates';  from = 'cache_path.write_text(vtt, encoding="utf-8", newline="")'; to = 'cache_path.write_text(vtt, encoding="utf-8")' }
+    @{ file = $true; name = 'vtt endings left alone';   from = '    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")'; to = '    text = text.lstrip("\ufeff")' }
+    @{ file = $true; name = 'old conversions reused';   from = 'key = f"v{CACHE_VERSION}|{video_path}|{stat.st_mtime_ns}|{track_id}"'; to = 'key = f"{video_path}|{stat.st_mtime_ns}|{track_id}"' }
 )
 
 Copy-Item $target $backup
+Copy-Item $subs $subsBackup
 try {
     foreach ($m in $mutations) {
-        $text = Get-Content $backup -Raw
+        $file = if ($m.file) { $subs } else { $target }
+        $store = if ($m.file) { $subsBackup } else { $backup }
+        $text = (Get-Content $store -Raw) -replace "`r`n", "`n"
         if (-not $text.Contains($m.from)) {
             Write-Output ("{0,-30} TARGET MISSING" -f $m.name)
             continue
         }
-        Set-Content $target ($text.Replace($m.from, $m.to)) -NoNewline
+        Set-Content $file ($text.Replace($m.from, $m.to)) -NoNewline
         $out = & python -m unittest tests.test_subtitles 2>&1 | Out-String
         $verdict = if ($out -match 'FAILED \(') { 'caught' } else { 'SURVIVED' }
         Write-Output ("{0,-30} {1}" -f $m.name, $verdict)
+        Copy-Item $store $file
     }
 }
 finally {
     Copy-Item $backup $target
-    Remove-Item $backup
+    Copy-Item $subsBackup $subs
+    Remove-Item $backup, $subsBackup
 }

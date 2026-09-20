@@ -20,8 +20,11 @@ Run with:  python -m unittest discover -s tests
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from litejelly import subtitles
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
@@ -33,6 +36,75 @@ def read(name: str) -> str:
 def body(text: str, start: str, end: str) -> str:
     head = text.index(start)
     return text[head:text.index(end, head + len(start))]
+
+
+class ExistingFileTests(unittest.TestCase):
+    """Subtitles that were already on disk, not ones added through the player.
+
+    A file downloaded from anywhere is usually CRLF. Converting it kept those
+    endings, and writing the conversion on Windows turned each \\r\\n into
+    \\r\\r\\n, which came back out of the cache as a blank line between a
+    timing and its text - and a blank line is what ends a cue. Measured: the
+    first serve was fine and every serve after it had cues with timings and no
+    words at all.
+    """
+
+    SRT = ("1\r\n00:00:01,000 --> 00:00:03,000\r\nFirst line.\r\n\r\n"
+           "2\r\n00:00:04,000 --> 00:00:06,000\r\nSecond line.\r\n")
+    VTT = ("WEBVTT\r\n\r\n00:00:01.000 --> 00:00:03.000\r\nFirst line.\r\n\r\n"
+           "00:00:04.000 --> 00:00:06.000\r\nSecond line.\r\n")
+
+    def setUp(self):
+        self.dir = TemporaryDirectory()
+        self.root = Path(self.dir.name)
+        self.video = self.root / "Probe (2024).mkv"
+        self.video.write_bytes(b"x" * 4096)
+        self.service = subtitles.SubtitleService(None, self.root / "cache")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def _serve_twice(self, suffix, payload):
+        (self.root / f"Probe (2024).en{suffix}").write_bytes(payload.encode("utf-8"))
+        first = self.service.get_vtt(self.video, "ext:0")
+        return first, self.service.get_vtt(self.video, "ext:0")
+
+    def test_a_crlf_vtt_keeps_its_text_when_served_again(self):
+        first, second = self._serve_twice(".vtt", self.VTT)
+        for text in (first, second):
+            self.assertIn("00:00:01.000 --> 00:00:03.000\nFirst line.", text)
+            self.assertIn("00:00:04.000 --> 00:00:06.000\nSecond line.", text)
+
+    def test_a_crlf_srt_keeps_its_text_when_served_again(self):
+        first, second = self._serve_twice(".srt", self.SRT)
+        for text in (first, second):
+            self.assertIn("00:00:01.000 --> 00:00:03.000\nFirst line.", text)
+
+    def test_nothing_carries_a_carriage_return_to_the_browser(self):
+        for suffix, payload in ((".vtt", self.VTT), (".srt", self.SRT)):
+            with self.subTest(suffix=suffix):
+                for old in self.root.glob("Probe (2024).en.*"):
+                    old.unlink()
+                first, second = self._serve_twice(suffix, payload)
+                self.assertNotIn("\r", first)
+                self.assertNotIn("\r", second)
+
+    def test_the_cached_copy_is_written_without_carriage_returns(self):
+        self._serve_twice(".vtt", self.VTT)
+        cached = list((self.root / "cache" / "subtitles").glob("*.vtt"))
+        self.assertTrue(cached)
+        self.assertNotIn(b"\r", cached[0].read_bytes())
+
+    def test_a_conversion_from_an_older_version_is_not_reused(self):
+        # An install that already ran the broken writer has poisoned files in
+        # the cache, and nothing would ever rewrite them.
+        path = self.service._cache_path(self.video, "emb:0")
+        original = subtitles.CACHE_VERSION
+        try:
+            subtitles.CACHE_VERSION = original + 1
+            self.assertNotEqual(self.service._cache_path(self.video, "emb:0"), path)
+        finally:
+            subtitles.CACHE_VERSION = original
 
 
 class TimelineTests(unittest.TestCase):
