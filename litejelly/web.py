@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import collections
 import hmac
 import http.server
@@ -37,7 +39,9 @@ from .library import (
 from .paths import is_within
 from .providers import MetadataProviders, artwork_digest
 from .store import ProgressStore
-from .subtitles import SubtitleService, discover as discover_subtitles, language_from_token
+from .subtitles import (SubtitleService, discover as discover_subtitles,
+                        language_from_name, language_from_token, save_sidecar,
+                        track_id_for)
 from .thumbnails import ThumbnailService
 from .trickplay import TrickplayService
 
@@ -50,6 +54,9 @@ mimetypes.add_type("font/woff", ".woff")
 
 CHUNK_SIZE = 256 * 1024
 MAX_BODY_BYTES = 64 * 1024
+# Only the subtitle upload may be larger, and only because base64 inflates a
+# 2 MB file by a third. Raising the shared limit would loosen every other route.
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024
 # A forced rescan re-walks every media folder; this is how often that is free.
 RESCAN_COOLDOWN = 30.0
 
@@ -336,6 +343,8 @@ class Application:
             ("GET", "/api/series"): Routes.series,
             ("GET", "/api/details"): Routes.details,
             ("GET", "/api/subtitle"): Routes.subtitle,
+            ("GET", "/api/subtitles"): Routes.subtitle_list,
+            ("POST", "/api/subtitles/upload"): Routes.subtitle_upload,
             ("GET", "/api/progress"): Routes.progress_get,
             ("POST", "/api/progress"): Routes.progress_post,
             ("GET", "/api/admin/settings"): Routes.admin_settings_get,
@@ -1403,6 +1412,64 @@ class Routes:
             cache_control="public, max-age=3600",
         )
 
+    @staticmethod
+    def subtitle_list(h, query):
+        """The tracks available now, so adding one need not restart the stream."""
+        video, path = h.app.resolve_video(query)
+        if path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+        tracks = discover_subtitles(path, h.app.tools.probe(path))
+        h.send_json({"id": video.id, "subtitles": [t.to_dict() for t in tracks]})
+
+    @staticmethod
+    def subtitle_upload(h, query):
+        """Save a subtitle file sent from the player, beside its video.
+
+        This writes into a media folder, so it takes an admin session rather
+        than the lighter Origin check the progress route uses. The name is
+        built from the video's own path and a language tag matched against a
+        short pattern, so nothing the client sends reaches the filesystem.
+        """
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body(limit=MAX_UPLOAD_BYTES)
+        if body is None:
+            return
+
+        video, path = h.app.resolve_video({"id": [str(body.get("id") or "")]})
+        if path is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
+            return
+
+        try:
+            data = base64.b64decode(str(body.get("data") or ""), validate=True)
+        except (ValueError, binascii.Error):
+            h.send_api_error(HTTPStatus.BAD_REQUEST, "That upload was not readable")
+            return
+
+        name = str(body.get("name") or "")
+        language = str(body.get("language") or "") or language_from_name(name)
+        try:
+            saved = save_sidecar(path, data, language)
+        except ValueError as exc:
+            h.send_api_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        except (OSError, FileExistsError) as exc:
+            log.warning("Could not save a subtitle for %s: %s", video.id, exc)
+            h.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR,
+                             "Could not write to that folder")
+            return
+
+        log.info("Subtitle added for %s: %s", video.id, saved.name)
+        tracks = discover_subtitles(path, h.app.tools.probe(path))
+        h.send_json({
+            "ok": True,
+            "id": video.id,
+            "track": track_id_for(path, saved),
+            "subtitles": [t.to_dict() for t in tracks],
+        })
+
 
 class ReadAhead:
     """Drains an ffmpeg pipe in a thread so it can run ahead of the socket.
@@ -1629,12 +1696,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_json({"ok": True, "username": username},
                        extra_headers={"Set-Cookie": cookie})
 
-    def read_json_body(self):
+    def read_json_body(self, limit: int = MAX_BODY_BYTES):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        if length <= 0 or length > MAX_BODY_BYTES:
+        if length <= 0 or length > limit:
             self.send_api_error(HTTPStatus.BAD_REQUEST, "Missing or oversized body")
             return None
         try:

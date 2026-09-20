@@ -122,6 +122,7 @@ BROWSER_GLOBALS = {
     "MediaSource",
     "URLSearchParams", "FormData", "Headers", "Request", "Response", "Blob",
     "FileReader", "TextDecoder", "TextEncoder", "CustomEvent", "Event",
+    "Uint8Array", "btoa", "atob",
     "document", "window", "navigator", "location", "history", "localStorage",
     "console", "performance", "screen", "matchMedia", "getComputedStyle",
     "if", "for", "while", "switch", "catch", "return", "typeof", "function",

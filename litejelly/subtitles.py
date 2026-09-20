@@ -198,6 +198,104 @@ def _decode_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+# An upload is written out as whatever its text actually is, never as whatever
+# the browser called it.
+UPLOAD_FORMATS = {"srt": ".srt", "vtt": ".vtt", "ass": ".ass"}
+MAX_SUBTITLE_BYTES = 2 * 1024 * 1024
+
+_SRT_CUE = re.compile(r"\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->")
+_LANGUAGE_TAG = re.compile(r"^[a-z]{2,3}$")
+
+
+def sniff_format(text: str) -> str | None:
+    """Which subtitle format this text really is, or None if it is not one.
+
+    A name proves nothing - anything at all can be called .srt - so the file
+    has to look like what it claims before it is written into a media folder.
+    """
+    head = text.lstrip("\ufeff").lstrip()
+    if head[:6].upper() == "WEBVTT":
+        return "vtt"
+    lowered = head[:4096].lower()
+    if any(marker in lowered for marker in
+           ("[script info]", "[v4+ styles]", "[v4 styles]")):
+        return "ass"
+    if _SRT_CUE.search(text):
+        return "srt"
+    return None
+
+
+def language_from_name(name: str) -> str:
+    """The language tag a file name suggests, or "" when it suggests none."""
+    stem = Path(name).stem
+    tokens = [t for t in re.split(r"[.\-_ ]+", stem) if t]
+    # Language usually trails the title, so the last one that resolves wins.
+    for token in reversed(tokens):
+        srclang, language_name = language_from_token(token)
+        if language_name:
+            return srclang
+    return ""
+
+
+def sidecar_target(video_path: Path, language: str, extension: str) -> Path:
+    """A free name beside the video that discovery will find and label."""
+    tag = (language or "").strip().lower()
+    if not _LANGUAGE_TAG.match(tag):
+        tag = "und"
+    folder = video_path.parent
+    candidate = folder / f"{video_path.stem}.{tag}{extension}"
+    counter = 2
+    while candidate.exists():
+        if counter > 99:
+            raise FileExistsError("There are too many subtitle files for this video")
+        candidate = folder / f"{video_path.stem}.{tag}.{counter}{extension}"
+        counter += 1
+    return candidate
+
+
+def save_sidecar(video_path: Path, data: bytes, language: str) -> Path:
+    """Write an uploaded subtitle beside its video, as UTF-8.
+
+    The caller supplies a path that is already known to be inside a media
+    folder, and the name is built from that path rather than from anything the
+    client sent, so there is nothing here to traverse with.
+    """
+    if not data:
+        raise ValueError("That file is empty")
+    if len(data) > MAX_SUBTITLE_BYTES:
+        raise ValueError("Subtitle files are limited to 2 MB")
+
+    # Line endings are normalised here and writing is told not to translate
+    # them again. Windows turned the \r\n an .srt already had into \r\r\n, and
+    # the stray \r read as a blank line, which ends a cue - so every cue kept
+    # its timing and lost its text.
+    text = _decode_text(data).replace("\r\n", "\n").replace("\r", "\n")
+    kind = sniff_format(text)
+    if kind is None:
+        raise ValueError("That is not a SubRip, WebVTT or SSA/ASS subtitle")
+
+    target = sidecar_target(video_path, language, UPLOAD_FORMATS[kind])
+    # Written alongside and moved into place, so a failure part-way cannot
+    # leave a half-file for the scanner to pick up. ".part" is not a subtitle
+    # extension, so even a leftover is ignored.
+    temp = target.with_name(target.name + ".part")
+    try:
+        temp.write_text(text, encoding="utf-8", newline="\n")
+        temp.replace(target)
+    except OSError:
+        temp.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def track_id_for(video_path: Path, sub_path: Path) -> str:
+    """The id discover() will give a sidecar, or "" if it cannot see it."""
+    for position, candidate in enumerate(_sidecar_candidates(video_path)):
+        if candidate == sub_path:
+            return f"ext:{position}"
+    return ""
+
+
 def srt_to_vtt(text: str) -> str:
     """Convert SubRip to WebVTT without touching ffmpeg."""
     text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
@@ -293,8 +391,29 @@ class SubtitleService:
         except OSError:
             return None
         key = f"{video_path}|{stat.st_mtime_ns}|{track_id}"
+        # "ext:0" only means "the first sidecar", and which file that is
+        # changes the moment one is added or replaced. The video's own mtime
+        # does not move when that happens, so the sidecar has to be named in
+        # the key or the previous conversion is served in its place.
+        if track_id.startswith("ext:"):
+            key += f"|{self._sidecar_fingerprint(video_path, track_id)}"
         digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
         return self.cache_dir / f"{digest}.vtt"
+
+    @staticmethod
+    def _sidecar_fingerprint(video_path: Path, track_id: str) -> str:
+        _, _, raw_index = track_id.partition(":")
+        if not raw_index.isdigit():
+            return "?"
+        candidates = _sidecar_candidates(video_path)
+        index = int(raw_index)
+        if index >= len(candidates):
+            return "?"
+        sub_path = candidates[index]
+        try:
+            return f"{sub_path.name}|{sub_path.stat().st_mtime_ns}"
+        except OSError:
+            return sub_path.name
 
     def get_vtt(self, video_path: Path, track_id: str, offset: float = 0.0) -> str | None:
         base = self._get_base_vtt(video_path, track_id)

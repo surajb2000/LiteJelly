@@ -115,7 +115,9 @@
     image: '/api/image',
     series: '/api/series',
     details: '/api/details',
-    subtitle: '/api/subtitle'
+    subtitle: '/api/subtitle',
+    subtitleList: '/api/subtitles',
+    subtitleUpload: '/api/subtitles/upload'
   };
 
   const SEEK_SMALL = 10;
@@ -2692,7 +2694,6 @@
     if (state.subtitleSignature && state.subtitleSignature !== subtitleSignature(plan)) {
       clearSubtitleTracks();
     }
-    const count = state.subtitleTracks.length;
 
     if (autoSelect) {
       state.activeSubtitle = preferredSubtitle(state.subtitleTracks);
@@ -2703,11 +2704,15 @@
     // built for offset 0, so a resumed film showed the opening subtitles over
     // the middle of the picture until the correct copy arrived.
 
+    syncSubtitleButton();
+    renderSubtitleMenu();
+  }
+
+  function syncSubtitleButton() {
+    const count = state.subtitleTracks.length;
     el.btnSubtitles.classList.toggle('unavailable', count === 0);
     el.btnSubtitles.setAttribute('aria-label',
       count ? 'Subtitles, ' + count + ' available' : 'No subtitles available');
-
-    renderSubtitleMenu();
   }
 
   function renderSubtitleMenu() {
@@ -2749,18 +2754,47 @@
       empty.className = 'popup-empty';
       empty.textContent = 'No subtitle tracks found for this file.';
       menu.appendChild(empty);
-      return;
+    } else {
+      state.subtitleTracks.forEach(track => {
+        const detail = track.burn_in_only
+          ? 'Image, needs re-encode'
+          : (track.kind === 'external' ? 'File' : 'Embedded');
+        makeItem(track.id, track.label, detail);
+      });
+
+      const pref = trackPref();
+      appendPrefNote(menu, pref && pref.subtitle);
     }
 
-    state.subtitleTracks.forEach(track => {
-      const detail = track.burn_in_only
-        ? 'Image, needs re-encode'
-        : (track.kind === 'external' ? 'File' : 'Embedded');
-      makeItem(track.id, track.label, detail);
-    });
+    // Offered even when the list is empty, which is exactly when a file with
+    // no subtitles at all needs one.
+    appendSubtitleSources(menu);
+  }
 
-    const pref = trackPref();
-    appendPrefNote(menu, pref && pref.subtitle);
+  function appendSubtitleSources(menu) {
+    const action = (role, label, detail) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'popup-item';
+      item.setAttribute('role', 'menuitem');
+      item.dataset.role = role;
+
+      const text = document.createElement('span');
+      text.className = 'popup-item-label';
+      text.textContent = label;
+      item.appendChild(text);
+
+      const hint = document.createElement('span');
+      hint.className = 'popup-item-hint';
+      hint.textContent = detail;
+      item.appendChild(hint);
+      menu.appendChild(item);
+    };
+
+    const divider = document.createElement('div');
+    divider.className = 'popup-divider';
+    menu.appendChild(divider);
+    action('upload', 'Add a subtitle file\u2026', 'From this device');
   }
 
   /* The button reports the chosen track, not the word "Subtitles".
@@ -2788,6 +2822,93 @@
     return value.length > limit
       ? value.slice(0, limit - 1).replace(/\s+$/, '') + '\u2026'
       : value;
+  }
+
+  /* Adding a subtitle without disturbing what is playing.
+   *
+   * The file is sent as base64 in a JSON body rather than as multipart, so the
+   * server can hand the bytes straight to the decoder that already copes with
+   * cp1252 and utf-16 files. Reading it as text here would have to guess the
+   * encoding in the browser instead, and get it wrong on exactly the files
+   * that need it most.
+   */
+  const MAX_SUBTITLE_UPLOAD = 2 * 1024 * 1024;
+
+  function pickSubtitleFile() {
+    if (!el.subtitleFile || !state.playback) return;
+    closeSubtitleMenu();
+    // Cleared so that choosing the same file twice still raises a change.
+    el.subtitleFile.value = '';
+    el.subtitleFile.click();
+  }
+
+  function onSubtitleFileChosen() {
+    const file = el.subtitleFile.files && el.subtitleFile.files[0];
+    if (!file) return;
+    if (file.size > MAX_SUBTITLE_UPLOAD) {
+      showToast('Subtitle files are limited to 2 MB', 4000);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => showToast('Could not read that file', 4000);
+    reader.onload = () => uploadSubtitle(file.name, reader.result);
+    reader.readAsArrayBuffer(file);
+  }
+
+  function base64Of(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    // Applied in slices: one spread of a megabyte-long array overflows the
+    // call stack in every engine we target.
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  }
+
+  async function uploadSubtitle(name, buffer) {
+    const plan = state.playback;
+    if (!plan) return;
+    showToast('Adding ' + name + '\u2026', 4000);
+    let response;
+    try {
+      response = await postJSON(API.subtitleUpload, {
+        id: plan.id,
+        name: name,
+        data: base64Of(buffer)
+      });
+    } catch (err) {
+      showToast('Could not reach the server', 4000);
+      return;
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      // Writing into a media folder takes an account, and the player has none.
+      showToast('Sign in on the admin page to add subtitles', 5000);
+      return;
+    }
+    let body = null;
+    try { body = await response.json(); } catch (err) { /* reported below */ }
+    if (!response.ok || !body || !body.ok) {
+      showToast((body && body.error) || 'Could not add that subtitle', 5000);
+      return;
+    }
+
+    adoptSubtitleTracks(plan, body.subtitles, body.track);
+    showToast('Subtitle added', 2500);
+  }
+
+  /* A new sidecar renumbers the ext: ids, so the whole list is replaced and
+   * the tracks are rebuilt rather than patched. */
+  function adoptSubtitleTracks(plan, tracks, selectId) {
+    if (state.playback !== plan || !Array.isArray(tracks)) return;
+    plan.subtitles = tracks;
+    state.subtitleTracks = tracks;
+    clearSubtitleTracks();
+    if (selectId) state.activeSubtitle = selectId;
+    attachSubtitleTracks();
+    renderSubtitleMenu();
+    syncSubtitleButton();
   }
 
   async function selectSubtitle(trackId, silent) {
@@ -3758,6 +3879,7 @@
     el.totalTime = $('#total-time');
     el.btnSubtitles = $('#btn-subtitles');
     el.subtitleMenu = $('#subtitle-menu');
+    el.subtitleFile = $('#subtitle-file');
     el.btnAudio = $('#btn-audio');
     el.audioLabel = $('#audio-label');
     el.audioMenu = $('#audio-menu');
@@ -3890,8 +4012,10 @@
       const item = event.target.closest('.popup-item, .popup-reset');
       if (!item) return;
       if (item.dataset.role === 'reset') resetSubtitlePref();
+      else if (item.dataset.role === 'upload') pickSubtitleFile();
       else selectSubtitle(item.dataset.trackId);
     });
+    el.subtitleFile.addEventListener('change', onSubtitleFileChosen);
 
     el.btnAudio.addEventListener('click', event => {
       event.stopPropagation();

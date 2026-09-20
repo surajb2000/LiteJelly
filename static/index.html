@@ -283,6 +283,9 @@
       </div>
 
       <div id="subtitle-menu" class="popup-menu hidden" role="menu" aria-label="Subtitle tracks"></div>
+      <!-- Opened by the Subtitles menu; never shown in the layout itself. -->
+      <input type="file" id="subtitle-file" class="hidden"
+             accept=".srt,.vtt,.ass,.ssa,text/plain" aria-hidden="true" tabindex="-1">
       <div id="audio-menu" class="popup-menu hidden" role="menu" aria-label="Audio tracks"></div>
       <div id="quality-menu" class="popup-menu hidden" role="menu" aria-label="Video quality"></div>
 

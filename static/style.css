@@ -1589,6 +1589,13 @@ select:focus:not(:focus-visible) {
   color: var(--text-muted);
 }
 
+/* Separates the tracks you can choose from the actions that add more. */
+.popup-divider {
+  height: 1px;
+  margin: 6px 8px;
+  background: var(--glass-border);
+}
+
 .popup-note {
   position: sticky;
   bottom: -8px;
