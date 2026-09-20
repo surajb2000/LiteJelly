@@ -58,27 +58,40 @@ LiteJelly probes every video before streaming to find the fastest, lowest-overhe
 - **Direct Remux (Stream Copy)**: Files with compatible H.264 video but incompatible audio (AC-3, DTS, TrueHD) copy the video stream at 0% CPU usage and re-encode only the audio to stereo AAC.
 - **Full Transcode**: Incompatible video codecs (HEVC/H.265, 10-bit, MPEG-2, VC-1) are transcoded on-the-fly to standard 720p/1080p H.264 + AAC in fragmented MP4 chunks.
 - **Quality Ladder**: User-selectable qualities (`Auto`, `Original`, `1080p`, `720p`, `480p`, `360p`).
+- **Hardware encoding, chosen by measurement**: NVENC, QuickSync, AMF, VAAPI and Media Foundation are offered only if they survive a real timed encode, because `ffmpeg -encoders` cheerfully lists encoders that fail the moment you use them. On this laptop it lists five that do not run. `Auto` times software too and keeps whichever was fastest - which was not always the GPU.
 
 ### 2. Accurate Seeking & A/V Sync
+- **A real timeline, not a restarted pipe**: A piped fMP4 handed to `<video src>` has no timeline to seek within, so every seek used to restart FFmpeg. The same pipe fed through MediaSource gives the browser absolute timestamps: a seek inside the buffer costs no network request at all, and a distant one costs exactly one. Anything that goes wrong drops back to the plain path for the rest of that playback.
 - **Seek Landing Prediction**: Open-GOP encodes (x265's default) flag CRA frames as keyframes even though they are not valid entry points. FFprobe performs the same seek FFmpeg will, so the player is told where the stream *actually* begins rather than where it was asked to begin.
 - **Matched Stream Entry**: FFmpeg's accurate seek trims audio to the exact timestamp, but copied video can only start on a keyframe, leaving the two seconds apart. `-noaccurate_seek` is used for stream copies so both begin at the same point; re-encoded video keeps accurate seek.
 - **Timing adjuster**: One panel for both streams, a millisecond at a time if you want it. The step size cycles through 1, 10, 50, 250 and 1000 ms, so a small correction and a large one both take a few presses. Subtitles shift instantly in the browser; audio delay is applied by FFmpeg and so takes effect once you stop pressing.
 - **Hover readout on the seek bar**: The time under the pointer is shown before you click, rather than after you have landed somewhere else.
+- **Picture previews while scrubbing**: One sprite sheet per file, built from keyframes only, so you seek to a shot rather than to a number. Measured at roughly 0.3s of CPU per minute of video - a 24-minute episode costs about seven seconds and 224 KB.
+- **Skips land forward, not back**: A stream copy can only begin on a keyframe, so a skip used to land on the keyframe *before* the target and replay what you asked to skip. Measured on a ten-second-GOP file, asking to jump seven seconds returned to the same frame. Skips now take the first verified entry point at or after the target.
+- **Two quick changes do not restart the film**: A restart reads the clock, and the clock reads zero while one is in flight - measured at a 61ms window on a fast desktop. A second press inside it used to resume from zero. The target is now held until the new source is playing.
 
-### 3. Comprehensive Subtitle Engine
+### 3. Sound
+- **Audio track selection**: Japanese against an English dub, commentary against the feature. The server selects the track, because browser `audioTracks` support cannot be relied on.
+- **Dialogue levelling**: Two presets for films that whisper and then explode. Measured gap between quiet and loud passages: 22 dB untouched, 10.5 dB on Boost, 5.5 dB on Night, at no measurable CPU cost. Single-pass `loudnorm` was tried and rejected - it made quiet dialogue *quieter* at six times the CPU - and `acompressor` clipped.
+- **Per-show track memory**: The dub you picked for episode one is the dub for episode two. Choices are remembered per series rather than globally, which is what stopped "subtitles off" on one film from turning them off everywhere. Each menu says whose preference it is holding and offers to drop it.
+
+### 4. Comprehensive Subtitle Engine
 - **External Sidecar Subtitles**: Automatic discovery of `.srt`, `.vtt`, `.ass` files in media folders or `subs/` directories.
 - **Pure-Python SRT Converter**: Converts SubRip (`.srt`) to WebVTT in-process with multi-encoding fallback (`utf-8-sig`, `utf-16`, `cp1252`, `latin-1`), functioning even if FFmpeg is not installed.
 - **Embedded Subtitles**: Automatically extracts embedded text subtitles on-the-fly and caches them as WebVTT.
-- **Dynamic Cue Shifting**: Dynamically re-bases subtitle timestamps when playback resumes midway through a stream.
+- **Fetched once, for the whole film**: Cue timings used to be re-based by the server for whatever point the stream had restarted at, which meant refetching the entire subtitle file on every seek — measured at eight fetches for eight seeks. The player's clock is already absolute, so one copy in the file's own timeline now serves the whole playback and a seek costs nothing.
+- **Survives a failed fetch**: A `<track>` whose download fails is dead permanently — zero cues, and re-enabling it loads nothing, which is why toggling subtitles off and on could not always bring them back. A failed track is replaced rather than re-enabled, and retried at 2s, 6s and 15s before it says so.
 - **Adjustable subtitle delay**: Cues are selected in the browser rather than left to the video element, so the offset can be nudged without refetching anything. Useful when the file itself drifts, which no server-side fix can repair.
 - **Bitmap Burn-in**: Detects image-based subtitles (PGS / VobSub) and offers clean hardware-assisted video burn-in.
 
-### 4. TV Remote & 10-Foot User Interface
+### 5. TV Remote & 10-Foot User Interface
 
 - **Device profiles**: The interface sizes itself to the screen it is on. There is no reliable way to ask a browser "am I a television", so LiteJelly asks what actually changes the design: a wide screen that cannot hover is being driven by a remote from across a room. Type, spacing, focus rings and hit targets all scale from that, and a stray mouse movement corrects a wrong guess.
 - **D-pad spatial navigation**: Arrow keys move to the nearest control in that direction, measured geometrically. A hero, rails of differing lengths and a grid share no common column count, so counting columns cannot work.
 - **Overscan safe area**: Nothing readable or pressable sits in the outer 5% on a television, because many still clip the edge of the picture.
-- **Home screen**: A suggestion with full-width artwork, then one rail per category. A flat alphabetical grid is a file browser, not a library.
+- **Home screen**: A suggestion with full-width artwork, then one rail per category. A flat alphabetical grid is a file browser, not a library. The large slot never repeats what is in Continue watching directly beneath it, and it does not call itself a recommendation, because nothing behind it knows anything about your taste.
+- **Search that matches how a title is remembered**: Accents are folded, punctuation becomes a gap and words match in any order, so "pokemon" finds "Pokémon" and "dragon s2e3" finds the episode. `s02e03`, `s2e3` and `2x03` are the same query. A run-together copy of each title is kept so "shield" finds "S.H.I.E.L.D.".
+- **Filter by what you have seen**: Unwatched, in progress, finished - and by genre, which comes from metadata already fetched. The old filters sorted by container, which told you about the file rather than about the film.
 - **Series pages**: Poster beside backdrop, season tabs, and one row per episode carrying its own still, synopsis, runtime and air date.
 - **"Continue Watching" Rail**: One row per series rather than one per episode, showing the next episode once you finish one.
 - **Up Next**: The next episode is offered in the corner before the current one ends - at the credits where their position is known, otherwise thirty seconds out - so the picture never goes black first. The episode keeps playing behind it, and dismissing it leaves it dismissed.
@@ -178,6 +191,7 @@ lucid-fermi/
 │   ├── store.py            # SQLite WAL progress store and continue watching
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
 │   ├── thumbnails.py       # Single-flight thumbnail worker pool with fallback seeking
+│   ├── trickplay.py        # Sprite sheets of frames for the seek-bar preview
 │   └── web.py              # HTTP server, REST API, ReadAhead ring buffer, streaming pump
 │
 ├── static/                 # Frontend assets, no build step and no CDN
@@ -194,22 +208,34 @@ lucid-fermi/
 ├── tests/                  # Automated test suite
 │   ├── test_litejelly.py   # Unit tests for containment, ranges, subtitles, and titles
 │   ├── test_admin.py       # Settings validation, admin access control, library rebuild
+│   ├── test_audio.py       # Audio track listing, selection and per-show memory
 │   ├── test_auth.py        # Password hashing, credential storage, sessions, lockout
 │   ├── test_avsync.py      # Regression tests for the seeking and A/V sync fixes
+│   ├── test_browse.py      # Watch-state chips, genres, and what the hero may show
 │   ├── test_chapters.py    # Chapter parsing and skip-segment selection
 │   ├── test_frontend.py    # Browser code: undefined calls, missing ids, browser floor
 │   ├── test_grouping.py    # Categories, series identity, episode ordering
 │   ├── test_http.py        # Live-server tests over a real socket
+│   ├── test_hwaccel.py     # Encoder discovery, self-test, and the auto choice
+│   ├── test_levelling.py   # Dialogue levelling modes and their effect on the plan
 │   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
 │   ├── test_metadata.py    # .nfo parsing and artwork discovery
 │   ├── test_nextup.py      # Next episode selection and the resume rail
 │   ├── test_providers.py   # Online metadata parsing, caching and failure handling
-│   └── test_thumbnails.py  # Background generation, caching, failure handling
+│   ├── test_restart.py     # Restarting the pipe without losing your place
+│   ├── test_subtitles.py   # One fetch per film, and recovery from a failed one
+│   ├── test_thumbnails.py  # Background generation, caching, failure handling
+│   └── test_trickplay.py   # Sprite sheets, tile geometry, queue limits
 │
 ├── logs/                   # Rotating log files (gitignored)
 │
 └── tools/                  # Diagnostic and verification utilities
-    └── avsync_probe.py     # Diagnostic harness for measuring A/V synchronization drift
+    ├── avsync_probe.py     # Diagnostic harness for measuring A/V synchronization drift
+    ├── hero_fixture.ps1    # Throwaway library of films and episodes for browser checks
+    ├── subtitle_fixture.ps1 # MKV carrying a real embedded subtitle stream
+    ├── mutate_browse.ps1   # Breaks each browse assertion to prove the tests catch it
+    ├── mutate_restart.ps1  # The same, for the restart race
+    └── mutate_subtitles.ps1 # The same, for the subtitle fetching rules
 ```
 
 ---
@@ -321,11 +347,17 @@ rare ones:
 
 | Tab | Contains |
 | :--- | :--- |
-| **Library** | Media folders and their content types, scan interval, online metadata, manual rescan |
-| **Playback** | HEVC direct play, default transcode quality |
-| **General** | Server name, port and bind address, admin account, status |
+| **Library** | Media folders and their content types, scan interval, online metadata, manual rescan, clearing or forgetting a wrong metadata match |
+| **Playback** | HEVC direct play, default transcode quality, hardware encoder and its self-test, scrub previews |
+| **General** | Server name, port and bind address, admin account, status, settings backup and restore |
 | **Logs** | Detail level and a viewer for the recent log |
 | **Advanced** | x264 preset and CRF, bitrates, concurrency, stream buffer, log rotation, ffmpeg paths |
+
+Two of those are worth calling out. The encoder self-test runs a real timed
+encode rather than trusting `ffmpeg -encoders`, and reports the speed it
+actually measured. And "forget this match" exists because a lookup that lands
+on the wrong show is otherwise permanent: it clears the cached records for
+that title so the next scan can try again.
 
 Everything except `port` and `host` applies immediately; those two are saved
 and reported as needing a restart.
@@ -419,24 +451,14 @@ because on a phone-hosted server those are usually in tension.
 ### Playback
 
 - **Pre-remux to MP4 on demand.** Cache a stream-copied MP4 beside the cache
-  for files that only fail direct play on their container or audio codec. This
-  is the single highest-value item: it makes those files direct-play, which
-  means the browser seeks them itself and start-up stops waiting on a pipe.
-  It also fixes seek precision, which HLS would not: HLS cuts at segment
-  boundaries, so seeking still snaps, whereas a direct-played file decodes and
-  discards to the exact frame. Costs disk.
-- **Keyframe-aware skip targets.** A stream copy can only begin on a keyframe,
-  so a skip currently lands on the keyframe *before* the target and can replay
-  what you asked to skip. Measured on a ten-second-GOP file, asking to jump
-  seven seconds landed back on the same frame. Rounding forward instead, with
-  a limit so it cannot eat the scene, fixes the case that feels broken.
-- **Audio track switching.** Japanese audio against an English dub. Forces a
-  remux, and browser `audioTracks` support is unreliable, so it needs the
-  server to select the track rather than the client.
-- **Hardware encoders.** NVENC, QuickSync, AMF and VAAPI, detected with a real
-  one-frame encode rather than by reading `ffmpeg -encoders`, which lists
-  encoders that then fail at runtime. Worth a lot on a desktop GPU and very
-  little on the Android box, where the encoders are mostly unreachable.
+  for files that only fail direct play on their container or audio codec, so
+  the browser seeks them itself. Deliberately not built: for watch-once viewing
+  it spends disk and a wait up front to improve a seek that the buffered
+  stream already handles well. Worth revisiting only for files watched often.
+- **A caps handshake for Safari.** MediaSource is unavailable on iPhone before
+  17.1, so those fall back to the classic pipe and seek by restarting it. HLS
+  would fix it and costs a segmenter, so it needs the capability negotiation
+  first rather than a browser sniff.
 
 ### Library
 
@@ -446,27 +468,25 @@ because on a phone-hosted server those are usually in tension.
   but the size does.
 - **Cast as a way in.** Portraits are shown but do nothing. The data to filter
   a library by actor is already fetched and cached.
-- **Better search.** Matching is a plain substring test, so accents, initials
-  and word order all defeat it.
+- **More than one viewer.** Progress, and the per-show track choices, are
+  shared by everyone using the server. Two people watching the same series
+  overwrite each other.
 
 ### Interface
 
-- **Drive the browser code in a real browser.** The static checks catch missing
-  functions, renamed elements and anything past the browser floor, but nothing
-  exercises a journey end to end. That still needs a headless run.
-- **A real suggestion.** The home hero currently picks the best-looking
-  unstarted title and rotates daily. It is a spotlight, not a recommendation.
-  Genres and watch history are both already available to do better.
+- **Drive the browser code end to end, unattended.** Journeys are checked in a
+  real browser by hand today, and the fixtures in `tools/` exist for it, but
+  nothing runs them on its own. The static checks cannot see a journey.
+- **A real suggestion.** The hero no longer claims to be one - it says plainly
+  that a title is unstarted - but genres and watch history are both available
+  to do better than ranking by artwork.
+- **Subtitle appearance.** Size, colour and background are fixed. On a TV
+  across a room the size in particular wants to be adjustable.
 - **A coarse seek on the remote.** Up and down are volume now, so there is no
   one-press minute jump. Holding left or right is the workaround.
 
 ### Operations
 
-- **Clear the metadata cache from the admin page.** Records carry a schema
-  version now, so an upgrade refetches them automatically, but there is still
-  no way to force a refresh when a lookup matched the wrong show.
-- **Back up and restore settings.** `settings.json` and `credentials.json` are
-  the whole configuration; exporting them should not require a file manager.
 - **Optional server statistics.** CPU, memory and active streams on the admin
   page. Genuinely useful on a phone that may be thermally throttling, and
   deliberately absent today rather than faked.
@@ -487,6 +507,22 @@ every element id looked up exists in the markup, that nothing newer than the
 target television's engine is used without a fallback, and that no asset is
 fetched from the internet. These are textual checks and cannot prove the
 interface works - they catch the mistakes that have actually happened.
+
+A textual check is only worth having if it fails when the thing it describes
+breaks, so the ones guarding a fixed bug come with a script beside them that
+breaks it deliberately and confirms the suite notices:
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_subtitles.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_restart.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_browse.ps1
+```
+This has already earned its keep: one assertion passed happily while the
+behaviour it claimed to pin was inverted, and was rewritten until it did not.
+
+`tools/subtitle_fixture.ps1` and `tools/hero_fixture.ps1` generate throwaway
+libraries - an MKV carrying a real embedded subtitle stream, a set of films and
+episodes - for checking playback behaviour in a browser without needing a
+media collection.
 
 Run the A/V synchronization diagnostic tool:
 ```bash
