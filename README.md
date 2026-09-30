@@ -509,13 +509,11 @@ Run the automated test suite:
 python -m unittest discover -s tests
 ```
 
-No test touches the network, and none needs media beyond what it generates
-itself. `tests/test_frontend.py` covers the browser code, which has no build
-step to catch anything: it checks that every function called is defined, that
-every element id looked up exists in the markup, that nothing newer than the
-target television's engine is used without a fallback, and that no asset is
-fetched from the internet. These are textual checks and cannot prove the
-interface works - they catch the mistakes that have actually happened.
+The default suite needs no pip packages or external services. HTTP tests use
+isolated loopback servers; media tests use generated fixtures and skip when
+their optional tools are unavailable. `tests/test_frontend.py` checks source
+structure, element references and selected compatibility rules. Those checks
+do not execute JavaScript and cannot certify browser behavior.
 
 A textual check is only worth having if it fails when the thing it describes
 breaks, so the ones guarding a fixed bug come with a script beside them that
@@ -527,14 +525,50 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_opensubtitles.p
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_restart.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_browse.ps1
 ```
-This has already earned its keep: one assertion passed happily while the
-behaviour it claimed to pin was inverted, and was rewritten until it did not.
+Each script delegates to `tools/mutation_runner.py`, which copies source and
+tests to a temporary directory. The original worktree is never mutated. A
+clean baseline is required, and only assertion failures with the same test
+count qualify as caught mutations. Missing or ambiguous targets, survivors,
+test errors, skips and timeouts fail the command. Windows-specific newline
+mutations are explicitly marked and run on Windows in CI.
 
-Nothing in the suite touches the network, including the OpenSubtitles tests,
-which run against a stub. That covers the parts that are ours - the credential
-file, the file hash, parsing, the refusal to follow a link that is not https -
-and does not prove the live API still looks the way it did. That leg has to be
-checked with a real key.
+Earlier scripts could mistake PowerShell's stderr wrapper for a failed test.
+The runner now consumes a structured unittest report instead of searching
+console output for words such as "Error". Its own regression tests exercise
+passing, failing, malformed and interrupted runs in child processes.
+
+### Optional browser regression suite
+
+Browser checks use the pinned development-only dependency in
+`tools/requirements-browser.txt`. It is not imported by the server or the
+default suite. No startup or test command installs tools automatically.
+Obtain explicit approval before installing packages, browsers or virtual
+environments on a developer's machine.
+
+If that tooling is already present, run:
+```bash
+python -m unittest discover -s tests/browser -v
+```
+On Windows, the existing isolated environment can run it with
+`.venv/Scripts/python.exe -m unittest discover -s tests/browser -v`.
+
+These tests execute the real HTML, CSS and client JavaScript in headless
+Chromium. All API responses and media-clock events are controlled fixtures;
+no request reaches a real library or third-party service. They cover library
+search, rapid dialogue changes, reversed response ordering, player exit and
+subtitle placement across screen shapes. A negative control removes the
+restart clock guard from the test-served script and reproduces a zero target.
+Screenshots and traces are written to the ignored `test-results/browser/`.
+
+The GitHub Actions workflow runs the default suite on Windows and Linux with
+Python 3.10 and 3.13, mutation checks on Windows, and the optional browser suite
+on a hosted Windows runner. Only that hosted browser job installs the pinned
+test tooling. Browser traces and screenshots are retained when its tests fail.
+
+These fixtures do not certify real codec decoding, GPU composition, A/V sync,
+TV remote behavior or the live OpenSubtitles API. Those require separate
+device/media checks. Thor's subtitle placement fix was confirmed by the user
+on the affected laptop on 2026-10-01.
 
 `tools/subtitle_fixture.ps1` and `tools/hero_fixture.ps1` generate throwaway
 libraries - an MKV carrying a real embedded subtitle stream, a set of films and

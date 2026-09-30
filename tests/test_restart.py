@@ -13,6 +13,7 @@ flight the slower response could land last and win.
 Run with:  python -m unittest discover -s tests
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -46,6 +47,7 @@ class RestartTests(unittest.TestCase):
     def test_only_the_newest_restart_can_finish(self):
         restart = body(self.code, "async function restartStream", "\n  }")
         self.assertIn("++state.restartToken", restart)
+        self.assertIn("token !== state.restartToken", restart)
         self.assertLess(restart.index("token !== state.restartToken"),
                         restart.index("startPlayback("))
 
@@ -62,9 +64,9 @@ class RestartTests(unittest.TestCase):
         # Clearing this on timeupdate fires while the OLD source is still
         # playing at the target, which drops the guard before the teardown it
         # exists for. Measured: the 0:00 window came back unchanged.
-        loaded = body(self.code, "video.addEventListener('loadedmetadata', () => {\n      state.restartAt",
-                      "});")
-        self.assertIn("state.restartAt = null;", loaded)
+        listeners = re.findall(r"video\.addEventListener\('loadedmetadata', \(\) => \{(.*?)\}\);",
+                       self.code, re.S)
+        self.assertTrue(any("state.restartAt = null;" in listener for listener in listeners))
         tick = body(self.code, "video.addEventListener('timeupdate'", "});")
         self.assertNotIn("restartAt", tick)
 

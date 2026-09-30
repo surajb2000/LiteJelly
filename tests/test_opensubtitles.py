@@ -53,6 +53,7 @@ SEARCH_BODY = {
             }
         },
         {"attributes": {"language": "en", "files": []}},        # no file at all
+        {"attributes": {"language": "en", "files": [{}]}},
         {"attributes": {"language": "en", "files": [{"file_id": "nope"}]}},
         "not even a dict",
     ]
@@ -267,15 +268,19 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue(calls[0].full_url.endswith("/login"))
 
     def test_the_token_is_reused_rather_than_fetched_each_time(self):
-        fake, calls = stub([
-            {"token": "abc"},
-            {"link": "https://dl.opensubtitles.com/a.srt"}, SRT.encode("utf-8"),
-            {"link": "https://dl.opensubtitles.com/b.srt"}, SRT.encode("utf-8"),
-        ])
-        with mock.patch("urllib.request.urlopen", fake):
+        def respond(request, timeout=None):
+            """Allow extra logins so the assertion, not an exhausted stub, detects them."""
+            if request.full_url.endswith("/login"):
+                return FakeResponse(b'{"token":"abc"}')
+            if request.full_url.endswith("/download"):
+                return FakeResponse(b'{"link":"https://dl.opensubtitles.com/a.srt"}')
+            return FakeResponse(SRT.encode("utf-8"))
+
+        with mock.patch("urllib.request.urlopen", side_effect=respond) as outbound:
             self.client.download(1)
             self.client.download(2)
-        logins = [c for c in calls if c.full_url.endswith("/login")]
+        logins = [call for call in outbound.call_args_list
+                  if call.args[0].full_url.endswith("/login")]
         self.assertEqual(len(logins), 1)
 
     def test_the_download_carries_the_token(self):
@@ -294,12 +299,13 @@ class DownloadTests(unittest.TestCase):
         for link in ("http://dl.opensubtitles.com/x.srt",
                      "file:///etc/passwd",
                      "ftp://example.com/x.srt"):
-            fake, _ = stub([{"token": "abc"}, {"link": link}])
+            fake, calls = stub([{"token": "abc"}, {"link": link}, SRT.encode("utf-8")])
             client = os_api.OpenSubtitles(self.root)
             client._pace = lambda: None
             with mock.patch("urllib.request.urlopen", fake):
                 with self.assertRaises(os_api.OpenSubtitlesError):
                     client.download(1)
+            self.assertEqual(len(calls), 2)
 
     def test_no_link_reports_what_the_api_said(self):
         fake, _ = stub([{"token": "abc"},

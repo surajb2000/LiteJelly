@@ -17,6 +17,7 @@ seeks now cost one fetch, and a failed fetch is retried.
 Run with:  python -m unittest discover -s tests
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -139,8 +140,9 @@ class PlacementTests(unittest.TestCase):
     def test_it_is_recomputed_whenever_the_picture_can_move(self):
         # A new file, a window resize, fullscreen and Fit/Fill all move the
         # picture's bottom edge.
-        loaded = body(self.code, "state.restartAt = null;\n      placeSubtitleLayer();", "});")
-        self.assertIn("placeSubtitleLayer()", loaded)
+        listeners = re.findall(r"video\.addEventListener\('loadedmetadata', \(\) => \{(.*?)\}\);",
+                       self.code, re.S)
+        self.assertTrue(any("placeSubtitleLayer()" in listener for listener in listeners))
         self.assertIn("else placeSubtitleLayer();", self.code)
         self.assertIn("fullscreenchange', () => { syncFullscreenIcons(); placeSubtitleLayer(); }", self.code)
         aspect = body(self.code, "function toggleAspect", "showToast")

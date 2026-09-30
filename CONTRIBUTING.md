@@ -9,6 +9,7 @@ This document outlines the architectural standards, code quality conventions, an
 1. **Zero Runtime Dependencies**:
    - The LiteJelly server must run directly on any standard Python 3.10+ installation with **zero pip dependencies**.
    - Do not add packages to `requirements.txt` for server operation. Everything must use Python's rich standard library (`http.server`, `sqlite3`, `subprocess`, `threading`, `dataclasses`, `pathlib`, etc.).
+   - Optional browser-test dependencies live in `tools/requirements-browser.txt`, separate from runtime code and the default tests. Before installing any tool, package, browser or virtual environment on a developer's machine, stop, summarize the need, and obtain explicit approval.
 2. **Zero Frontend Build Steps**:
    - The frontend must remain 100% vanilla HTML5, modern CSS3, and ES6+ JavaScript.
    - No `npm`, `node_modules`, Webpack, Vite, or frontend frameworks (React, Vue, etc.).
@@ -131,4 +132,8 @@ This document outlines the architectural standards, code quality conventions, an
   python -m unittest discover -s tests
   ```
 - Ensure all existing tests pass with zero regressions.
+- Mutation checks run through `tools/mutation_runner.py` in a temporary copy. Require a clean baseline and explicit assertion failures; test errors, missing targets, survivors and timeouts are failures of the check, not successful detections. Never infer success from stderr text or mutate a developer's working files in place.
+- Run the optional browser suite with `python -m unittest discover -s tests/browser -v` only in an environment where its tooling is already installed. API and media-clock fixtures make ordering deterministic; use observable state or events rather than fixed sleeps. Traces and screenshots belong in the ignored `test-results/browser/` directory.
+- Keep the distinction between structural checks, simulated browser journeys and real-media verification explicit. Headless geometry tests cannot prove hardware-overlay behavior or A/V synchronization on a TV.
+- Give new helper functions concise purpose docstrings. Document time units, state changes, failure behavior and cancellation where applicable; keep incident histories in regression tests instead of narrating implementation lines.
 - For A/V synchronization testing, utilize `tools/avsync_probe.py` to measure clock drift against test clips. Its beep-onset detection is not yet reliable at sub-100 ms resolution; prefer packet and timestamp measurements for small offsets.

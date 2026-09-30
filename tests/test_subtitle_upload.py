@@ -96,6 +96,9 @@ class SaveTests(unittest.TestCase):
 
     def test_a_language_cannot_carry_a_path_into_the_name(self):
         for attempt in ("../../etc/passwd", "en/../..", "..", "e n", "EN-US-x"):
+            target = subtitles.sidecar_target(self.video, attempt, ".srt")
+            self.assertEqual(target.parent, self.root)
+            self.assertNotIn("..", target.name)
             saved = subtitles.save_sidecar(self.video, SRT.encode("utf-8"), attempt)
             self.assertEqual(saved.parent, self.root)
             self.assertNotIn("..", saved.name)

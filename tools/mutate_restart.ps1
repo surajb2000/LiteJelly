@@ -1,10 +1,5 @@
-# Confirms tests/test_restart.py fails when the behaviour it pins is broken.
-# Run from the repo root; restores static/app.js on the way out.
-# unittest writes its report to stderr, which PowerShell turns into a
-# NativeCommandError, so this stays at Continue.
-$ErrorActionPreference = 'Continue'
-$target = 'static/app.js'
-$backup = 'static/app.js.mutbak'
+# Run restart mutations in an isolated copy; any unproven mutation fails the command.
+$ErrorActionPreference = 'Stop'
 
 $mutations = @(
     @{ name = 'clock guard removed';      from = 'if (state.restartAt !== null) return state.restartAt;'; to = '' }
@@ -15,21 +10,6 @@ $mutations = @(
     @{ name = 'fresh play keeps a target'; from = "state.restartAt = typeof startAt === 'number' ? startAt : null;"; to = 'state.restartAt = startAt || 0;' }
 )
 
-Copy-Item $target $backup
-try {
-    foreach ($m in $mutations) {
-        $text = (Get-Content $backup -Raw) -replace "`r`n", "`n"
-        if (-not $text.Contains($m.from)) {
-            Write-Output ("{0,-26} TARGET MISSING" -f $m.name)
-            continue
-        }
-        Set-Content $target ($text.Replace($m.from, $m.to)) -NoNewline
-        $out = & python -m unittest tests.test_restart 2>&1 | Out-String
-        $verdict = if ($out -match 'FAILED \(') { 'caught' } else { 'SURVIVED' }
-        Write-Output ("{0,-26} {1}" -f $m.name, $verdict)
-    }
-}
-finally {
-    Copy-Item $backup $target
-    Remove-Item $backup
-}
+foreach ($mutation in $mutations) { $mutation.file = 'static/app.js' }
+$mutations | ConvertTo-Json -Depth 5 -Compress | python "$PSScriptRoot/mutation_runner.py" --suite tests.test_restart
+exit $LASTEXITCODE

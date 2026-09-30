@@ -1,0 +1,68 @@
+name: Regression Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.13']
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run dependency-free suite
+        run: python -m unittest discover -s tests -v
+      - name: Check mutations on Windows
+        if: runner.os == 'Windows' && matrix.python == '3.13'
+        shell: powershell
+        run: |
+          $scripts = @('browse', 'restart', 'subtitles', 'subtitle_upload', 'opensubtitles')
+          foreach ($name in $scripts) {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File "tools/mutate_$name.ps1"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+  browser:
+    name: Deterministic browser journeys
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install optional test tooling on the hosted runner
+        run: python -m pip install -r tools/requirements-browser.txt
+      - name: Install hosted test browser
+        run: python -m playwright install chromium
+      - name: Run browser journeys
+        run: python -m unittest discover -s tests/browser -v
+      - name: Keep failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure-evidence
+          path: test-results/browser/
+          if-no-files-found: ignore
+          retention-days: 7
