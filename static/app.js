@@ -2437,6 +2437,32 @@
     state.subtitleTimer = setInterval(renderSubtitleFrame, 100);
   }
 
+  /* Where the cues sit, measured against the picture rather than the screen.
+   *
+   * object-fit: contain letterboxes anything wider than the screen, and a cue
+   * placed a fixed distance from the screen edge then lands in the black bar
+   * - measured on a 1920x816 file at 1280x720: 30 of the cue's 50px were
+   * below the picture. Fill crops rather than letterboxes, so it has no bar.
+   * Raised clears the control dock, which covers the screen edge whatever
+   * shape the picture is, so that one never drops below 20% of the screen.
+   */
+  function placeSubtitleLayer() {
+    const video = el.video;
+    const box = video.getBoundingClientRect();
+    if (!box.height) return;
+    let inset = 0;
+    let pictureHeight = box.height;
+    if (state.aspect === 'contain' && video.videoWidth && video.videoHeight) {
+      const scale = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+      pictureHeight = video.videoHeight * scale;
+      inset = Math.max(0, (box.height - pictureHeight) / 2);
+    }
+    const rest = inset + pictureHeight * 0.08;
+    const raised = Math.max(box.height * 0.2, rest);
+    el.subtitleLayer.style.setProperty('--subtitle-rest', Math.round(rest) + 'px');
+    el.subtitleLayer.style.setProperty('--subtitle-raised', Math.round(raised) + 'px');
+  }
+
   function stopSubtitleTicker() {
     clearInterval(state.subtitleTimer);
     state.subtitleTimer = null;
@@ -3764,6 +3790,7 @@
   function toggleAspect() {
     state.aspect = state.aspect === 'contain' ? 'cover' : 'contain';
     el.video.style.objectFit = state.aspect;
+    placeSubtitleLayer();
     $('.popup-item-hint span', el.btnAspect).textContent =
       state.aspect === 'contain' ? 'FIT' : 'FILL';
     showToast(state.aspect === 'contain' ? 'Fit screen' : 'Zoom to fill', 1500);
@@ -4278,7 +4305,10 @@
     // The new pipe is now the one that knows the time. Clearing this on a
     // timeupdate instead would fire while the OLD source is still playing at
     // the target, which drops the guard before the teardown it exists for.
-    video.addEventListener('loadedmetadata', () => { state.restartAt = null; });
+    video.addEventListener('loadedmetadata', () => {
+      state.restartAt = null;
+      placeSubtitleLayer();
+    });
     video.addEventListener('progress', updateOSD);
     video.addEventListener('durationchange', updateOSD);
     video.addEventListener('waiting', () => el.buffering.classList.remove('hidden'));
@@ -4406,8 +4436,8 @@
     updateLevelLabel();
 
     document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('fullscreenchange', syncFullscreenIcons);
-    document.addEventListener('webkitfullscreenchange', syncFullscreenIcons);
+    document.addEventListener('fullscreenchange', () => { syncFullscreenIcons(); placeSubtitleLayer(); });
+    document.addEventListener('webkitfullscreenchange', () => { syncFullscreenIcons(); placeSubtitleLayer(); });
     // Not passive: the wheel has to be taken over while the rail can move.
     document.addEventListener('wheel', onRailWheel, { passive: false });
 
@@ -4417,6 +4447,7 @@
 
     window.addEventListener('resize', debounce(() => {
       if (state.view === 'LIBRARY') measureColumns();
+      else placeSubtitleLayer();
     }, 200));
 
     window.addEventListener('pagehide', () => saveProgress(true));

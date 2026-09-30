@@ -21,6 +21,11 @@ $mutations = @(
     @{ file = $true; name = 'cache writer translates';  from = 'cache_path.write_text(vtt, encoding="utf-8", newline="")'; to = 'cache_path.write_text(vtt, encoding="utf-8")' }
     @{ file = $true; name = 'vtt endings left alone';   from = '    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")'; to = '    text = text.lstrip("\ufeff")' }
     @{ file = $true; name = 'old conversions reused';   from = 'key = f"v{CACHE_VERSION}|{video_path}|{stat.st_mtime_ns}|{track_id}"'; to = 'key = f"{video_path}|{stat.st_mtime_ns}|{track_id}"' }
+    @{ name = 'cue pinned to the screen';   from = "el.subtitleLayer.style.setProperty('--subtitle-rest', Math.round(rest) + 'px');"; to = 'void 0;' }
+    @{ name = 'fill treated as letterbox';  from = "if (state.aspect === 'contain' && video.videoWidth"; to = 'if (video.videoWidth' }
+    @{ name = 'raised under the dock';      from = 'const raised = Math.max(box.height * 0.2, rest);'; to = 'const raised = rest;' }
+    @{ name = 'not redone on a new file';   from = "      state.restartAt = null;`n      placeSubtitleLayer();"; to = "      state.restartAt = null;" }
+    @{ name = 'not redone on resize';       from = 'else placeSubtitleLayer();'; to = 'else void 0;' }
 )
 
 Copy-Item $target $backup

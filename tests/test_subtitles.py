@@ -107,6 +107,60 @@ class ExistingFileTests(unittest.TestCase):
             subtitles.CACHE_VERSION = original
 
 
+class PlacementTests(unittest.TestCase):
+    """Cues sit on the picture, not a fixed distance from the screen edge.
+
+    Reported as "subtitles vanish when the controls hide, only on Thor, only
+    on the laptop screen". Thor is 1920x816 and letterboxed; the laptop panel
+    is taller than 16:9, which makes the black bar under the picture taller.
+    Measured with a 1920x816 file: the old resting position put 30px of a 50px
+    cue into the bar at 16:9, and 64-96px - the whole cue - at 16:10 and 3:2.
+    Raising it for the controls lifted it back onto the picture, which is why
+    it looked like the controls were what made it visible.
+    """
+
+    def setUp(self):
+        self.code = read("app.js")
+        self.css = read("style.css")
+        self.place = body(self.code, "function placeSubtitleLayer", "function applyActiveSubtitle")
+
+    def test_the_position_is_worked_out_from_the_picture(self):
+        self.assertIn("video.videoWidth", self.place)
+        self.assertIn("video.videoHeight", self.place)
+        self.assertIn("--subtitle-rest", self.place)
+
+    def test_fill_mode_has_no_bar_to_allow_for(self):
+        # Fill crops rather than letterboxes, so the inset must be zero there.
+        self.assertIn("state.aspect === 'contain'", self.place)
+
+    def test_raised_still_clears_the_control_dock(self):
+        self.assertIn("box.height * 0.2", self.place)
+
+    def test_it_is_recomputed_whenever_the_picture_can_move(self):
+        # A new file, a window resize, fullscreen and Fit/Fill all move the
+        # picture's bottom edge.
+        loaded = body(self.code, "state.restartAt = null;\n      placeSubtitleLayer();", "});")
+        self.assertIn("placeSubtitleLayer()", loaded)
+        self.assertIn("else placeSubtitleLayer();", self.code)
+        self.assertIn("fullscreenchange', () => { syncFullscreenIcons(); placeSubtitleLayer(); }", self.code)
+        aspect = body(self.code, "function toggleAspect", "showToast")
+        self.assertIn("placeSubtitleLayer()", aspect)
+
+    def test_the_css_uses_the_measured_position(self):
+        rule = body(self.css, ".subtitle-layer {", "}")
+        self.assertIn("var(--subtitle-rest", rule)
+        raised = body(self.css, ".subtitle-layer.raised {", "}")
+        self.assertIn("var(--subtitle-raised", raised)
+
+    def test_nothing_newer_than_the_tv_engine_is_used(self):
+        # max()/min()/clamp() in CSS need Chrome 79; the floor is Chrome 55,
+        # which is why the arithmetic is done in script.
+        for rule in (body(self.css, ".subtitle-layer {", "}"),
+                     body(self.css, ".subtitle-layer.raised {", "}")):
+            for newer in ("max(", "min(", "clamp("):
+                self.assertNotIn(newer, rule)
+
+
 class TimelineTests(unittest.TestCase):
     def setUp(self):
         self.code = read("app.js")

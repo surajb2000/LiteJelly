@@ -1746,7 +1746,10 @@ select:focus:not(:focus-visible) {
   position: absolute;
   left: 0;
   right: 0;
+  /* Set from script against the picture, not the screen: a fixed 8% of the
+     screen put cues in the black bar of a 2.39:1 film. */
   bottom: 8%;
+  bottom: var(--subtitle-rest, 8%);
   z-index: 15;
   display: flex;
   flex-direction: column;
@@ -1759,6 +1762,7 @@ select:focus:not(:focus-visible) {
 
 .subtitle-layer.raised {
   bottom: 20%;
+  bottom: var(--subtitle-raised, 20%);
 }
 
 /* Netflix-style: no box, white text carried by a layered shadow outline. */
