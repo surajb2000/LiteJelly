@@ -279,7 +279,7 @@ class FakeProbeFile:
     def landing(self, target):
         return max([t for t in self.entry_points if t <= target + 1e-6], default=0.0)
 
-    def __call__(self, cmd, timeout=None):
+    def __call__(self, cmd, timeout=None, cancel_event=None):
         self.calls.append(cmd)
         interval = cmd[cmd.index("-read_intervals") + 1]
         start_text, _, span_text = interval.partition("%+")

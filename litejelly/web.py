@@ -61,6 +61,21 @@ MAX_BODY_BYTES = 64 * 1024
 MAX_UPLOAD_BYTES = 4 * 1024 * 1024
 # A forced rescan re-walks every media folder; this is how often that is free.
 RESCAN_COOLDOWN = 30.0
+MAX_HTTP_CONNECTIONS = 64
+
+
+def _query_seconds(handler, query, name: str) -> float | None:
+    """Validate bounded finite media time before probing or starting a process."""
+    from .store import MAX_SECONDS
+
+    try:
+        value = float(query.get(name, ["0"])[0])
+        if not math.isfinite(value) or value > MAX_SECONDS:
+            raise ValueError("Time out of range")
+    except (TypeError, ValueError, OverflowError):
+        handler.send_api_error(HTTPStatus.BAD_REQUEST, f"{name} must be finite media seconds")
+        return None
+    return max(0.0, value)
 
 
 def _refuse_constant(name: str):
@@ -234,7 +249,8 @@ def _skip_segments(app, video, path, duration: float) -> tuple[list[dict], bool]
     Returns the segments and whether a lookup was queued, so the client knows
     to ask again rather than concluding this episode simply has no intro.
     """
-    segments = skippable(read_chapters(app.tools.ffprobe, path), duration)
+    tools = app.tools
+    segments = skippable(read_chapters(tools.ffprobe, path, runner=tools.chapter_probe), duration)
     if segments or app.metadata is None:
         return segments, False
 
@@ -298,9 +314,11 @@ class Application:
     def __init__(self, config):
         self.config = config
         self._config_lock = threading.RLock()
+        self.progress = ProgressStore(config.db_path, config.legacy_db_path)
         self.metadata, self.enricher = _build_metadata(config)
         self.library = Library(config.media_dirs, config.scan_interval,
-                               metadata=self.metadata, enricher=self.enricher)
+                       metadata=self.metadata, enricher=self.enricher,
+                       identify=self.progress.identify_media)
         self.tools = FFmpegTools(
             config.app_dir,
             transcode_slots=config.transcode.max_concurrent,
@@ -308,7 +326,6 @@ class Application:
             ffmpeg_path=config.ffmpeg_path,
             ffprobe_path=config.ffprobe_path,
         )
-        self.progress = ProgressStore(config.db_path)
         self.subtitles = SubtitleService(self.tools, config.cache_dir)
         self.thumbnails = ThumbnailService(self.tools, config.cache_dir,
                                            config.thumbnail_workers)
@@ -323,6 +340,7 @@ class Application:
         self._last_rescan = 0.0
         self._streams: set = set()
         self._streams_lock = threading.Lock()
+        self._closing = False
         if self.enricher is not None:
             self.enricher.on_updated = lambda: self.library.request_scan(force=True)
 
@@ -383,6 +401,8 @@ class Application:
         concurrency limits.
         """
         with self._config_lock:
+            if self._closing:
+                raise RuntimeError("Server is shutting down")
             old_tools = self.tools
             tools = FFmpegTools(
                 new_config.app_dir,
@@ -391,10 +411,14 @@ class Application:
                 ffmpeg_path=new_config.ffmpeg_path,
                 ffprobe_path=new_config.ffprobe_path,
             )
+            tools.transcode_sem = old_tools.transcode_sem
+            tools.transcode_sem.resize(new_config.transcode.max_concurrent)
             old_thumbnails = self.thumbnails
             old_trickplay = self.trickplay
             old_enricher = self.enricher
             metadata, enricher = _build_metadata(new_config)
+            if enricher is not None:
+                enricher.on_updated = lambda: self.library.request_scan(force=True)
             self.config = new_config
             self.tools = tools
             self.metadata = metadata
@@ -412,12 +436,12 @@ class Application:
             old_trickplay.close()
             if old_enricher is not None:
                 old_enricher.stop()
-            del old_tools
+            old_tools.close()
+            self.library.set_media_dirs(new_config.media_dirs, new_config.scan_interval)
 
         # Verbosity applies to the live handlers; the file settings only take
         # effect on restart because reopening the file would lose buffered lines.
         log_setup.set_verbosity(new_config.log_verbosity, new_config.log_to_console)
-        self.library.set_media_dirs(new_config.media_dirs, new_config.scan_interval)
 
     def resolve_video(self, query: dict):
         """Look up a video by opaque id and return (video, absolute_path)."""
@@ -434,10 +458,7 @@ class Application:
 
     def media_root(self, video) -> Path | None:
         """The configured folder a video was found under."""
-        dirs = self.library.media_dirs
-        if not 0 <= video.dir_index < len(dirs):
-            return None
-        return Path(dirs[video.dir_index].path)
+        return self.library.root_for(video)
 
     def rescan_cooldown_remaining(self) -> float:
         return max(0.0, RESCAN_COOLDOWN - (time.monotonic() - self._last_rescan))
@@ -445,28 +466,36 @@ class Application:
     def note_rescan(self) -> None:
         self._last_rescan = time.monotonic()
 
-    def track_stream(self, process) -> None:
+    def track_stream(self, process) -> bool:
+        """Register a spawned stream unless shutdown has already taken ownership."""
         with self._streams_lock:
+            if self._closing:
+                return False
             self._streams.add(process)
+            return True
 
     def forget_stream(self, process) -> None:
         with self._streams_lock:
             self._streams.discard(process)
 
     def shutdown(self) -> None:
+        """Reject new streams before cancelling background work and closing storage."""
+        with self._config_lock, self._streams_lock:
+            if self._closing:
+                return
+            self._closing = True
+            live = list(self._streams)
+            self._streams.clear()
+        self.tools.transcode_sem.close()
+        for process in live:
+            RequestHandler._terminate(process)
+        self.tools.close()
         self.library.stop()
         if self.enricher is not None:
             self.enricher.stop()
         self.thumbnails.close()
         self.trickplay.close()
         self.progress.close()
-        # Terminating the server does not reap ffmpeg on Windows, so a stopped
-        # server could leave encoders running against the media files.
-        with self._streams_lock:
-            live = list(self._streams)
-            self._streams.clear()
-        for process in live:
-            RequestHandler._terminate(process)
 
 
 class Routes:
@@ -1139,10 +1168,9 @@ class Routes:
         if path is None:
             h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
             return
-        try:
-            target = max(0.0, float(query.get("t", ["0"])[0]))
-        except (TypeError, ValueError):
-            target = 0.0
+        target = _query_seconds(h, query, "t")
+        if target is None:
+            return
 
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
@@ -1180,10 +1208,9 @@ class Routes:
             h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
             return
 
-        try:
-            start = max(0.0, float(query.get("ss", ["0"])[0]))
-        except (TypeError, ValueError):
-            start = 0.0
+        start = _query_seconds(h, query, "ss")
+        if start is None:
+            return
 
         info = app.tools.probe(path)
         quality = resolve_quality(query.get("quality", [""])[0])
@@ -1405,10 +1432,9 @@ class Routes:
             h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
             return
         track_id = query.get("track", [""])[0]
-        try:
-            offset = max(0.0, float(query.get("offset", ["0"])[0]))
-        except (TypeError, ValueError):
-            offset = 0.0
+        offset = _query_seconds(h, query, "offset")
+        if offset is None:
+            return
 
         vtt = h.app.subtitles.get_vtt(path, track_id, offset)
         if vtt is None:
@@ -1417,7 +1443,7 @@ class Routes:
         h.send_bytes(
             vtt.encode("utf-8"),
             content_type="text/vtt; charset=utf-8",
-            cache_control="public, max-age=3600",
+            cache_control="no-cache",
         )
 
     @staticmethod
@@ -1676,6 +1702,7 @@ class ReadAhead:
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = 15
     server_version = "LiteJelly"
     sys_version = ""
 
@@ -1712,6 +1739,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
             self._head_only = method == "HEAD"
             self._body_read = method not in ("POST", "PUT", "PATCH")
+            if self.headers.get("Transfer-Encoding") or len(self.headers.get_all("Content-Length", [])) > 1:
+                self._body_read = True
+                self.close_connection = True
+                self.send_api_error(HTTPStatus.BAD_REQUEST, "Unsupported request framing")
+                return
 
             lookup = "GET" if method == "HEAD" else method
             handler = self.app.routes.get((lookup, path))
@@ -1729,7 +1761,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception as exc:
             log.exception("Unhandled error for %s %s", method, self.path)
             try:
-                self.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+                self.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error")
             except Exception:
                 self.close_connection = True
 
@@ -1965,6 +1997,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     # -- ffmpeg pipe ------------------------------------------------------
     def pump_process(self, cmd: list[str], label: str):
         """Stream an ffmpeg process' stdout to the client, bounded by a semaphore."""
+        if getattr(self, "_head_only", False):
+            self.send_bytes(b"", "video/mp4")
+            return
         sem = self.app.tools.transcode_sem
         if not sem.acquire(timeout=20):
             self.send_api_error(HTTPStatus.SERVICE_UNAVAILABLE,
@@ -1979,7 +2014,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             except OSError as exc:
                 self.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"ffmpeg failed: {exc}")
                 return
-            self.app.track_stream(process)
+            if not self.app.track_stream(process):
+                self.send_api_error(HTTPStatus.SERVICE_UNAVAILABLE, "Server is shutting down")
+                return
             log.info("Streaming %s", label)
             self.close_connection = True
             self._begin(HTTPStatus.OK, {
@@ -2015,11 +2052,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     @staticmethod
     def _terminate(process: subprocess.Popen):
-        if process.poll() is not None:
-            return
         try:
-            process.terminate()
-            process.wait(timeout=2)
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             try:
                 process.kill()
@@ -2044,7 +2080,33 @@ class LiteJellyHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
     def __init__(self, address, handler_cls, app: Application):
         self.app = app
+        self._request_slots = threading.BoundedSemaphore(MAX_HTTP_CONNECTIONS)
         super().__init__(address, handler_cls)
+
+    def process_request(self, request, client_address):
+        """Bound active connection threads and fail fast when every slot is occupied."""
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n"
+                                b"Content-Length: 0\r\nRetry-After: 1\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        """Release capacity even when request handling or connection cleanup fails."""
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]

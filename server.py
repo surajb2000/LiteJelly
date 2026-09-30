@@ -199,7 +199,6 @@ def main(argv=None) -> int:
 
     app = Application(config)
     videos = app.library.scan(force=True)
-    app.progress.prune({v.id for v in videos})
     app.library.start()
 
     try:

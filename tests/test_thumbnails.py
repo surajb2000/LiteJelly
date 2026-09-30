@@ -8,12 +8,15 @@ Run with:  python -m unittest discover -s tests
 """
 
 import logging
+import queue
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -164,6 +167,52 @@ class ThumbnailServiceTests(unittest.TestCase):
     def test_close_is_safe_to_call_twice(self):
         self.service.close()
         self.service.close()
+
+    def test_close_with_a_full_queue_does_not_wait_for_space(self):
+        """A stopped worker cannot consume the sentinel that used to block close()."""
+        entered = threading.Event()
+        release = threading.Event()
+        self.service._worker_count = 1
+        self.service._queue = queue.Queue(maxsize=1)
+        self.service._generate = lambda *args: (entered.set(), release.wait(3))
+        self.assertTrue(self.service.request(self.video))
+        self.assertTrue(entered.wait(2))
+        worker = self.service._workers[0]
+        self.service._queue.put_nowait(("pending", self.video, self.root / "queued.jpg", 0))
+        closer = threading.Thread(target=self.service.close, daemon=True)
+        closer.start()
+        try:
+            self.assertTrue(self.service._stop.wait(2))
+            release.set()
+            worker.join(timeout=2)
+            closer.join(timeout=2)
+            self.assertFalse(closer.is_alive(), "close blocked on its own full queue")
+            self.assertEqual(self.service._pending, set())
+            self.assertEqual(self.service._queue.unfinished_tasks, 0)
+        finally:
+            release.set()
+            while not self.service._queue.empty():
+                self.service._queue.get_nowait()
+                self.service._queue.task_done()
+            closer.join(timeout=2)
+
+    def test_closed_service_rejects_requests_and_cannot_restart(self):
+        self.service.close()
+        self.assertFalse(self.service.request(self.video))
+        self.service._ensure_workers()
+        self.assertEqual(self.service._workers, [])
+
+    def test_cancelled_ffmpeg_output_is_not_published_as_a_thumbnail(self):
+        """A partial JPEG must never satisfy cached() after a cancelled extraction."""
+        def interrupted(command, **kwargs):
+            Path(command[-1]).write_bytes(b"partial image")
+            raise subprocess.SubprocessError("cancelled")
+
+        target = self.service._cache_path(self.video)
+        with mock.patch("litejelly.thumbnails.run_quiet", side_effect=interrupted):
+            ThumbnailService._generate(self.service, self.video, target, 600)
+        self.assertIsNone(self.service.cached(self.video))
+        self.assertEqual(list(target.parent.glob("*.part.jpg")), [])
 
     def _freeze_workers(self):
         """Keep the workers unstarted so the queue fills instead of draining."""

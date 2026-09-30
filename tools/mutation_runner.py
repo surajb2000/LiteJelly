@@ -47,7 +47,7 @@ def run_worker(suite: str, report_path: Path) -> int:
     """Run unittest in a child interpreter and write a machine-readable result."""
     sys.path.insert(0, str(Path.cwd()))
     with contextlib.redirect_stdout(sys.stderr):
-        tests = unittest.defaultTestLoader.loadTestsFromName(suite)
+        tests = unittest.defaultTestLoader.loadTestsFromNames(suite.split(","))
         result = unittest.TextTestRunner(stream=sys.stderr).run(tests)
     report = {
         "tests": result.testsRun,

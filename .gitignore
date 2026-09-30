@@ -10,6 +10,7 @@ bin/
 # Generated caches and database
 .cache/
 .thumbnails/
+data/
 
 # Settings written by the admin page (per-install, not shared)
 settings.json

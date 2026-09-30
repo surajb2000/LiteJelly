@@ -30,6 +30,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .net import open_remote
+
 log = logging.getLogger("litejelly.providers")
 
 USER_AGENT = "LiteJelly/0.2 (+https://github.com/surajb2000/LiteJelly)"
@@ -130,8 +132,9 @@ class RateLimitedFetcher:
             self._wait()
             request = urllib.request.Request(url, data=data, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-                    return response.read(MAX_RESPONSE_BYTES)
+                with open_remote(request, timeout=REQUEST_TIMEOUT) as response:
+                    payload = response.read(MAX_RESPONSE_BYTES + 1)
+                    return payload if len(payload) <= MAX_RESPONSE_BYTES else None
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     return None  # A clean "no match", not a failure.

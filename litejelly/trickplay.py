@@ -13,8 +13,10 @@ import hashlib
 import json
 import logging
 import math
+import os
 import queue
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -96,12 +98,14 @@ class TrickplayService:
 
     def request(self, video_path: Path, duration: float) -> bool:
         """Queue a sheet. False means it is not coming."""
-        if not self.enabled or not self.tools.available or duration <= 0:
+        if self._stop.is_set() or not self.enabled or not self.tools.available or duration <= 0:
             return False
         key = self.key_for(video_path)
         if key is None:
             return False
         with self._lock:
+            if self._stop.is_set():
+                return False
             if self._failed.get(key, 0) >= MAX_FAILURES:
                 return False
             if key in self._pending:
@@ -109,24 +113,31 @@ class TrickplayService:
             self._pending.add(key)
 
         self._ensure_worker()
-        try:
-            self._queue.put_nowait((key, video_path, duration))
-        except queue.Full:
-            with self._lock:
+        with self._lock:
+            if self._stop.is_set():
                 self._pending.discard(key)
-            return False
+                return False
+            try:
+                self._queue.put_nowait((key, video_path, duration))
+            except queue.Full:
+                self._pending.discard(key)
+                return False
         return True
 
     def close(self) -> None:
-        self._stop.set()
+        """Cancel generation, discard queued work and join without queue-capacity waits."""
         with self._lock:
+            self._stop.set()
             worker = self._worker
             self._worker = None
-        if worker is not None:
+            self._pending.clear()
+        while True:
             try:
-                self._queue.put_nowait(None)
-            except queue.Full:
-                pass
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                break
+        if worker is not None:
             worker.join(timeout=5)
 
     # -- internals --------------------------------------------------------
@@ -141,13 +152,18 @@ class TrickplayService:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            item = self._queue.get()
+            try:
+                item = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
             if item is None:
+                self._queue.task_done()
                 return
             key, video_path, duration = item
             built = False
             try:
-                built = self._generate(key, video_path, duration)
+                if not self._stop.is_set():
+                    built = self._generate(key, video_path, duration)
             except Exception:
                 log.exception("Trickplay failed for %s", video_path.name)
             finally:
@@ -178,7 +194,9 @@ class TrickplayService:
             return False
 
         target = self.cache_dir / f"{key}.jpg"
-        partial = self.cache_dir / f"{key}.part.jpg"
+        handle, name = tempfile.mkstemp(dir=self.cache_dir, prefix=key, suffix=".part.jpg")
+        os.close(handle)
+        partial = Path(name)
         columns = min(COLUMNS, count)
         graph = (f"fps=1/{interval:g},scale={self.tile_width}:-2,"
                  f"tile={columns}x{rows}")
@@ -186,6 +204,9 @@ class TrickplayService:
         # Keyframes only is far cheaper, but on a clip shorter than one
         # interval it yields no frames at all, so fall back to a full decode.
         for fast in (True, False):
+            if self._stop.is_set():
+                partial.unlink(missing_ok=True)
+                return False
             cmd = [self.tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
             if fast:
                 cmd += ["-skip_frame", "nokey"]
@@ -196,7 +217,7 @@ class TrickplayService:
                 "-q:v", "6", "-y", str(partial),
             ]
             try:
-                result = run_quiet(cmd, timeout=600)
+                result = run_quiet(cmd, timeout=600, cancel_event=self._stop)
             except (subprocess.SubprocessError, OSError) as exc:
                 log.debug("Trickplay ffmpeg failed for %s: %s", video_path.name, exc)
                 partial.unlink(missing_ok=True)
@@ -208,6 +229,9 @@ class TrickplayService:
             log.debug("Trickplay produced nothing for %s", video_path.name)
             return False
 
+        if self._stop.is_set():
+            partial.unlink(missing_ok=True)
+            return False
         size = _jpeg_size(partial)
         if size is None:
             partial.unlink(missing_ok=True)
@@ -224,6 +248,7 @@ class TrickplayService:
                 json.dumps(sheet.to_dict()), encoding="utf-8")
         except OSError as exc:
             log.warning("Cannot store the trickplay sheet: %s", exc)
+            partial.unlink(missing_ok=True)
             return False
         log.debug("Trickplay sheet for %s: %d tiles", video_path.name, count)
         return True

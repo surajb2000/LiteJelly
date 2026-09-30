@@ -35,7 +35,7 @@ jobs:
         if: runner.os == 'Windows' && matrix.python == '3.13'
         shell: powershell
         run: |
-          $scripts = @('browse', 'restart', 'subtitles', 'subtitle_upload', 'opensubtitles')
+          $scripts = @('browse', 'restart', 'subtitles', 'subtitle_upload', 'opensubtitles', 'safety')
           foreach ($name in $scripts) {
             & powershell -NoProfile -ExecutionPolicy Bypass -File "tools/mutate_$name.ps1"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

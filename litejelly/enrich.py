@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 
 log = logging.getLogger("litejelly.enrich")
 
@@ -52,14 +53,21 @@ class Enricher:
                               round(duration)))
 
     def stop(self) -> None:
-        self._stop.set()
+        """Reject queued work and detach callbacks before waiting for current lookups."""
         with self._lock:
+            self._stop.set()
+            self.on_updated = None
             threads = list(self._threads)
             self._threads = []
-        for _ in threads:
-            self._queue.put(None)
+        while True:
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except queue.Empty:
+                break
+        deadline = time.monotonic() + 3
         for thread in threads:
-            thread.join(timeout=3)
+            thread.join(timeout=max(0, deadline - time.monotonic()))
 
     def pending(self) -> int:
         return self._queue.qsize()
@@ -68,11 +76,14 @@ class Enricher:
     def _enqueue(self, job) -> bool:
         key = repr(job)
         with self._lock:
-            if key in self._seen:
+            if self._stop.is_set() or key in self._seen:
                 return False
             self._seen.add(key)
         self._ensure_workers()
-        self._queue.put(job)
+        with self._lock:
+            if self._stop.is_set():
+                return False
+            self._queue.put_nowait(job)
         return True
 
     def _ensure_workers(self) -> None:
@@ -87,11 +98,16 @@ class Enricher:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            job = self._queue.get()
+            try:
+                job = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
             if job is None:
+                self._queue.task_done()
                 return
             try:
-                self._run(job)
+                if not self._stop.is_set():
+                    self._run(job)
             except Exception:
                 log.exception("Metadata lookup failed for %r", job)
             finally:
@@ -115,11 +131,15 @@ class Enricher:
                 log.debug("No online match for %r", title)
                 return
             log.info("Found %s on %s", info.title or title, info.source)
+            if self._stop.is_set():
+                return
             if info.poster_url:
                 self.providers.artwork(info.poster_url)
-            if info.backdrop_url:
+            if info.backdrop_url and not self._stop.is_set():
                 self.providers.artwork(info.backdrop_url)
             for member in info.cast:
+                if self._stop.is_set():
+                    return
                 if member.get("image"):
                     self.providers.artwork(member["image"])
             self._pending_updates = True
@@ -130,6 +150,8 @@ class Enricher:
                 log.debug("No online match for film %r", title)
                 return
             log.info("Found %s on %s", info.title or title, info.source)
+            if self._stop.is_set():
+                return
             if info.poster_url:
                 self.providers.artwork(info.poster_url)
             self._pending_updates = True

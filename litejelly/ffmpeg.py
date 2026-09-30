@@ -196,14 +196,79 @@ def _parse_times(stdout: bytes) -> list[float]:
     return times
 
 
-def run_quiet(cmd: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        timeout=timeout,
-        creationflags=_CREATION_FLAGS,
-    )
+def run_quiet(cmd: list[str], timeout: float | None = None,
+              cancel_event: threading.Event | None = None) -> subprocess.CompletedProcess:
+    """Capture a child process, killing and reaping it on timeout or cancellation."""
+    if cancel_event is None:
+        return subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL,
+                              timeout=timeout, creationflags=_CREATION_FLAGS)
+    if cancel_event.is_set():
+        raise subprocess.SubprocessError("Media job cancelled")
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          stdin=subprocess.DEVNULL, creationflags=_CREATION_FLAGS) as process:
+        try:
+            while True:
+                if cancel_event.is_set():
+                    raise subprocess.SubprocessError("Media job cancelled")
+                remaining = deadline - time.monotonic() if deadline is not None else 0.2
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.2, remaining))
+                    return subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+
+
+class CapacityLimiter:
+    """Limit new streams without forgetting occupied slots when settings change."""
+
+    def __init__(self, limit: int):
+        self._limit = max(1, limit)
+        self._active = 0
+        self._closed = False
+        self._condition = threading.Condition()
+
+    def resize(self, limit: int) -> None:
+        """Apply a new ceiling; running streams retain their occupied slots."""
+        with self._condition:
+            self._limit = max(1, limit)
+            self._condition.notify_all()
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        """Reserve a slot, returning False when closed, busy or past the timeout."""
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        with self._condition:
+            while self._active >= self._limit and not self._closed:
+                if not blocking:
+                    return False
+                remaining = deadline - time.monotonic() if deadline is not None else None
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+            if self._closed:
+                return False
+            self._active += 1
+            return True
+
+    def release(self) -> None:
+        """Release one occupied slot and wake a waiting stream."""
+        with self._condition:
+            if not self._active:
+                raise ValueError("No occupied stream slot")
+            self._active -= 1
+            self._condition.notify_all()
+
+    def close(self) -> None:
+        """Wake waiters and reject future acquisitions during server shutdown."""
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
 
 
 class _TestSettings:
@@ -382,7 +447,7 @@ class FFmpegTools:
             sibling = Path(self.ffmpeg).parent / _binary_name("ffprobe")
             if sibling.is_file():
                 self.ffprobe = str(sibling)
-        self.transcode_sem = threading.BoundedSemaphore(max(1, transcode_slots))
+        self.transcode_sem = CapacityLimiter(transcode_slots)
         self.thumbnail_sem = threading.BoundedSemaphore(max(1, thumbnail_slots))
         self._probe_cache: dict[tuple, MediaInfo] = {}
         self._probe_lock = threading.Lock()
@@ -390,6 +455,18 @@ class FFmpegTools:
         self._encoders: set[str] | None = None
         self._auto_choice: str | None = None
         self._auto_thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def close(self) -> None:
+        """Cancel this generation's probes and encoder tests, leaving streams alone."""
+        self._stop.set()
+        if self._auto_thread is not None:
+            self._auto_thread.join(timeout=3)
+
+    def chapter_probe(self, command: list[str]) -> str:
+        """Run chapter extraction under this service generation's cancellation event."""
+        result = run_quiet(command, timeout=20, cancel_event=self._stop)
+        return result.stdout.decode("utf-8", "replace")
 
     @property
     def available(self) -> bool:
@@ -405,7 +482,7 @@ class FFmpegTools:
         if not binary:
             return "NOT FOUND"
         try:
-            result = run_quiet([binary, "-version"], timeout=10)
+            result = run_quiet([binary, "-version"], timeout=10, cancel_event=self._stop)
             first = result.stdout.decode("utf-8", "replace").splitlines()[0]
             version = first.split(" version ")[-1].split(" ")[0]
         except (subprocess.SubprocessError, OSError, IndexError):
@@ -421,7 +498,8 @@ class FFmpegTools:
         found: set[str] = set()
         if self.ffmpeg:
             try:
-                result = run_quiet([self.ffmpeg, "-hide_banner", "-encoders"], timeout=20)
+                result = run_quiet([self.ffmpeg, "-hide_banner", "-encoders"], timeout=20,
+                                   cancel_event=self._stop)
                 for line in result.stdout.decode("utf-8", "replace").splitlines():
                     parts = line.split()
                     if len(parts) >= 2 and parts[0][:1] == "V":
@@ -460,7 +538,7 @@ class FFmpegTools:
 
         started = time.monotonic()
         try:
-            result = run_quiet(cmd, timeout=90)
+            result = run_quiet(cmd, timeout=90, cancel_event=self._stop)
         except subprocess.TimeoutExpired:
             return {"ok": False, "encoder": encoder, "detail": "Timed out"}
         except (subprocess.SubprocessError, OSError) as exc:
@@ -499,6 +577,8 @@ class FFmpegTools:
         encoding.
         """
         with self._probe_lock:
+            if self._stop.is_set():
+                return "none"
             if self._auto_choice is not None:
                 return self._auto_choice
             if self._auto_thread is None:
@@ -514,6 +594,8 @@ class FFmpegTools:
         if software.get("ok"):
             best_speed = software["speed"]
         for name in HWACCEL_ORDER:
+            if self._stop.is_set():
+                return
             if HWACCELS[name][0] not in listed:
                 continue
             result = self.test_encoder(name, seconds=5)
@@ -555,7 +637,7 @@ class FFmpegTools:
             str(path),
         ]
         try:
-            result = run_quiet(cmd, timeout=25)
+            result = run_quiet(cmd, timeout=25, cancel_event=self._stop)
             if result.returncode != 0:
                 log.warning("ffprobe failed for %s", path.name)
                 return MediaInfo(container=path.suffix.lstrip(".").lower())
@@ -752,7 +834,7 @@ class FFmpegTools:
             "-of", "csv=p=0", str(path),
         ]
         try:
-            result = run_quiet(cmd, timeout=20)
+            result = run_quiet(cmd, timeout=20, cancel_event=self._stop)
         except (subprocess.SubprocessError, OSError) as exc:
             log.debug("Seek probe failed for %s: %s", path.name, exc)
             return target
@@ -771,7 +853,7 @@ class FFmpegTools:
                 "-of", "csv=p=0", str(path),
             ]
             try:
-                result = run_quiet(cmd, timeout=30)
+                result = run_quiet(cmd, timeout=30, cancel_event=self._stop)
             except (subprocess.SubprocessError, OSError) as exc:
                 log.debug("Keyframe probe failed for %s: %s", path.name, exc)
                 return []

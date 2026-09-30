@@ -73,7 +73,7 @@ def stub(responses):
     """Answer each urlopen in turn from a list of payloads."""
     calls = []
 
-    def fake_urlopen(request, timeout=None):
+    def fake_urlopen(request, timeout=None, allowed_hosts=()):
         calls.append(request)
         payload = responses.pop(0)
         if isinstance(payload, Exception):
@@ -119,6 +119,16 @@ class AccountTests(unittest.TestCase):
     def test_a_corrupt_file_does_not_take_the_server_down(self):
         (self.root / "opensubtitles.json").write_text("{not json", encoding="utf-8")
         self.assertFalse(os_api.load_account(self.root).configured)
+
+    def test_failed_credential_save_does_not_change_the_live_account(self):
+        client = os_api.OpenSubtitles(self.root)
+        previous = client.account
+        client._token = "existing token"
+        with mock.patch("litejelly.opensubtitles.save_account", side_effect=OSError("disk problem")):
+            with self.assertRaises(OSError):
+                client.set_account(os_api.Account("new", "user", "password"))
+        self.assertIs(client.account, previous)
+        self.assertEqual(client._token, "existing token")
 
 
 class HashTests(unittest.TestCase):
@@ -171,7 +181,7 @@ class SearchTests(unittest.TestCase):
 
     def test_results_are_parsed_and_rubbish_is_dropped(self):
         fake, calls = stub([SEARCH_BODY])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             found = self.client.search("Guardians", "en", "abc123")
         self.assertEqual(len(found), 2)
         self.assertEqual(found[0].file_id, 4242)
@@ -181,20 +191,20 @@ class SearchTests(unittest.TestCase):
 
     def test_the_file_hash_is_sent_when_there_is_one(self):
         fake, calls = stub([SEARCH_BODY])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             self.client.search("Guardians", "en", "abc123")
         self.assertIn("moviehash=abc123", calls[0].full_url)
 
     def test_an_episode_is_searched_as_an_episode(self):
         fake, calls = stub([SEARCH_BODY])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             self.client.search("Show", "en", "", season=2, episode=3)
         self.assertIn("season_number=2", calls[0].full_url)
         self.assertIn("episode_number=3", calls[0].full_url)
 
     def test_the_api_key_identifies_us(self):
         fake, calls = stub([SEARCH_BODY])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             self.client.search("Guardians", "en")
         headers = {k.lower(): v for k, v in calls[0].header_items()}
         self.assertEqual(headers.get("Api-key".lower()), "key")
@@ -209,7 +219,7 @@ class SearchTests(unittest.TestCase):
     def test_a_quota_error_is_explained(self):
         error = urllib.error.HTTPError("u", 406, "Not Acceptable", {}, None)
         fake, _ = stub([error])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             with self.assertRaises(os_api.OpenSubtitlesError) as caught:
                 self.client.search("Guardians", "en")
         self.assertIn("quota", str(caught.exception))
@@ -217,7 +227,7 @@ class SearchTests(unittest.TestCase):
     def test_a_bad_key_is_explained(self):
         error = urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
         fake, _ = stub([error])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             with self.assertRaises(os_api.OpenSubtitlesError) as caught:
                 self.client.search("Guardians", "en")
         self.assertIn("API key", str(caught.exception))
@@ -229,7 +239,7 @@ class SearchTests(unittest.TestCase):
         body = BytesIO(b'{"message": "You cannot consume this service"}')
         error = urllib.error.HTTPError("u", 403, "Forbidden", {}, body)
         fake, _ = stub([error])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             with self.assertRaises(os_api.OpenSubtitlesError) as caught:
                 self.client.search("Guardians", "en")
         self.assertIn("You cannot consume this service", str(caught.exception))
@@ -237,7 +247,7 @@ class SearchTests(unittest.TestCase):
     def test_an_error_with_no_body_still_reads_sensibly(self):
         error = urllib.error.HTTPError("u", 403, "Forbidden", {}, None)
         fake, _ = stub([error])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             with self.assertRaises(os_api.OpenSubtitlesError) as caught:
                 self.client.search("Guardians", "en")
         self.assertNotIn("()", str(caught.exception))
@@ -261,14 +271,14 @@ class DownloadTests(unittest.TestCase):
              "remaining": 4},
             SRT.encode("utf-8"),
         ])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             data, name = self.client.download(4242)
         self.assertEqual(data, SRT.encode("utf-8"))
         self.assertEqual(name, "x.en.srt")
         self.assertTrue(calls[0].full_url.endswith("/login"))
 
     def test_the_token_is_reused_rather_than_fetched_each_time(self):
-        def respond(request, timeout=None):
+        def respond(request, timeout=None, allowed_hosts=()):
             """Allow extra logins so the assertion, not an exhausted stub, detects them."""
             if request.full_url.endswith("/login"):
                 return FakeResponse(b'{"token":"abc"}')
@@ -276,7 +286,7 @@ class DownloadTests(unittest.TestCase):
                 return FakeResponse(b'{"link":"https://dl.opensubtitles.com/a.srt"}')
             return FakeResponse(SRT.encode("utf-8"))
 
-        with mock.patch("urllib.request.urlopen", side_effect=respond) as outbound:
+        with mock.patch("litejelly.opensubtitles.open_remote", side_effect=respond) as outbound:
             self.client.download(1)
             self.client.download(2)
         logins = [call for call in outbound.call_args_list
@@ -288,7 +298,7 @@ class DownloadTests(unittest.TestCase):
             {"token": "abc"},
             {"link": "https://dl.opensubtitles.com/x.srt"}, SRT.encode("utf-8"),
         ])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             self.client.download(4242)
         headers = {k.lower(): v for k, v in calls[1].header_items()}
         self.assertEqual(headers.get("authorization"), "Bearer abc")
@@ -298,11 +308,12 @@ class DownloadTests(unittest.TestCase):
         # anything it happens to return would be someone else's request.
         for link in ("http://dl.opensubtitles.com/x.srt",
                      "file:///etc/passwd",
-                     "ftp://example.com/x.srt"):
+                     "ftp://example.com/x.srt", "https://127.0.0.1/private",
+                     "https://opensubtitles.com.example.org/subtitle"):
             fake, calls = stub([{"token": "abc"}, {"link": link}, SRT.encode("utf-8")])
             client = os_api.OpenSubtitles(self.root)
             client._pace = lambda: None
-            with mock.patch("urllib.request.urlopen", fake):
+            with mock.patch("litejelly.opensubtitles.open_remote", fake):
                 with self.assertRaises(os_api.OpenSubtitlesError):
                     client.download(1)
             self.assertEqual(len(calls), 2)
@@ -310,7 +321,7 @@ class DownloadTests(unittest.TestCase):
     def test_no_link_reports_what_the_api_said(self):
         fake, _ = stub([{"token": "abc"},
                         {"message": "You have used your downloads for today"}])
-        with mock.patch("urllib.request.urlopen", fake):
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
             with self.assertRaises(os_api.OpenSubtitlesError) as caught:
                 self.client.download(1)
         self.assertIn("downloads for today", str(caught.exception))

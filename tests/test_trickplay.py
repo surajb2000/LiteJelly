@@ -113,7 +113,7 @@ class GenerationTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _run(self, produce=True, fail_fast_path=False, width=1600, height=360):
-        def fake_run(cmd, timeout=None):
+        def fake_run(cmd, timeout=None, cancel_event=None):
             self.commands.append(cmd)
             fast = "-skip_frame" in cmd
             if produce and not (fast and fail_fast_path):

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from .ffmpeg import MediaInfo, run_quiet
+from .paths import is_within
 
 log = logging.getLogger("litejelly.subtitles")
 
@@ -100,12 +103,19 @@ def _sidecar_candidates(video_path: Path) -> list[Path]:
     seen: set[str] = set()
 
     def collect(directory: Path, require_stem: bool) -> None:
+        if not is_within(video_path.parent, directory):
+            return
         try:
             entries = sorted(directory.iterdir())
         except OSError:
             return
         for entry in entries:
-            if not entry.is_file():
+            if not is_within(video_path.parent, entry) or not entry.is_file():
+                continue
+            try:
+                if entry.stat().st_size == 0:
+                    continue
+            except OSError:
                 continue
             if entry.suffix.lower() not in SUBTITLE_EXTENSIONS:
                 continue
@@ -248,7 +258,7 @@ def sidecar_target(video_path: Path, language: str, extension: str) -> Path:
     folder = video_path.parent
     candidate = folder / f"{video_path.stem}.{tag}{extension}"
     counter = 2
-    while candidate.exists():
+    while os.path.lexists(candidate):
         if counter > 99:
             raise FileExistsError("There are too many subtitle files for this video")
         candidate = folder / f"{video_path.stem}.{tag}.{counter}{extension}"
@@ -277,18 +287,30 @@ def save_sidecar(video_path: Path, data: bytes, language: str) -> Path:
     if kind is None:
         raise ValueError("That is not a SubRip, WebVTT or SSA/ASS subtitle")
 
-    target = sidecar_target(video_path, language, UPLOAD_FORMATS[kind])
-    # Written alongside and moved into place, so a failure part-way cannot
-    # leave a half-file for the scanner to pick up. ".part" is not a subtitle
-    # extension, so even a leftover is ignored.
-    temp = target.with_name(target.name + ".part")
+    handle, name = tempfile.mkstemp(dir=video_path.parent, prefix=".subtitle-", suffix=".part")
+    temp = Path(name)
     try:
-        temp.write_text(text, encoding="utf-8", newline="\n")
-        temp.replace(target)
-    except OSError:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+        for _attempt in range(100):
+            target = sidecar_target(video_path, language, UPLOAD_FORMATS[kind])
+            try:
+                handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            reserved = os.fstat(handle)
+            os.close(handle)
+            try:
+                temp.replace(target)
+            except OSError:
+                current = target.lstat()
+                if (current.st_ino, current.st_dev, current.st_size) == (reserved.st_ino, reserved.st_dev, 0):
+                    target.unlink()
+                raise
+            return target
+        raise FileExistsError("Subtitle filename is busy; try again")
+    finally:
         temp.unlink(missing_ok=True)
-        raise
-    return target
 
 
 def track_id_for(video_path: Path, sub_path: Path) -> str:
@@ -418,7 +440,8 @@ class SubtitleService:
             return "?"
         sub_path = candidates[index]
         try:
-            return f"{sub_path.name}|{sub_path.stat().st_mtime_ns}"
+            stat = sub_path.stat()
+            return f"{sub_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
         except OSError:
             return sub_path.name
 
@@ -510,7 +533,7 @@ class SubtitleService:
         cmd = [self.tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
                *middle, "-f", "webvtt", "pipe:1"]
         try:
-            result = run_quiet(cmd, timeout=60)
+            result = run_quiet(cmd, timeout=60, cancel_event=getattr(self.tools, "_stop", None))
         except (subprocess.SubprocessError, OSError) as exc:
             log.warning("Subtitle extraction failed: %s", exc)
             return None

@@ -208,6 +208,8 @@ class Video:
     meta: dict | None = None
     poster_path: str = ""
     backdrop_path: str = ""
+    root_path: str = ""
+    legacy_id: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -222,13 +224,13 @@ class Video:
         # Nothing in the client reads these, and the listing is unauthenticated:
         # sending absolute paths hands every device on the network a map of the
         # filesystem. Media is addressed by opaque id everywhere else.
-        for private in ("path", "dir_index", "content_type"):
+        for private in ("path", "dir_index", "content_type", "root_path", "legacy_id"):
             data.pop(private, None)
         return data
 
 
-def _make_id(dir_index: int, rel_path: str) -> str:
-    digest = hashlib.sha1(f"{dir_index}\x00{rel_path}".encode("utf-8")).hexdigest()
+def _make_id(root_key: str | int, rel_path: str) -> str:
+    digest = hashlib.sha1(f"{root_key}\x00{rel_path}".encode("utf-8")).hexdigest()
     return digest[:16]
 
 
@@ -313,12 +315,13 @@ class Library:
     """Holds an immutable snapshot of the scanned media, refreshed in the background."""
 
     def __init__(self, media_dirs, scan_interval: int = 60,
-                 metadata=None, enricher=None):
+                 metadata=None, enricher=None, identify=None):
         self.media_dirs = list(media_dirs)
         self.scan_interval = scan_interval
         # Both optional: without them the library works entirely from local files.
         self.metadata = metadata
         self.enricher = enricher
+        self._identify = identify
         self._videos: list[Video] = []
         self._by_id: dict[str, Video] = {}
         self._signature: dict[str, tuple] = {}
@@ -362,14 +365,26 @@ class Library:
             self._signature = {}
             self._dirs_version += 1
         self.request_scan()
+    def root_for(self, video: Video) -> Path | None:
+        """Return the item's original root only while that root remains configured."""
+        with self._lock:
+            dirs = list(self.media_dirs)
+        if video.root_path:
+            for directory in dirs:
+                root = Path(directory.path).resolve()
+                if os.path.normcase(str(root)) == video.root_path:
+                    return root
+            return None
+        if 0 <= video.dir_index < len(dirs):
+            return Path(dirs[video.dir_index].path)
+        return None
+
     def absolute_path(self, video: Video) -> Path | None:
+        """Resolve inside the captured root, never an index from a newer configuration."""
         from .paths import resolve_within
 
-        with self._lock:
-            dirs = self.media_dirs
-        if not 0 <= video.dir_index < len(dirs):
-            return None
-        return resolve_within(Path(dirs[video.dir_index].path), video.path)
+        root = self.root_for(video)
+        return resolve_within(root, video.path) if root is not None else None
 
     def request_scan(self, force: bool = False) -> None:
         """Wake the scanner. ``force`` also re-reads unchanged folders.
@@ -391,6 +406,8 @@ class Library:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5)
 
     # -- internals --------------------------------------------------------
     def _loop(self) -> None:
@@ -493,20 +510,24 @@ class Library:
         video.meta = merged
 
     def _directory_signature(self, dirs) -> dict[str, tuple]:
-        """Cheap fingerprint of each tree, used to skip unnecessary rescans."""
+        """Fingerprint file versions as well as directories so in-place edits invalidate scans."""
         signature: dict[str, tuple] = {}
         for entry in dirs:
             root_dir = entry.path
-            latest = 0.0
-            count = 0
-            for root, dirs, _files in os.walk(root_dir):
-                dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-                count += 1
-                try:
-                    latest = max(latest, os.path.getmtime(root))
-                except OSError:
-                    pass
-            signature[root_dir] = (latest, count)
+            digest = hashlib.sha256()
+            for root, children, files in os.walk(root_dir):
+                if self._stop.is_set():
+                    return signature
+                children[:] = sorted(name for name in children
+                                     if name not in SKIP_DIRS and not name.startswith("."))
+                for name in sorted(files):
+                    path = Path(root) / name
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    digest.update(f"{path}\0{stat.st_mtime_ns}\0{stat.st_size}\n".encode("utf-8"))
+            signature[root_dir] = (digest.hexdigest(),)
         return signature
 
     def scan(self, force: bool = False) -> list[Video]:
@@ -530,9 +551,11 @@ class Library:
             videos.sort(key=lambda v: v.modified_ts, reverse=True)
 
             with self._lock:
-                if version != self._dirs_version:
+                if version != self._dirs_version or self._stop.is_set():
                     log.info("Media directories changed during the scan; discarding results")
                     return self._videos
+                if self._identify is not None:
+                    self._identify(videos)
                 self._videos = videos
                 self._by_id = {v.id: v for v in videos}
                 self._signature = signature
@@ -556,8 +579,11 @@ class Library:
         for index, entry in enumerate(dirs):
             root_dir = entry.path
             base = Path(root_dir)
+            root_key = os.path.normcase(str(base.resolve()))
             try:
                 for root, dirs, files in os.walk(root_dir):
+                    if self._stop.is_set():
+                        return videos
                     dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
                     for filename in files:
                         if os.path.splitext(filename)[1].lower() not in VIDEO_EXTENSIONS:
@@ -583,7 +609,9 @@ class Library:
                         modified = datetime.datetime.fromtimestamp(
                             stat.st_mtime, tz=datetime.timezone.utc)
                         video = Video(
-                            id=_make_id(index, rel),
+                            id=_make_id(root_key, rel),
+                            legacy_id=_make_id(index, rel),
+                            root_path=root_key,
                             name=display_name(parsed),
                             title=parsed["title"],
                             filename=filename,

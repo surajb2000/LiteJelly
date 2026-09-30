@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -28,9 +30,38 @@ def _seconds(value) -> float:
     return max(0.0, min(MAX_SECONDS, number))
 
 
+def migrate_database(destination: Path, legacy: Path | None) -> None:
+    """Copy legacy progress, including its WAL, atomically without deleting the source."""
+    if destination.exists() or legacy is None or not legacy.is_file():
+        return
+    lock = destination.with_suffix(".migration-lock")
+    descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(descriptor)
+    temporary = None
+    try:
+        if destination.exists():
+            return
+        descriptor, name = tempfile.mkstemp(dir=destination.parent, suffix=".db.tmp")
+        os.close(descriptor)
+        temporary = Path(name)
+        source = sqlite3.connect(legacy.resolve().as_uri() + "?mode=ro", uri=True)
+        target = sqlite3.connect(temporary)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
+
+
 class ProgressStore:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, legacy_path: Path | None = None):
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        migrate_database(db_path, legacy_path)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -44,7 +75,38 @@ class ProgressStore:
                 updated_at REAL NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS media_identity (
+                root TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                video_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY (root, relative_path)
+            )
+        """)
         self._conn.commit()
+
+    def identify_media(self, videos) -> None:
+        """Assign durable IDs per root/path, preserving legacy IDs on the first catalog."""
+        if not videos:
+            return
+        with self._lock, self._conn:
+            rows = self._conn.execute("SELECT root, relative_path, video_id FROM media_identity").fetchall()
+            known = {(row["root"], row["relative_path"]): row["video_id"] for row in rows}
+            used = set(known.values())
+            first_catalog = not rows
+            pending = []
+            for video in videos:
+                key = (video.root_path, video.path)
+                identifier = known.get(key)
+                if identifier is None:
+                    identifier = video.legacy_id if first_catalog and video.legacy_id not in used else video.id
+                    if identifier in used:
+                        raise ValueError("Media identity collision")
+                    known[key] = identifier
+                    used.add(identifier)
+                    pending.append((*key, identifier))
+                video.id = identifier
+            self._conn.executemany("INSERT INTO media_identity VALUES (?, ?, ?)", pending)
 
     def save(self, video_id: str, position: float, duration: float = 0.0,
              finished: bool | None = None) -> dict:

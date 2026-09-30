@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 
 $mutations = @(
-    @{ file = 'litejelly/opensubtitles.py'; name = 'follows any link';      from = "if parsed.scheme != `"https`" or not parsed.hostname:"; to = 'if False:' }
+    @{ file = 'litejelly/opensubtitles.py'; name = 'follows any link';      from = 'validate_remote_url(link, DOWNLOAD_HOSTS)'; to = 'None' }
     @{ file = 'litejelly/opensubtitles.py'; name = 'password in public view'; from = '"has_password": bool(self.password),'; to = '"has_password": self.password,' }
     @{ file = 'litejelly/opensubtitles.py'; name = 'token never reused';    from = 'fresh = self._token and (time.time() - self._token_at) < TOKEN_LIFETIME'; to = 'fresh = False' }
     @{ file = 'litejelly/opensubtitles.py'; name = 'API key omitted'; from = '"Api-Key": self.account.api_key,'; to = '"Api-Key": "",' }

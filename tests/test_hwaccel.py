@@ -109,7 +109,7 @@ class SelfTestTests(unittest.TestCase):
         self.tools = _tools(["libx264", "h264_nvenc"])
 
     def _with_ffmpeg(self, returncode, stderr=b"", delay=0.0):
-        def fake_run(cmd, timeout=None):
+        def fake_run(cmd, timeout=None, cancel_event=None):
             return subprocess.CompletedProcess(cmd, returncode, b"", stderr)
         return mock.patch("litejelly.ffmpeg.run_quiet", fake_run)
 

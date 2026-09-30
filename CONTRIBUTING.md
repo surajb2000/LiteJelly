@@ -37,14 +37,16 @@ This document outlines the architectural standards, code quality conventions, an
 
 ### 3. Concurrency & Thread Safety
 - LiteJelly runs on a multithreaded server model (`http.server.ThreadingHTTPServer` with `daemon_threads = True`).
-- All shared resources (`Library._videos`, `ProgressStore._conn`, `ThumbnailService._inflight`, `FFmpegTools._probe_cache`) must be synchronized using `threading.Lock()` or `threading.RLock()`.
+- All shared resources (`Library._videos`, `ProgressStore._conn`, `ThumbnailService._pending`, `FFmpegTools._probe_cache`) must be synchronized using `threading.Lock()` or `threading.RLock()`.
 - **Single-Flight Pattern**: For expensive operations (e.g., thumbnail extraction), use `threading.Event` so multiple simultaneous requests for the same item wait for a single worker rather than launching duplicate FFmpeg processes.
-- **Bounded Resource Semaphores**: Limit concurrent heavy subprocesses (transcoding, thumbnails) using `threading.BoundedSemaphore` to avoid exhausting CPU/RAM.
+- Preserve `CapacityLimiter` across settings reloads: reducing its limit must not forget occupied slots. Thumbnail/trickplay worker counts and the HTTP connection limit are separate bounds, not a global CPU scheduler.
+- Closing a worker service must reject new jobs, drain queued work and avoid blocking sentinel writes to a full queue. In-flight network I/O can finish under its timeout, but stopped services must not continue queuing follow-up work.
 
 ### 4. Subprocess & FFmpeg Management
 - Always specify `creationflags = subprocess.CREATE_NO_WINDOW` on Windows (`os.name == 'nt'`) so console windows do not flash during background probes or transcodes.
 - Never let a child inherit stdin. ffmpeg switches the controlling terminal to no-echo so it can read its interactive keys, and killing the server first leaves the shell needing a manual `stty echo`. Pass `stdin=subprocess.DEVNULL` and `-nostdin`.
 - Always wrap subprocess lifecycles in `try ... finally:` blocks to guarantee termination (`process.terminate()` -> `process.wait(timeout=0.5)` -> `process.kill()`).
+- Pass the owning service's cancellation event to `run_quiet` for background media work. Cancellation must kill and reap the child, and partially generated images must never become cache hits.
 - Use the threaded `ReadAhead` ring buffer when streaming process `stdout` to avoid blocking FFmpeg when the network client pauses or buffers.
 - Fast input seeking (`-ss` before `-i`) must be used for streaming transcodes.
 - Pass the requested seek time unchanged. Snapping it onto a keyframe makes FFmpeg rewind to the previous one, and an open-GOP keyframe list cannot be trusted as entry points.
@@ -53,25 +55,30 @@ This document outlines the architectural standards, code quality conventions, an
 ### 5. Database Conventions (`litejelly.store`)
 - SQLite must always run with `PRAGMA journal_mode=WAL` for concurrent read/write support across threads.
 - SQLite connections across threads must use `check_same_thread=False` accompanied by explicit threading locks.
-- Store database tables in `.cache/litejelly.db` (gitignored).
+- Durable tables belong in `data/litejelly.db`, not the disposable asset cache. Migrate the legacy database through SQLite backup, retaining its source and committed WAL data.
+- Persist media IDs by canonical root and relative path. Never resolve a scanned item's old `dir_index` against a newer directory list. The initial identity catalog retains legacy IDs under the documented unchanged-folder-order upgrade assumption.
+- Do not prune progress merely because a drive or file is absent during startup. History deletion requires an explicit retention decision.
 
 ### 6. The Admin Trust Boundary
 - The library API is intentionally unauthenticated so any TV on the LAN can browse it. The admin API is **not**, and the two must never be blurred.
 - Anything that changes `media_dirs` changes which files the server will hand out. Treat every admin write as equivalent to granting filesystem access.
 - Guard every admin route with `RequestHandler.require_admin()`. It requires a valid session and, on writes, a same-origin request.
-- Never store or log a password. `litejelly.auth` hashes with PBKDF2 and a per-password salt; compare with `hmac.compare_digest`, never `==`.
+- Never store an admin password in plaintext or log credentials. `litejelly.auth` hashes with PBKDF2 and a per-password salt; compare with `hmac.compare_digest`, never `==`. The existing OpenSubtitles account file is a separate server-side credential store and is never included in settings exports.
 - Verify the password once at sign-in and carry the result in a session. Hashing is deliberately slow, so doing it per request would make every page load expensive and turn the login endpoint into a CPU exhaustion vector.
 - First-account creation is loopback-only. Allowing it over the network makes ownership a race between the owner and anyone else who can reach the port.
 - Credentials live in `credentials.json`, never in `settings.json`, which is served to the admin page.
 - `Config.to_public_dict()` feeds the unauthenticated `/api/config`. Never add filesystem paths, binary locations, credentials or bind addresses to it; those belong in `to_admin_dict()`.
 - Validate admin input in `litejelly.settings.validate()`, not in the route. Unknown keys are ignored and enumerated values (content types, presets) are whitelisted rather than pattern-matched.
 - Persist user settings to `settings.json` beside `config.json`. Never write them into `.cache/`, which is disposable and safe to delete.
+- Sidecar discovery must enforce containment as well as media lookup. Uploaded files use unique temporary outputs and exclusive final-name reservations; checking `exists()` before replacing a file is not a no-overwrite guarantee.
+- Use `litejelly.net.open_remote` for outbound provider requests. Validate every redirect, require public resolved addresses, pin the chosen address for connection, and retain TLS hostname checks. Do not forward account credentials across hosts or restore environment-proxy behavior without an explicit security design.
 
 ### 7. Request Bodies and Keep-Alive
 - If a request is rejected before its body is read, the unread bytes stay queued on the socket and the next keep-alive request parses them as a request line. `send_api_error()` drains the body for this reason; leave that call in place when adding error paths.
+- Reject unsupported transfer framing and duplicate lengths before dispatch. Maintain both connection limits and socket idle timeouts; an accept backlog is not a thread limit.
 
 ### 8. Applying Configuration at Runtime
-- `FFmpegTools`, `SubtitleService` and `ThumbnailService` capture values from the config when constructed. Replacing `Application.config` alone leaves them pointing at the old binaries and limits, so rebuild them together in `Application.apply_config()`.
+- `FFmpegTools`, `SubtitleService` and `ThumbnailService` capture configuration values. Rebuild derived services together, cancel the retired generation, retain the shared stream limiter and restore the enrichment completion callback.
 - `Library` owns its directory list. Change it through `Library.set_media_dirs()` so the lock is held, the scan fingerprint is cleared, and any scan already in flight is discarded rather than publishing stale `dir_index` values.
 - `port` and `host` cannot be rebound on a live server. They are saved and reported through `settings.RESTART_REQUIRED` instead of being applied.
 

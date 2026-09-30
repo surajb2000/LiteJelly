@@ -14,6 +14,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -93,6 +94,34 @@ class SaveTests(unittest.TestCase):
         second = subtitles.save_sidecar(self.video, SRT.encode("utf-8"), "en")
         self.assertNotEqual(first, second)
         self.assertTrue(first.is_file() and second.is_file())
+
+    def test_a_concurrent_file_created_after_name_selection_is_preserved(self):
+        """Exclusive reservation protects the gap between choosing and publishing a name."""
+        original_target = subtitles.sidecar_target
+        occupied = self.video.with_suffix(".en.srt")
+        occupied.write_bytes(b"another upload")
+        with mock.patch.object(subtitles, "sidecar_target", side_effect=[
+                occupied, original_target(self.video, "en", ".srt")]):
+            saved = subtitles.save_sidecar(self.video, SRT.encode("utf-8"), "en")
+        self.assertEqual(occupied.read_bytes(), b"another upload")
+        self.assertNotEqual(saved, occupied)
+
+    def test_a_failed_publication_removes_only_its_reservation(self):
+        with mock.patch.object(Path, "replace", side_effect=OSError("test failure")):
+            with self.assertRaises(OSError):
+                subtitles.save_sidecar(self.video, SRT.encode("utf-8"), "en")
+        self.assertEqual(list(self.root.glob("*.srt")), [])
+        self.assertEqual(list(self.root.glob("*.part")), [])
+
+    def test_empty_reservations_are_not_discovered(self):
+        self.video.with_suffix(".en.srt").touch()
+        self.assertEqual(subtitles._sidecar_candidates(self.video), [])
+
+    def test_sidecars_outside_the_video_directory_are_excluded(self):
+        """Simulate a failed containment check without requiring symlink privileges."""
+        self.video.with_suffix(".en.srt").write_text(SRT, encoding="utf-8")
+        with mock.patch.object(subtitles, "is_within", side_effect=lambda root, path: path.is_dir()):
+            self.assertEqual(subtitles._sidecar_candidates(self.video), [])
 
     def test_a_language_cannot_carry_a_path_into_the_name(self):
         for attempt in ("../../etc/passwd", "en/../..", "..", "e n", "EN-US-x"):

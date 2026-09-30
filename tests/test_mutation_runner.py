@@ -129,6 +129,13 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(verdict(report, 1, returncode), "INVALID")
         self.assertIn("timed out", output)
 
+    def test_multiple_suites_share_one_structured_report(self):
+        report, returncode, output = execute_suite(self.root, "tests.test_sample,tests.test_sample",
+                                                  self.root / "report.json")
+        self.assertEqual(returncode, 0, output)
+        self.assertEqual(report["tests"], 2)
+        self.assertEqual(verdict(report, 2, returncode), "SURVIVED")
+
 
 if __name__ == "__main__":
     unittest.main()

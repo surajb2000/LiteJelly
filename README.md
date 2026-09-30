@@ -188,11 +188,12 @@ lucid-fermi/
 │   ├── library.py          # Media scanner, title cleanup, series grouping, SxxExx parser
 │   ├── logs.py             # Verbosity, rotating log file, and reading it back
 │   ├── metadata.py         # Kodi .nfo sidecars and local artwork discovery
+│   ├── net.py              # Public-address HTTPS connections and checked redirects
 │   ├── opensubtitles.py    # Subtitle search and download, and the account it needs
 │   ├── paths.py            # Realpath containment and symlink traversal guards
 │   ├── providers.py        # TVmaze, AniList, AniSkip, TheIntroDB, TMDb and OMDb clients with a versioned on-disk cache
 │   ├── settings.py         # settings.json load/save and admin input validation
-│   ├── store.py            # SQLite WAL progress store and continue watching
+│   ├── store.py            # Durable progress, media identities and legacy database migration
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
 │   ├── thumbnails.py       # Single-flight thumbnail worker pool with fallback seeking
 │   ├── trickplay.py        # Sprite sheets of frames for the seek-bar preview
@@ -221,9 +222,12 @@ lucid-fermi/
 │   ├── test_grouping.py    # Categories, series identity, episode ordering
 │   ├── test_http.py        # Live-server tests over a real socket
 │   ├── test_hwaccel.py     # Encoder discovery, self-test, and the auto choice
+│   ├── test_identity.py    # Stable root identity and WAL-safe storage migration
+│   ├── test_lifecycle.py   # Cancellation, reconfiguration and request limits
 │   ├── test_levelling.py   # Dialogue levelling modes and their effect on the plan
 │   ├── test_logs.py        # Verbosity floor, rotation, log parsing and filtering
 │   ├── test_metadata.py    # .nfo parsing and artwork discovery
+│   ├── test_net.py         # Redirect, TLS and public-IP connection policy
 │   ├── test_nextup.py      # Next episode selection and the resume rail
 │   ├── test_opensubtitles.py # Search, download and the credential file, against a stub
 │   ├── test_providers.py   # Online metadata parsing, caching and failure handling
@@ -233,6 +237,8 @@ lucid-fermi/
 │   ├── test_thumbnails.py  # Background generation, caching, failure handling
 │   └── test_trickplay.py   # Sprite sheets, tile geometry, queue limits
 │
+├── data/                   # Durable litejelly.db: progress and media identities (gitignored)
+├── .cache/                 # Regenerable media assets; legacy database retained after migration
 ├── logs/                   # Rotating log files (gitignored)
 │
 └── tools/                  # Diagnostic and verification utilities
@@ -244,6 +250,7 @@ lucid-fermi/
     ├── mutate_restart.ps1  # The same, for the restart race
     ├── mutate_subtitles.ps1 # The same, for the subtitle fetching rules
     ├── mutate_subtitle_upload.ps1 # The same, for what may be written to disk
+    ├── mutate_safety.ps1   # Identity, reconfiguration and outbound-request safeguards
     └── mutate_opensubtitles.ps1   # The same, for the search and download rules
 ```
 
@@ -370,6 +377,56 @@ that title so the next scan can try again.
 
 Everything except `port` and `host` applies immediately; those two are saved
 and reported as needing a restart.
+
+### Storage upgrade and safety
+
+Progress and media identity now live in `data/litejelly.db`, separately from
+regenerable assets in `.cache/`. On the first upgraded start, SQLite's backup
+API copies the old `.cache/litejelly.db`, including committed WAL data. The old
+database is retained and is not overwritten by later progress updates. An
+existing durable database is never replaced by the legacy copy.
+
+Before that first start, stop the old server, back up its database, keep the
+configured folder order unchanged, and attach the usual media drives. The
+first persisted catalog retains the legacy IDs for the available files; later
+scans bind them to the same canonical root and relative path. Reordering folders
+then preserves IDs, progress and browser preferences. The old schema contains
+no root mapping, so earlier misattribution or unavailable files during this
+first catalog cannot be reconstructed reliably. Moving or renaming media is
+not automatically recognized as the same file.
+
+Startup no longer deletes history for files absent from a scan. Once migration
+is verified, clearing generated caches does not clear watch history. Back up
+`data/` with the server stopped, or use SQLite's backup API while running;
+copying just an open database file can miss WAL transactions. A failed migration
+keeps the source and removes its temporary output. If the process is forcibly
+killed during migration, a `.migration-lock` may remain beside the new database:
+remove it only after confirming no server is running and preserving the old database.
+
+Settings changes retain occupied stream slots rather than creating a fresh
+allowance. Thumbnail and trickplay shutdown discard queued jobs without waiting
+for queue space; active FFmpeg jobs receive cancellation. Only complete images
+are published. Metadata workers stop accepting jobs and detach their callbacks;
+an in-flight network request may still finish under its network timeout.
+
+HTTP handling is limited to 64 active connections with a 15-second socket idle
+timeout. Unsupported transfer framing, duplicate Content-Length headers and
+nonfinite or excessive seek values are rejected. This is not a total request
+deadline, and the intentionally open library remains intended for trusted LANs.
+
+Subtitle uploads reserve a free filename exclusively before publishing their
+complete temporary file. Empty reservations and sidecars resolving outside the
+video's directory tree are excluded from discovery. Subtitle responses require
+HTTP revalidation because positional external-track IDs can change when files
+are added.
+
+Metadata and subtitle downloads use direct public HTTPS connections, validate
+redirects, and connect to the already-checked IP address while preserving TLS
+hostname verification. Environment proxy settings are not used by these clients.
+OpenSubtitles download destinations must additionally belong to
+`opensubtitles.com` or `opensubtitles.org`; an unfamiliar CDN is refused rather
+than silently trusted. Credentialed redirects cannot change host. Live provider
+compatibility still needs verification with a real account.
 
 ### Signing in
 
@@ -524,6 +581,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_subtitle_upload
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_opensubtitles.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_restart.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_browse.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_safety.ps1
 ```
 Each script delegates to `tools/mutation_runner.py`, which copies source and
 tests to a temporary directory. The original worktree is never mutated. A

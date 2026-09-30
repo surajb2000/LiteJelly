@@ -25,6 +25,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from .net import open_remote, validate_remote_url
+
 log = logging.getLogger("litejelly.opensubtitles")
 
 CREDENTIALS_FILE = "opensubtitles.json"
@@ -37,6 +39,7 @@ MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 TOKEN_LIFETIME = 20 * 3600
 MIN_REQUEST_INTERVAL = 0.4
 MAX_RESULTS = 25
+DOWNLOAD_HOSTS = ("opensubtitles.com", "opensubtitles.org")
 
 
 class OpenSubtitlesError(Exception):
@@ -169,23 +172,26 @@ class OpenSubtitles:
         self.account = load_account(app_dir)
         self._token = ""
         self._token_at = 0.0
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._pace_lock = threading.Lock()
         self._last_call = 0.0
 
     def set_account(self, account: Account) -> None:
+        """Persist before publishing new credentials or invalidating the current token."""
         with self._lock:
+            save_account(self.app_dir, account)
             self.account = account
             self._token = ""
             self._token_at = 0.0
-        save_account(self.app_dir, account)
 
     # -- plumbing ---------------------------------------------------------
 
     def _pace(self) -> None:
-        gap = time.monotonic() - self._last_call
-        if gap < MIN_REQUEST_INTERVAL:
-            time.sleep(MIN_REQUEST_INTERVAL - gap)
-        self._last_call = time.monotonic()
+        with self._pace_lock:
+            gap = time.monotonic() - self._last_call
+            if gap < MIN_REQUEST_INTERVAL:
+                time.sleep(MIN_REQUEST_INTERVAL - gap)
+            self._last_call = time.monotonic()
 
     def _call(self, method: str, path: str, payload: dict | None = None,
               token: str = "") -> dict:
@@ -208,8 +214,11 @@ class OpenSubtitles:
         self._pace()
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-                body = response.read(MAX_RESPONSE_BYTES)
+            with open_remote(request, timeout=REQUEST_TIMEOUT,
+                             allowed_hosts=("api.opensubtitles.com",)) as response:
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(body) > MAX_RESPONSE_BYTES:
+                    raise OpenSubtitlesError("OpenSubtitles response exceeds the size limit")
         except urllib.error.HTTPError as exc:
             raise OpenSubtitlesError(_describe_http(exc)) from exc
         except (urllib.error.URLError, OSError) as exc:
@@ -227,25 +236,24 @@ class OpenSubtitles:
         return parsed
 
     def _valid_token(self) -> str:
+        """Create at most one token and prevent a stale login from overwriting an account change."""
         with self._lock:
             fresh = self._token and (time.time() - self._token_at) < TOKEN_LIFETIME
             if fresh:
                 return self._token
-        if not self.account.configured:
-            raise OpenSubtitlesError(
-                "OpenSubtitles needs an API key, a username and a password")
-
-        body = self._call("POST", "/login", {
-            "username": self.account.username,
-            "password": self.account.password,
-        })
-        token = str(body.get("token") or "")
-        if not token:
-            raise OpenSubtitlesError("OpenSubtitles refused the sign-in")
-        with self._lock:
+            if not self.account.configured:
+                raise OpenSubtitlesError(
+                    "OpenSubtitles needs an API key, a username and a password")
+            body = self._call("POST", "/login", {
+                "username": self.account.username,
+                "password": self.account.password,
+            })
+            token = str(body.get("token") or "")
+            if not token:
+                raise OpenSubtitlesError("OpenSubtitles refused the sign-in")
             self._token = token
             self._token_at = time.time()
-        return token
+            return token
 
     # -- the two things it is for -----------------------------------------
 
@@ -305,23 +313,25 @@ class OpenSubtitles:
 
     def download(self, file_id: int) -> tuple[bytes, str]:
         """The subtitle bytes and the name OpenSubtitles gave them."""
-        token = self._valid_token()
-        body = self._call("POST", "/download", {"file_id": int(file_id)}, token=token)
+        with self._lock:
+            token = self._valid_token()
+            body = self._call("POST", "/download", {"file_id": int(file_id)}, token=token)
         link = str(body.get("link") or "")
         if not link:
             message = str(body.get("message") or "OpenSubtitles returned no link")
             raise OpenSubtitlesError(message)
-        # The link is chosen by the API, not by us, but it still gets checked:
-        # anything that is not plain https would be fetching something else.
-        parsed = urllib.parse.urlparse(link)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise OpenSubtitlesError("OpenSubtitles returned a link we will not follow")
+        try:
+            validate_remote_url(link, DOWNLOAD_HOSTS)
+        except urllib.error.URLError as error:
+            raise OpenSubtitlesError("OpenSubtitles returned a link we will not follow") from error
 
         self._pace()
         request = urllib.request.Request(link, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-                data = response.read(MAX_RESPONSE_BYTES)
+            with open_remote(request, timeout=REQUEST_TIMEOUT, allowed_hosts=DOWNLOAD_HOSTS) as response:
+                data = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(data) > MAX_RESPONSE_BYTES:
+                    raise OpenSubtitlesError("Subtitle download exceeds the size limit")
         except (urllib.error.URLError, OSError) as exc:
             raise OpenSubtitlesError(f"Could not download it: {exc}") from exc
 

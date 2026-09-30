@@ -87,6 +87,11 @@ class Config:
 
     @property
     def db_path(self) -> Path:
+        return self.app_dir / "data" / "litejelly.db"
+
+    @property
+    def legacy_db_path(self) -> Path:
+        """Read-only migration source retained when durable data moves out of cache."""
         return self.cache_dir / "litejelly.db"
 
     @property
