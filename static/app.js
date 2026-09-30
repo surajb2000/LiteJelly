@@ -172,6 +172,7 @@
     trickplayTimer: null,
     audioLevel: 'off',
     activeSubtitle: 'off',
+    burnSubtitle: '',
     quality: 'auto',
     qualities: [],
     audioOffset: 0,
@@ -194,6 +195,11 @@
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
   const el = {};
+  const playerSession = new window.LiteJellyPlayerSession();
+  playerSession.bind(state, ['playback', 'offset', 'restartAt', 'restartToken', 'transport',
+    'pendingSeek', 'pendingForward', 'scrubbing', 'seekTimer', 'osdTimer', 'subtitleTimer',
+    'audioApplyTimer', 'trickplayTimer', 'upNextTimer', 'skipRetry', 'activeSubtitle',
+    'quality', 'audioTrack', 'audioLevel', 'audioOffset', 'subtitleOffset', 'burnSubtitle']);
   let cardTemplate = null;
   let thumbObserver = null;
   let thumbFallbackTimer = null;
@@ -224,8 +230,8 @@
     };
   }
 
-  async function getJSON(url) {
-    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+  async function getJSON(url, signal) {
+    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: signal });
     if (!response.ok) {
       let message = 'Request failed (' + response.status + ')';
       try {
@@ -237,9 +243,10 @@
     return response.json();
   }
 
-  function postJSON(url, payload) {
+  function postJSON(url, payload, signal) {
     return fetch(url, {
       method: 'POST',
+      signal: signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -290,13 +297,18 @@
   // --- Screen wake lock ------------------------------------------------
   async function acquireWakeLock() {
     if (!('wakeLock' in navigator) || state.wakeLock) return;
+    if (!playerSession.active) return;
+    const operation = playerSession.next('wake');
     try {
-      state.wakeLock = await navigator.wakeLock.request('screen');
+      const lock = await navigator.wakeLock.request('screen');
+      if (!playerSession.current(operation)) { lock.release().catch(() => {}); return; }
+      state.wakeLock = lock;
       state.wakeLock.addEventListener('release', () => { state.wakeLock = null; });
     } catch (err) { /* denied or unsupported */ }
   }
 
   function releaseWakeLock() {
+    playerSession.cancel('wake');
     if (state.wakeLock) {
       state.wakeLock.release().catch(() => {});
       state.wakeLock = null;
@@ -1582,25 +1594,27 @@
    * the slower response could land last and win. The token makes the newest
    * press the only one that can finish.
    */
-  async function restartStream(extra, keepSubtitle) {
+  async function restartStream(extra) {
     const plan = state.playback;
     if (!plan) return null;
 
     const at = displayTime();
-    const previousSubtitle = state.activeSubtitle;
+    playerSession.target = state.pendingSeek !== null ? state.pendingSeek : at;
+    playerSession.cancel('source');
     state.restartAt = at;
     const token = ++state.restartToken;
+    const operation = playerSession.next('plan');
     el.buffering.classList.remove('hidden');
 
     try {
-      const next = await getJSON(playbackQuery(plan.id, extra));
-      if (token !== state.restartToken) return null;
-      startPlayback(next, at);
-      if (keepSubtitle !== false && previousSubtitle !== 'off') {
-        selectSubtitle(previousSubtitle, true);
-      }
+      const next = await getJSON(playbackQuery(plan.id, extra), operation.signal);
+      if (!playerSession.current(operation) || token !== state.restartToken) return null;
+      operation.finished = true;
+      startPlayback(next, playerSession.target);
       return next;
     } catch (err) {
+      if (!playerSession.current(operation)) return null;
+      operation.finished = true;
       if (token === state.restartToken) {
         state.restartAt = null;
         el.buffering.classList.add('hidden');
@@ -1625,7 +1639,8 @@
     if (audio >= 0) query += '&audio=' + encodeURIComponent(audio);
     const level = extra && 'level' in extra ? extra.level : state.audioLevel;
     if (level && level !== 'off') query += '&level=' + encodeURIComponent(level);
-    if (extra && extra.sub) query += '&sub=' + encodeURIComponent(extra.sub);
+    const subtitle = extra && 'sub' in extra ? extra.sub : state.burnSubtitle;
+    if (subtitle) query += '&sub=' + encodeURIComponent(subtitle);
     return query;
   }
 
@@ -1633,6 +1648,14 @@
     const video = state.videos.find(item => item.id === videoId);
     if (!video) return;
 
+    if (state.playback) saveProgress(true);
+    playerSession.begin(videoId);
+    state.burnSubtitle = '';
+    const operation = playerSession.next('plan');
+    mseTeardown();
+    clearSubtitleTracks();
+    el.video.pause();
+    el.video.removeAttribute('src');
     cancelUpNext();
     el.osdTitle.textContent = video.name;
     el.osdBadge.textContent = 'Loading...';
@@ -1641,9 +1664,12 @@
     showOSD(true);
 
     try {
-      const plan = await getJSON(playbackQuery(videoId, { audio: -1 }));
+      const plan = await getJSON(playbackQuery(videoId, { audio: -1 }), operation.signal);
+      if (!playerSession.current(operation)) return;
+      operation.finished = true;
       startPlayback(plan);
     } catch (err) {
+      if (!playerSession.current(operation)) return;
       el.buffering.classList.add('hidden');
       showToast('Cannot play this file: ' + err.message, 5000);
       exitPlayer();
@@ -1925,6 +1951,7 @@
 
     const resume = plan.resume && plan.resume.position > 15 ? plan.resume.position : 0;
     const startTime = typeof startAt === 'number' ? startAt : resume;
+    playerSession.target = startTime;
     loadSource(startTime, true);
 
     if (startTime > 0 && typeof startAt !== 'number') {
@@ -1941,14 +1968,14 @@
   // snapping it onto a keyframe makes ffmpeg rewind a whole GOP. Ask only where
   // it will land, so the clock and subtitles match the stream. A forward
   // landing is a verified entry point, so that one is safe to send instead.
-  async function resolveLanding(plan, target, forward) {
+  async function resolveLanding(plan, target, forward, signal) {
     let landing = target;
     let ss = target.toFixed(2);
     if (target > 0 && plan.exact_seek === false) {
       try {
         const point = await getJSON(API.seekpoint + '?id=' + encodeURIComponent(plan.id) +
           '&t=' + target.toFixed(2) + '&quality=' + encodeURIComponent(state.quality) +
-          (forward ? '&dir=forward' : ''));
+          (forward ? '&dir=forward' : ''), signal);
         if (typeof point.start === 'number') {
           landing = point.start;
           if (forward && landing > target) ss = landing.toFixed(3);
@@ -1963,13 +1990,20 @@
     return plan.url + separator + 'ss=' + ss;
   }
 
-  function beginPlayback(video) {
+  function beginPlayback(video, operation) {
+    playerSession.once(operation, video, 'loadedmetadata', () => {
+      if (state.transport !== 'classic' && playerSession.target > 0) {
+        video.currentTime = playerSession.target;
+      }
+    });
+    playerSession.once(operation, video, 'playing', () => { state.restartAt = null; });
     video.load();
     const started = video.play();
     if (started && started.catch) {
       // Auto-advance calls play() without a fresh gesture, which a browser may
       // refuse. Say so rather than leaving a black screen.
       started.catch(() => {
+        if (!playerSession.current(operation)) return;
         showOSD(true);
         showToast('Press play to start', 4000);
       });
@@ -2039,6 +2073,7 @@
   }
 
   function mseTeardown() {
+    playerSession.cancel('stream');
     mse.serial++;
     if (mse.reader) { try { mse.reader.cancel(); } catch (err) { /* already closed */ } }
     mse.reader = null;
@@ -2081,9 +2116,13 @@
     el.video.src = mse.objectUrl;
   }
 
-  function mseIdle(buffer) {
+  function mseIdle(buffer, operation) {
     if (!buffer.updating) return Promise.resolve();
-    return new Promise(done => buffer.addEventListener('updateend', done, { once: true }));
+    return new Promise(done => {
+      const finish = () => { buffer.removeEventListener('updateend', finish); done(); };
+      buffer.addEventListener('updateend', finish, { once: true });
+      operation.cleanups.push(finish);
+    });
   }
 
   function sleep(ms) {
@@ -2094,12 +2133,13 @@
     const buffer = mse.buffer;
     const plan = mse.plan;
     if (!buffer || !plan) return;
+    const operation = playerSession.next('stream');
     const serial = ++mse.serial;
     if (mse.reader) { try { mse.reader.cancel(); } catch (err) { /* already closed */ } }
     mse.reader = null;
     mse.queue = [];
 
-    await mseIdle(buffer);
+    await mseIdle(buffer, operation);
     if (serial !== mse.serial) return;
     try {
       // abort() drops any half-parsed box from the previous stream; the new
@@ -2113,7 +2153,7 @@
 
     let response;
     try {
-      response = await fetch(streamUrl(plan, point.ss), { cache: 'no-store' });
+      response = await fetch(streamUrl(plan, point.ss), { cache: 'no-store', signal: operation.signal });
       if (!response.ok || !response.body) throw new Error('HTTP ' + response.status);
     } catch (err) {
       if (serial !== mse.serial) return;
@@ -2237,14 +2277,15 @@
     if (window.console && console.warn) console.warn('MediaSource fallback: ' + reason);
     showToast('Switched to classic streaming', 3000);
     if (!plan) return;
-    classicLoad(resumeAt, false).then(() => {
+    const operation = playerSession.next('source');
+    classicLoad(resumeAt, false, operation).then(() => {
       if (state.playback === plan) {
         el.osdBadge.title = describePipeline(plan) + '\n' + describeTransport();
       }
     });
   }
 
-  async function mseLoad(target, initial, forward) {
+  async function mseLoad(target, initial, forward, operation) {
     const plan = state.playback;
     const video = el.video;
     state.offset = 0;
@@ -2253,34 +2294,29 @@
         video.currentTime = target;
         return;
       }
-      const point = await resolveLanding(plan, target, forward);
-      if (state.playback !== plan || !mseActive()) return;
+      const point = await resolveLanding(plan, target, forward, operation.signal);
+      if (!playerSession.current(operation) || state.playback !== plan || !mseActive()) return;
       // The browser waits at the target until data covering it arrives, and
       // decodes from the keyframe before it on its own.
       video.currentTime = target;
       msePump(point, target);
       return;
     }
-    const point = await resolveLanding(plan, target, forward);
-    if (state.playback !== plan) return;
+    const point = await resolveLanding(plan, target, forward, operation.signal);
+    if (!playerSession.current(operation) || state.playback !== plan) return;
     mseOpen(plan, point, target);
-    if (target > 0) {
-      video.addEventListener('loadedmetadata', () => {
-        if (state.playback === plan && state.transport === 'mse') video.currentTime = target;
-      }, { once: true });
-    }
-    beginPlayback(video);
+    beginPlayback(video, operation);
     attachSubtitleTracks();
   }
 
-  async function classicLoad(target, forward) {
+  async function classicLoad(target, forward, operation) {
     const plan = state.playback;
     const video = el.video;
-    const point = await resolveLanding(plan, target, forward);
-    if (state.playback !== plan) return;
+    const point = await resolveLanding(plan, target, forward, operation.signal);
+    if (!playerSession.current(operation) || state.playback !== plan) return;
     state.offset = point.landing;
     video.src = streamUrl(plan, point.ss);
-    beginPlayback(video);
+    beginPlayback(video, operation);
     attachSubtitleTracks();
   }
 
@@ -2295,6 +2331,7 @@
     if (!plan) return;
     const video = el.video;
     const target = Math.max(0, time || 0);
+    const operation = playerSession.next('source');
 
     if (plan.native_seek) {
       state.offset = 0;
@@ -2305,18 +2342,15 @@
       mseTeardown();
       state.transport = 'direct';
       video.src = plan.url;
-      if (target > 0) {
-        video.addEventListener('loadedmetadata', () => { video.currentTime = target; }, { once: true });
-      }
-      beginPlayback(video);
+      beginPlayback(video, operation);
       attachSubtitleTracks();
     } else {
       if (initial) {
         mseTeardown();
         state.transport = mseSupported(plan) ? 'mse' : 'classic';
       }
-      if (state.transport === 'mse') await mseLoad(target, initial, forward);
-      else await classicLoad(target, forward);
+      if (state.transport === 'mse') await mseLoad(target, initial, forward, operation);
+      else await classicLoad(target, forward, operation);
     }
     if (initial && state.playback === plan) {
       el.osdBadge.title = describePipeline(plan) + '\n' + describeTransport();
@@ -2328,6 +2362,8 @@
     if (!plan) return;
     const duration = displayDuration();
     const target = Math.max(0, duration ? Math.min(seconds, duration - 1) : seconds);
+    playerSession.target = target;
+    playerSession.cancel('source');
     // The clock now belongs to this seek, not to whatever restart was pending.
     state.restartAt = null;
 
@@ -2343,6 +2379,7 @@
     showSeekPreview(target);
     clearTimeout(state.seekTimer);
     state.seekTimer = setTimeout(() => {
+      if (playerSession.planning()) return;
       const value = state.pendingSeek;
       const ahead = state.pendingForward;
       state.pendingSeek = null;
@@ -2388,6 +2425,7 @@
     el.skipSegment.classList.add('hidden');
     state.skipSegment = null;
     saveProgress(true);
+    playerSession.end();
     clearTimeout(state.seekTimer);
     state.pendingSeek = null;
 
@@ -2424,6 +2462,9 @@
 
   // --- Subtitles -------------------------------------------------------
   function clearSubtitleTracks() {
+    Object.keys(playerSession.operations).forEach(kind => {
+      if (kind.indexOf('subtitle:') === 0) playerSession.cancel(kind);
+    });
     $$('track', el.video).forEach(track => track.remove());
     state.subtitleSignature = null;
     state.lastCueKey = null;
@@ -2505,6 +2546,7 @@
   const SUBTITLE_RETRIES = [2000, 6000, 15000];
 
   function addSubtitleTrack(plan, track, attempt) {
+    const operation = playerSession.next('subtitle:' + track.id);
     const element = document.createElement('track');
     element.kind = 'subtitles';
     element.label = track.label;
@@ -2513,9 +2555,11 @@
       '&track=' + encodeURIComponent(track.id) +
       (attempt ? '&retry=' + attempt : '');
     element.dataset.trackId = track.id;
-    element.addEventListener('load', applyActiveSubtitle);
+    element.addEventListener('load', () => {
+      if (playerSession.current(operation)) applyActiveSubtitle();
+    });
     element.addEventListener('error', () => {
-      if (state.playback !== plan) return;
+      if (!playerSession.current(operation)) return;
       // A failed track stays empty for good, so replace the element instead
       // of re-enabling a dead one.
       const signature = state.subtitleSignature;
@@ -2526,8 +2570,8 @@
         }
         return;
       }
-      setTimeout(() => {
-        if (state.playback !== plan || state.subtitleSignature !== signature) return;
+      const retry = setTimeout(() => {
+        if (!playerSession.current(operation) || state.subtitleSignature !== signature) return;
         // A rebuild may have replaced this track while the retry was waiting.
         const already = $$('track', el.video)
           .some(node => node.dataset.trackId === track.id);
@@ -2535,6 +2579,7 @@
         addSubtitleTrack(plan, track, attempt + 1);
         applyActiveSubtitle();
       }, SUBTITLE_RETRIES[attempt]);
+      operation.cleanups.push(() => clearTimeout(retry));
     });
     el.video.appendChild(element);
   }
@@ -2868,19 +2913,27 @@
     closeSubtitleMenu();
     // Cleared so that choosing the same file twice still raises a change.
     el.subtitleFile.value = '';
+    el.subtitleFile._generation = playerSession.generation;
     el.subtitleFile.click();
   }
 
   function onSubtitleFileChosen() {
     const file = el.subtitleFile.files && el.subtitleFile.files[0];
     if (!file) return;
+    const generation = el.subtitleFile._generation == null
+      ? playerSession.generation : el.subtitleFile._generation;
+    const plan = state.playback;
     if (file.size > MAX_SUBTITLE_UPLOAD) {
       showToast('Subtitle files are limited to 2 MB', 4000);
       return;
     }
     const reader = new FileReader();
     reader.onerror = () => showToast('Could not read that file', 4000);
-    reader.onload = () => uploadSubtitle(file.name, reader.result);
+    reader.onload = () => {
+      if (playerSession.active && generation === playerSession.generation) {
+        uploadSubtitle(file.name, reader.result, plan);
+      }
+    };
     reader.readAsArrayBuffer(file);
   }
 
@@ -2895,9 +2948,9 @@
     return btoa(binary);
   }
 
-  async function uploadSubtitle(name, buffer) {
-    const plan = state.playback;
+  async function uploadSubtitle(name, buffer, plan) {
     if (!plan) return;
+    const operation = playerSession.next('subtitle-source');
     showToast('Adding ' + name + '\u2026', 4000);
     let response;
     try {
@@ -2905,12 +2958,14 @@
         id: plan.id,
         name: name,
         data: base64Of(buffer)
-      });
+      }, operation.signal);
     } catch (err) {
+      if (!playerSession.current(operation)) return;
       showToast('Could not reach the server', 4000);
       return;
     }
 
+    if (!playerSession.current(operation)) return;
     if (response.status === 401 || response.status === 403) {
       // Writing into a media folder takes an account, and the player has none.
       showToast('Sign in on the admin page to add subtitles', 5000);
@@ -2918,6 +2973,7 @@
     }
     let body = null;
     try { body = await response.json(); } catch (err) { /* reported below */ }
+    if (!playerSession.current(operation)) return;
     if (!response.ok || !body || !body.ok) {
       showToast((body && body.error) || 'Could not add that subtitle', 5000);
       return;
@@ -2930,8 +2986,8 @@
   /* A new sidecar renumbers the ext: ids, so the whole list is replaced and
    * the tracks are rebuilt rather than patched. */
   function adoptSubtitleTracks(plan, tracks, selectId) {
-    if (state.playback !== plan || !Array.isArray(tracks)) return;
-    plan.subtitles = tracks;
+    if (!state.playback || state.playback.id !== plan.id || !Array.isArray(tracks)) return;
+    state.playback.subtitles = tracks;
     state.subtitleTracks = tracks;
     clearSubtitleTracks();
     if (selectId) state.activeSubtitle = selectId;
@@ -2972,6 +3028,8 @@
   }
 
   function closeSubtitleSearch() {
+    playerSession.cancel('subtitle-search');
+    playerSession.cancel('subtitle-source');
     el.searchPanel.classList.add('hidden');
   }
 
@@ -2990,6 +3048,7 @@
   async function runSubtitleSearch() {
     const plan = state.playback;
     if (!plan) return;
+    const operation = playerSession.next('subtitle-search');
     state.searchLanguage = el.searchLanguage.value || DEFAULT_SUBTITLE_LANGUAGE;
     el.searchResults.replaceChildren();
     el.searchStatus.textContent = 'Searching\u2026';
@@ -2999,17 +3058,19 @@
       '&q=' + encodeURIComponent(el.searchQuery.value || '');
     let body;
     try {
-      const response = await fetch(url, { headers: { Accept: 'application/json' } });
+      const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: operation.signal });
+      if (!playerSession.current(operation)) return;
       if (response.status === 401 || response.status === 403) {
         el.searchStatus.textContent = 'Sign in on the admin page to search.';
         return;
       }
       body = await response.json();
     } catch (err) {
+      if (!playerSession.current(operation)) return;
       el.searchStatus.textContent = 'Could not reach the server.';
       return;
     }
-    if (state.playback !== plan) return;
+    if (!playerSession.current(operation)) return;
     if (!body || !body.ok) {
       el.searchStatus.textContent = (body && body.error) || 'Search failed.';
       return;
@@ -3057,18 +3118,21 @@
   async function fetchSubtitle(fileId, language) {
     const plan = state.playback;
     if (!plan) return;
+    const operation = playerSession.next('subtitle-source');
     el.searchStatus.textContent = 'Downloading\u2026';
     let response;
     try {
       response = await postJSON(API.subtitleFetch, {
         id: plan.id, file_id: Number(fileId), language: language
-      });
+      }, operation.signal);
     } catch (err) {
+      if (!playerSession.current(operation)) return;
       el.searchStatus.textContent = 'Could not reach the server.';
       return;
     }
     let body = null;
     try { body = await response.json(); } catch (err) { /* reported below */ }
+    if (!playerSession.current(operation)) return;
     if (!response.ok || !body || !body.ok) {
       el.searchStatus.textContent = (body && body.error) || 'Could not download it.';
       return;
@@ -3084,14 +3148,15 @@
 
     const track = state.subtitleTracks.find(item => item.id === trackId);
 
-    if (track && track.burn_in_only) {
+    if ((track && track.burn_in_only) || state.burnSubtitle) {
       // Bitmap subtitles have to be composited by ffmpeg, so restart the stream.
-      showToast('Re-encoding with ' + track.label + '...', 3000);
+      state.burnSubtitle = track && track.burn_in_only ? trackId : '';
+      state.activeSubtitle = trackId;
+      showToast('Updating subtitle rendering...', 3000);
       closeSubtitleMenu();
       try {
-        const next = await restartStream({ sub: trackId }, false);
+        const next = await restartStream({ sub: state.burnSubtitle });
         if (!next) return;
-        state.activeSubtitle = trackId;
         renderSubtitleMenu();
       } catch (err) {
         showToast('Could not enable that track: ' + err.message, 4000);
@@ -3383,6 +3448,7 @@
   }
 
   function closeMenus() {
+    closeSubtitleSearch();
     closeSubtitleMenu();
     closeAudioMenu();
     closeQualityMenu();
@@ -3643,9 +3709,10 @@
 
   async function loadTrickplay(plan, attempt) {
     cancelTrickplay();
+    const operation = playerSession.next('trickplay');
     try {
-      const sheet = await getJSON(API.trickplay + '?id=' + encodeURIComponent(plan.id));
-      if (state.playback !== plan) return;
+      const sheet = await getJSON(API.trickplay + '?id=' + encodeURIComponent(plan.id), operation.signal);
+      if (!playerSession.current(operation)) return;
       if (sheet.status === 'ready') {
         state.trickplay = sheet;
         el.scrubThumb.style.width = sheet.tile_width + 'px';
@@ -3658,7 +3725,7 @@
       return;
     }
     state.trickplayTimer = setTimeout(() => {
-      if (state.playback === plan) loadTrickplay(plan, attempt + 1);
+      if (playerSession.current(operation)) loadTrickplay(plan, attempt + 1);
     }, TRICKPLAY_RETRIES[attempt]);
   }
 
@@ -4306,7 +4373,6 @@
     // timeupdate instead would fire while the OLD source is still playing at
     // the target, which drops the guard before the teardown it exists for.
     video.addEventListener('loadedmetadata', () => {
-      state.restartAt = null;
       placeSubtitleLayer();
     });
     video.addEventListener('progress', updateOSD);

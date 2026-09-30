@@ -17,7 +17,7 @@ $mutations = @(
     @{ name = 'cue pinned to the screen';   from = "el.subtitleLayer.style.setProperty('--subtitle-rest', Math.round(rest) + 'px');"; to = 'void 0;' }
     @{ name = 'fill treated as letterbox';  from = "if (state.aspect === 'contain' && video.videoWidth"; to = 'if (video.videoWidth' }
     @{ name = 'raised under the dock';      from = 'const raised = Math.max(box.height * 0.2, rest);'; to = 'const raised = rest;' }
-    @{ name = 'not redone on a new file';   from = "      state.restartAt = null;`n      placeSubtitleLayer();"; to = "      state.restartAt = null;" }
+    @{ name = 'not redone on a new file'; from = "video.addEventListener('loadedmetadata', () => {`n      placeSubtitleLayer();"; to = "video.addEventListener('loadedmetadata', () => {" }
     @{ name = 'not redone on resize';       from = 'else placeSubtitleLayer();'; to = 'else void 0;' }
 )
 

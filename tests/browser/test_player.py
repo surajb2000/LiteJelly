@@ -110,6 +110,10 @@ class PlayerTests(unittest.TestCase):
 
     def tearDown(self):
         """Keep failure evidence and reject unexpected application exceptions."""
+        for pending in (self.pending_plans, self.pending_seeks):
+            while pending:
+                route, _data = pending.pop()
+                route.abort()
         artifacts = ROOT / "test-results" / "browser"
         artifacts.mkdir(parents=True, exist_ok=True)
         self.page.screenshot(path=str(artifacts / f"{self._testMethodName}.png"))
@@ -274,6 +278,64 @@ class PlayerTests(unittest.TestCase):
         self.assertIsNone(self.page.evaluate("window.fixturePlayer.state.playback"))
         self.assertIsNone(self.page.evaluate("window.fixturePlayer.state.subtitleTimer"))
         expect(self.page.locator("#subtitle-layer")).to_be_empty()
+
+    def test_exit_while_a_plan_is_loading_does_not_revive_playback(self):
+        self.held_plans = True
+        self.page.goto(ORIGIN)
+        with self.page.expect_request("**/api/playback?*"):
+            self.page.locator("#hero-play").click()
+        self.page.locator("#player-back-btn").click()
+        self.assertEqual(len(self.pending_plans), 1)
+        self.release(self.pending_plans)
+        self.page.evaluate("() => new Promise(resolve => setTimeout(resolve, 0))")
+        expect(self.page.locator("#player")).to_be_hidden()
+        self.assertIsNone(self.page.evaluate("window.fixturePlayer.state.playback"))
+        self.assertEqual(self.page.evaluate("window.fixtureMedia.source"), "")
+
+    def test_exit_during_restart_discards_the_late_response(self):
+        self.open_player()
+        self.held_plans = True
+        self.change_dialogue()
+        self.page.locator("#player-back-btn").click()
+        loads = self.page.evaluate("window.fixtureMedia.loads.length")
+        self.release(self.pending_plans)
+        self.page.evaluate("() => new Promise(resolve => setTimeout(resolve, 0))")
+        self.assertIsNone(self.page.evaluate("window.fixturePlayer.state.playback"))
+        self.assertEqual(self.page.evaluate("window.fixtureMedia.loads.length"), loads)
+
+    def seek(self, seconds):
+        """Commit a seek through the real slider handlers."""
+        self.page.locator("#seek-range").evaluate("""(slider, seconds) => {
+          slider.value = String(seconds / 600 * 1000);
+          slider.dispatchEvent(new Event('input', {bubbles:true}));
+          slider.dispatchEvent(new Event('change', {bubbles:true}));
+        }""", seconds)
+
+    def test_reversed_seek_responses_keep_the_latest_target(self):
+        self.open_player()
+        self.change_dialogue()
+        self.page.wait_for_function("window.fixtureMedia.source.includes('level=boost')")
+        self.held_seeks = True
+        with self.page.expect_request("**/api/seekpoint?*"):
+            self.seek(240)
+        with self.page.expect_request("**/api/seekpoint?*"):
+            self.seek(360)
+        self.page.evaluate("() => new Promise(resolve => setTimeout(resolve, 0))")
+        self.assertEqual(len(self.pending_seeks), 2)
+        self.release(self.pending_seeks, 1)
+        self.page.wait_for_function("window.fixtureMedia.source.includes('ss=360.00')")
+        self.release(self.pending_seeks)
+        self.page.evaluate("() => new Promise(resolve => setTimeout(resolve, 0))")
+        self.assertIn("ss=360.00", self.page.evaluate("window.fixtureMedia.source"))
+
+    def test_seek_during_plan_request_updates_the_restart_target(self):
+        self.open_player()
+        self.held_plans = True
+        self.change_dialogue()
+        self.seek(360)
+        self.release(self.pending_plans)
+        self.page.wait_for_function("window.fixtureMedia.source.includes('level=boost')")
+        self.assertIn("ss=360.00", self.page.evaluate("window.fixtureMedia.source"))
 
 
 if __name__ == "__main__":

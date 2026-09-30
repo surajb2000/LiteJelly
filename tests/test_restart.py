@@ -64,9 +64,8 @@ class RestartTests(unittest.TestCase):
         # Clearing this on timeupdate fires while the OLD source is still
         # playing at the target, which drops the guard before the teardown it
         # exists for. Measured: the 0:00 window came back unchanged.
-        listeners = re.findall(r"video\.addEventListener\('loadedmetadata', \(\) => \{(.*?)\}\);",
-                       self.code, re.S)
-        self.assertTrue(any("state.restartAt = null;" in listener for listener in listeners))
+        self.assertIn("playerSession.once(operation, video, 'playing', () => { state.restartAt = null; });",
+                  self.code)
         tick = body(self.code, "video.addEventListener('timeupdate'", "});")
         self.assertNotIn("restartAt", tick)
 

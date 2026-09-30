@@ -140,6 +140,9 @@ class ScriptSanityTests(unittest.TestCase):
         defined = set(re.findall(r"function\s+([A-Za-z_$][\w$]*)", code))
         defined |= set(re.findall(
             r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=", code))
+        defined |= set(re.findall(r"\b([A-Za-z_$][\w$]*)\s*=>", code))
+        for parameters in re.findall(r"\bfunction(?:\s+[\w$]+)?\s*\(([^)]*)\)", code):
+            defined.update(part.strip() for part in parameters.split(",") if part.strip())
         # Destructured and parameter names, which are also callable.
         defined |= set(re.findall(r"(?:const|let|var)\s*{([^}]*)}", code and
                                   " ".join(re.findall(
@@ -162,6 +165,9 @@ class ScriptSanityTests(unittest.TestCase):
 
     def test_admin_js_calls_resolve(self):
         self._check("admin.js")
+
+    def test_player_session_calls_resolve(self):
+        self._check("player-session.js")
 
 
 class ElementIdTests(unittest.TestCase):
