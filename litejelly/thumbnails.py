@@ -199,8 +199,10 @@ class ThumbnailService:
                 return False
             cmd = [
                 self.tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-threads", "1", "-filter_threads", "1",
                 "-ss", f"{max(0.0, offset):.2f}",
                 "-i", str(video_path),
+                "-threads", "1",
                 "-map", "0:v:0",
                 "-frames:v", "1",
                 "-vf", f"scale={THUMB_WIDTH}:{THUMB_HEIGHT}:force_original_aspect_ratio=decrease",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future
+
 import json
 import logging
 import math
@@ -451,6 +453,7 @@ class FFmpegTools:
         self.thumbnail_sem = threading.BoundedSemaphore(max(1, thumbnail_slots))
         self._probe_cache: dict[tuple, MediaInfo] = {}
         self._probe_lock = threading.Lock()
+        self._pending_probes: dict[tuple, Future[MediaInfo]] = {}
         self._keyframe_cache: dict[tuple, float] = {}
         self._encoders: set[str] | None = None
         self._auto_choice: str | None = None
@@ -460,6 +463,10 @@ class FFmpegTools:
     def close(self) -> None:
         """Cancel this generation's probes and encoder tests, leaving streams alone."""
         self._stop.set()
+        with self._probe_lock:
+            for pending in self._pending_probes.values():
+                pending.set_result(MediaInfo())
+            self._pending_probes.clear()
         if self._auto_thread is not None:
             self._auto_thread.join(timeout=3)
 
@@ -606,7 +613,7 @@ class FFmpegTools:
             self._auto_choice = best
 
     def probe(self, path: Path) -> MediaInfo:
-        """Probe a file, memoising on (path, mtime, size)."""
+        """Share concurrent probes and memoise by (path, mtime, size)."""
         try:
             stat = path.stat()
             key = (str(path), stat.st_mtime_ns, stat.st_size)
@@ -614,17 +621,35 @@ class FFmpegTools:
             return MediaInfo()
 
         with self._probe_lock:
+            if self._stop.is_set():
+                return MediaInfo()
             cached = self._probe_cache.get(key)
-        if cached is not None:
-            return cached
-
-        info = self._probe_uncached(path)
-
+            if cached is not None:
+                return cached
+            pending = self._pending_probes.get(key)
+            owner = pending is None
+            if pending is None:
+                pending = Future()
+                self._pending_probes[key] = pending
+        if not owner:
+            return pending.result()
+        try:
+            info = self._probe_uncached(path)
+        except BaseException as error:
+            with self._probe_lock:
+                self._pending_probes.pop(key, None)
+                if not pending.done():
+                    pending.set_exception(error)
+            raise
         with self._probe_lock:
-            if len(self._probe_cache) > 2000:
-                self._probe_cache.clear()
-            self._probe_cache[key] = info
-        return info
+            self._pending_probes.pop(key, None)
+            if not self._stop.is_set():
+                if len(self._probe_cache) > 2000:
+                    self._probe_cache.clear()
+                self._probe_cache[key] = info
+            if not pending.done():
+                pending.set_result(info)
+        return pending.result()
 
     def _probe_uncached(self, path: Path) -> MediaInfo:
         if not self.ffprobe:

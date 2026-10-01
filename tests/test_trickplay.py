@@ -147,6 +147,18 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual((sheet.columns, sheet.rows), (10, 4))
         self.assertEqual(sheet.count, 36)
 
+    def test_both_decode_paths_bound_background_threads(self):
+        self.assertTrue(self._run(fail_fast_path=True))
+        self.assertEqual(len(self.commands), 2)
+        for command in self.commands:
+            input_index = command.index("-i")
+            thread_indices = [index for index, value in enumerate(command) if value == "-threads"]
+            self.assertEqual(len(thread_indices), 2)
+            self.assertLess(thread_indices[0], input_index)
+            self.assertGreater(thread_indices[1], input_index)
+            self.assertEqual([command[index + 1] for index in thread_indices], ["1", "1"])
+            self.assertEqual(command[command.index("-filter_threads") + 1], "1")
+
     def test_a_failure_leaves_nothing_behind(self):
         self.assertFalse(self._run(produce=False))
         self.assertIsNone(self.service.cached(self.video))

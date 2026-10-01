@@ -207,11 +207,13 @@ class TrickplayService:
             if self._stop.is_set():
                 partial.unlink(missing_ok=True)
                 return False
-            cmd = [self.tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
+            cmd = [self.tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+                   "-threads", "1", "-filter_threads", "1"]
             if fast:
                 cmd += ["-skip_frame", "nokey"]
             cmd += [
                 "-i", str(video_path),
+                "-threads", "1",
                 "-vf", graph,
                 "-frames:v", "1", "-an", "-sn", "-fps_mode", "passthrough",
                 "-q:v", "6", "-y", str(partial),

@@ -218,6 +218,21 @@ class ThumbnailServiceTests(unittest.TestCase):
         """Keep the workers unstarted so the queue fills instead of draining."""
         self.service._ensure_workers = lambda: None
 
+    def test_background_thread_limits_apply_to_every_fallback(self):
+        with mock.patch("litejelly.thumbnails.run_quiet",
+                        return_value=subprocess.CompletedProcess([], 1, b"", b"failed")) as run:
+            self.assertFalse(self.service._generate_partial(self.video, self.root / "out.jpg", 600))
+        self.assertEqual(run.call_count, 4)
+        for call in run.call_args_list:
+            command = call.args[0]
+            input_index = command.index("-i")
+            thread_indices = [index for index, value in enumerate(command) if value == "-threads"]
+            self.assertEqual(len(thread_indices), 2)
+            self.assertLess(thread_indices[0], input_index)
+            self.assertGreater(thread_indices[1], input_index)
+            self.assertEqual([command[index + 1] for index in thread_indices], ["1", "1"])
+            self.assertEqual(command[command.index("-filter_threads") + 1], "1")
+
     def test_the_queue_refuses_work_it_will_never_reach(self):
         """The endpoint takes no account, so the backlog has to have an end."""
         from litejelly.thumbnails import QUEUE_LIMIT

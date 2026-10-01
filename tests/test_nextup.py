@@ -13,12 +13,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly.config import MediaDir
 from litejelly.library import (
-    Library, build_continue_watching, next_episode, previous_episode,
+    Library, build_continue_watching, episode_order, next_episode, previous_episode,
 )
 
 logging.getLogger("litejelly.library").setLevel(logging.CRITICAL)
@@ -209,6 +210,16 @@ class ContinueWatchingTests(_Fixture):
             progress[video.id] = self.progress(video, 0, finished=True,
                                                updated_at=100 + index)
         self.assertEqual(build_continue_watching(self.videos, progress), [])
+
+    def test_finished_series_is_ordered_only_once_per_response(self):
+        """Four finished episodes previously required sixteen ordering-key evaluations."""
+        episodes = [video for video in self.videos if video.title == "Mentalist"]
+        self.assertEqual(len(episodes), 4)
+        progress = {video.id: self.progress(video, finished=True, updated_at=index)
+                    for index, video in enumerate(episodes)}
+        with mock.patch("litejelly.library.episode_order", wraps=episode_order) as order:
+            self.assertEqual(build_continue_watching(self.videos, progress), [])
+        self.assertEqual(order.call_count, len(episodes))
 
     def test_a_few_seconds_in_is_not_resumable(self):
         video = self.video("Mentalist.S01E01.mkv")

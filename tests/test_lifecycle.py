@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import subprocess
+import io
 import sys
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from litejelly.ffmpeg import CapacityLimiter, run_quiet
+from litejelly.ffmpeg import CapacityLimiter, FFmpegTools, MediaInfo, run_quiet
 from litejelly.config import Config, TranscodeSettings
-from litejelly.web import Application, LiteJellyHTTPServer, RequestHandler, MAX_HTTP_CONNECTIONS, _query_seconds
+from litejelly.web import Application, LiteJellyHTTPServer, ReadAhead, RequestHandler, MAX_HTTP_CONNECTIONS, _query_seconds
 from litejelly.trickplay import TrickplayService
 from litejelly.enrich import Enricher
 
@@ -41,6 +43,125 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(results, [False])
         self.assertFalse(waiter.is_alive())
         limiter.release()
+
+
+class ProbeConcurrencyTests(unittest.TestCase):
+    def test_concurrent_cold_requests_share_one_probe(self):
+        """Three overlapping cold requests previously launched three probe jobs."""
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "movie.mkv"
+            path.write_bytes(b"fixture")
+            tools = FFmpegTools(Path(directory))
+            self.addCleanup(tools.close)
+            entered = threading.Event()
+            release = threading.Event()
+            lock = threading.Lock()
+            arrivals = []
+            results = []
+
+            class ObservedLock:
+                def __enter__(self):
+                    lock.acquire()
+                    arrivals.append(threading.get_ident())
+                    if len(arrivals) == 3:
+                        entered.set()
+
+                def __exit__(self, *args):
+                    lock.release()
+
+            tools._probe_lock = ObservedLock()
+            expected = MediaInfo(probed=True, duration=60)
+
+            def probe(_path):
+                release.wait(5)
+                return expected
+
+            with mock.patch.object(tools, "_probe_uncached", side_effect=probe) as uncached:
+                workers = [threading.Thread(target=lambda: results.append(tools.probe(path)),
+                                            daemon=True) for _index in range(3)]
+                try:
+                    for worker in workers:
+                        worker.start()
+                    self.assertTrue(entered.wait(3))
+                finally:
+                    release.set()
+                    for worker in workers:
+                        worker.join(timeout=3)
+                self.assertTrue(all(not worker.is_alive() for worker in workers))
+                self.assertEqual(len(results), 3)
+                self.assertTrue(all(result is expected for result in results))
+                self.assertEqual(uncached.call_count, 1)
+
+    def test_distinct_files_probe_concurrently_and_changes_invalidate_cache(self):
+        with TemporaryDirectory() as directory:
+            tools = FFmpegTools(Path(directory))
+            self.addCleanup(tools.close)
+            paths = [Path(directory) / name for name in ("first.mkv", "second.mkv")]
+            for path in paths:
+                path.write_bytes(b"fixture")
+            barrier = threading.Barrier(2)
+
+            def probe(_path):
+                barrier.wait(timeout=3)
+                return MediaInfo(probed=True)
+
+            with mock.patch.object(tools, "_probe_uncached", side_effect=probe) as uncached:
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(tools.probe, paths))
+                self.assertEqual(uncached.call_count, 2)
+                self.assertIs(tools.probe(paths[0]), results[0])
+                paths[0].write_bytes(b"replacement media")
+                uncached.side_effect = None
+                uncached.return_value = MediaInfo(probed=True, duration=120)
+                self.assertEqual(tools.probe(paths[0]).duration, 120)
+                self.assertEqual(uncached.call_count, 3)
+
+    def test_failed_probe_releases_pending_entry_and_allows_retry(self):
+        with TemporaryDirectory() as directory:
+            tools = FFmpegTools(Path(directory))
+            self.addCleanup(tools.close)
+            path = Path(directory) / "movie.mkv"
+            path.write_bytes(b"fixture")
+            expected = MediaInfo(probed=True)
+            with mock.patch.object(tools, "_probe_uncached",
+                                   side_effect=[RuntimeError("failed probe"), expected]) as uncached:
+                with self.assertRaisesRegex(RuntimeError, "failed probe"):
+                    tools.probe(path)
+                self.assertEqual(tools._pending_probes, {})
+                self.assertIs(tools.probe(path), expected)
+                self.assertEqual(uncached.call_count, 2)
+
+    def test_shutdown_releases_waiters_and_does_not_cache_retired_result(self):
+        with TemporaryDirectory() as directory:
+            tools = FFmpegTools(Path(directory))
+            path = Path(directory) / "movie.mkv"
+            path.write_bytes(b"fixture")
+            started = threading.Event()
+            release = threading.Event()
+
+            def probe(_path):
+                started.set()
+                release.wait(5)
+                return MediaInfo(probed=True)
+
+            with mock.patch.object(tools, "_probe_uncached", side_effect=probe) as uncached:
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    owner = pool.submit(tools.probe, path)
+                    try:
+                        self.assertTrue(started.wait(3))
+                        with tools._probe_lock:
+                            pending = next(iter(tools._pending_probes.values()))
+                        waiter = pool.submit(pending.result)
+                        tools.close()
+                        self.assertFalse(waiter.result(timeout=1).probed)
+                        self.assertFalse(tools.probe(path).probed)
+                    finally:
+                        release.set()
+                        tools.close()
+                    self.assertFalse(owner.result(timeout=3).probed)
+                self.assertEqual(tools._probe_cache, {})
+                self.assertEqual(tools._pending_probes, {})
+                self.assertEqual(uncached.call_count, 1)
 
 
 class ReconfigurationTests(unittest.TestCase):
@@ -108,6 +229,73 @@ class RequestLimitsTests(unittest.TestCase):
             handler = mock.Mock()
             self.assertIsNone(_query_seconds(handler, {"t": [value]}, "t"))
             self.assertEqual(handler.send_api_error.call_args.args[0], 400)
+
+
+class ReadAheadTests(unittest.TestCase):
+    def test_chunk_order_and_eof_preserve_every_byte_within_capacity(self):
+        payload = bytes(range(251)) * 1000
+        reader = ReadAhead(io.BytesIO(payload), capacity=2048, chunk=256)
+        self.addCleanup(reader.close)
+        chunks = []
+        while True:
+            chunk = reader.read(timeout=2)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            self.assertLessEqual(reader.buffered, 2048)
+        reader._thread.join(timeout=2)
+        self.assertFalse(reader._thread.is_alive())
+        self.assertEqual(b"".join(chunks), payload)
+        self.assertEqual(reader.buffered, 0)
+
+    def test_close_releases_a_producer_waiting_on_a_full_buffer(self):
+        overflow = threading.Event()
+
+        class Stream(io.BytesIO):
+            def read(self, size):
+                chunk = super().read(size)
+                if self.tell() >= 24:
+                    overflow.set()
+                return chunk
+
+        reader = ReadAhead(Stream(b"x" * 64), capacity=16, chunk=8)
+        self.addCleanup(reader.close)
+        try:
+            self.assertTrue(overflow.wait(2))
+            self.assertEqual(reader.buffered, 16)
+        finally:
+            reader.close()
+            reader._thread.join(timeout=2)
+        self.assertFalse(reader._thread.is_alive())
+        self.assertEqual(reader.buffered, 0)
+        self.assertEqual(reader.read(), b"")
+
+    def test_close_releases_an_empty_reader_before_the_pipe_finishes(self):
+        release = threading.Event()
+        stream = mock.Mock()
+        stream.read.side_effect = lambda size: (release.wait(5), b"")[1]
+        reader = ReadAhead(stream, capacity=16, chunk=8)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                waiting = pool.submit(reader.read, timeout=3)
+                reader.close()
+                self.assertEqual(waiting.result(timeout=1), b"")
+        finally:
+            reader.close()
+            release.set()
+            reader._thread.join(timeout=2)
+        self.assertFalse(reader._thread.is_alive())
+
+    def test_pipe_error_preserves_bytes_already_queued(self):
+        stream = mock.Mock()
+        stream.read.side_effect = [b"first", b"second", OSError("closed pipe")]
+        reader = ReadAhead(stream, capacity=64, chunk=8)
+        self.addCleanup(reader.close)
+        self.assertEqual(reader.read(timeout=2), b"first")
+        self.assertEqual(reader.read(timeout=2), b"second")
+        self.assertEqual(reader.read(timeout=2), b"")
+        reader._thread.join(timeout=2)
+        self.assertFalse(reader._thread.is_alive())
 
 
 class ProcessTests(unittest.TestCase):

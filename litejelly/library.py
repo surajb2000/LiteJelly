@@ -272,7 +272,13 @@ def build_continue_watching(videos, progress: dict, limit: int = 12) -> list[dic
     When the last thing watched in a series is finished, the row becomes the
     next episode instead, which is the thing the viewer actually wants next.
     """
-    by_id = {video.id: video for video in videos}
+    by_id: dict[str, Video] = {}
+    by_series: dict[str, list[Video]] = {}
+    successors: dict[str, dict[str, Video]] = {}
+    for video in videos:
+        by_id[video.id] = video
+        if video.series_id:
+            by_series.setdefault(video.series_id, []).append(video)
     entries = sorted(
         (entry for entry in progress.values() if entry.get("video_id") in by_id),
         key=lambda entry: entry.get("updated_at") or 0,
@@ -288,7 +294,13 @@ def build_continue_watching(videos, progress: dict, limit: int = 12) -> list[dic
             continue
 
         if entry.get("finished"):
-            following = next_episode(videos, video)
+            if not video.series_id:
+                continue
+            if key not in successors:
+                siblings = sorted(by_series[key], key=episode_order)
+                successors[key] = {before.id: after for before, after in
+                                   zip(siblings, siblings[1:])}
+            following = successors[key].get(video.id)
             if following is None:
                 continue
             if (progress.get(following.id) or {}).get("finished"):
