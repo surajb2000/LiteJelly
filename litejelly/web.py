@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import collections
 import hmac
 import http.server
 import json
@@ -26,21 +25,24 @@ from pathlib import Path
 from . import admin as admin_auth
 from . import auth as admin_accounts
 from . import logs as log_setup
+from . import playback
 from . import settings as user_settings
+from . import streaming
 from .chapters import read_chapters, skippable
 from .config import load_config
 from .enrich import Enricher
-from .ffmpeg import (AUDIO_MODES, HWACCEL_CHOICES, QUALITY_LADDER, FFmpegTools,
-                     popen_quiet, resolve_quality, stream_mime)
+from .ffmpeg import HWACCEL_CHOICES, FFmpegTools
 from .library import (
     Library, build_continue_watching, episode_order, next_episode,
     previous_episode,
 )
 from .paths import is_within
+from .playback import _audio_delay_ms, _audio_index, _audio_mode, _audio_tracks
 from .providers import MetadataProviders, artwork_digest
 from .store import ProgressStore
+from .streaming import CHUNK_SIZE, ReadAhead, parse_range
 from .subtitles import (SubtitleService, discover as discover_subtitles,
-                        language_from_name, language_from_token, save_sidecar,
+                        language_from_name, save_sidecar,
                         track_id_for)
 from .opensubtitles import Account as OpenSubtitlesAccount, OpenSubtitles, \
     OpenSubtitlesError, movie_hash
@@ -54,7 +56,6 @@ log = logging.getLogger("litejelly.web")
 mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("font/woff", ".woff")
 
-CHUNK_SIZE = 256 * 1024
 MAX_BODY_BYTES = 64 * 1024
 # Only the subtitle upload may be larger, and only because base64 inflates a
 # 2 MB file by a third. Raising the shared limit would loosen every other route.
@@ -113,95 +114,6 @@ def get_local_ip() -> str:
             return sock.getsockname()[0]
     except OSError:
         return "127.0.0.1"
-
-
-def parse_range(header: str | None, file_size: int):
-    """Parse a single-range 'Range' header.
-
-    Returns ``(start, end)``, ``None`` when no range was requested, or the
-    string ``"invalid"`` when the range cannot be satisfied.
-    """
-    if not header:
-        return None
-    header = header.strip()
-    if not header.lower().startswith("bytes="):
-        return "invalid"
-    spec = header[6:].split(",")[0].strip()
-    if "-" not in spec:
-        return "invalid"
-
-    start_text, _, end_text = spec.partition("-")
-    try:
-        if not start_text:
-            # Suffix range: last N bytes.
-            length = int(end_text)
-            if length <= 0:
-                return "invalid"
-            start = max(0, file_size - length)
-            end = file_size - 1
-        else:
-            start = int(start_text)
-            end = int(end_text) if end_text else file_size - 1
-    except ValueError:
-        return "invalid"
-
-    if start < 0 or start >= file_size or end < start:
-        return "invalid"
-    return start, min(end, file_size - 1)
-
-
-def _audio_delay_ms(info, plan, query) -> float:
-    """Manual audio trim only.
-
-    Compensating the B-frame reorder delay automatically was tried and removed:
-    measuring the delivered audio against a beep reference showed ffmpeg
-    already accounts for most of it, so adding the full reorder depth pushed
-    the audio late instead of aligning it.
-    """
-    try:
-        delay = float(query.get("adelay", ["0"])[0])
-    except (TypeError, ValueError):
-        delay = 0.0
-    return max(-5000.0, min(5000.0, delay))
-
-
-def _audio_mode(query) -> str:
-    mode = query.get("level", [""])[0].lower()
-    return mode if mode in AUDIO_MODES else "off"
-
-
-def _audio_index(info, query) -> int | None:
-    """The requested audio track, or None to let ffmpeg pick the default."""
-    raw = query.get("audio", [""])[0]
-    try:
-        index = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return index if any(t.index == index for t in info.audios) else None
-
-
-_CHANNEL_NAMES = {1: "Mono", 2: "Stereo", 6: "5.1", 8: "7.1"}
-
-def _audio_tracks(info) -> list[dict]:
-    tracks = []
-    for stream in info.audios:
-        _, language = language_from_token(stream.language)
-        parts = [stream.title or language or f"Track {stream.index + 1}"]
-        if language and stream.title and language.lower() not in stream.title.lower():
-            parts.append(language)
-        detail = _CHANNEL_NAMES.get(stream.channels, f"{stream.channels}ch"
-                                    if stream.channels else "")
-        if detail:
-            parts.append(detail)
-        tracks.append({
-            "index": stream.index,
-            "label": " \u00b7 ".join(parts),
-            "language": language,
-            "codec": stream.codec,
-            "channels": stream.channels,
-            "default": stream.default,
-        })
-    return tracks
 
 
 def _cached_shows(app) -> list[dict]:
@@ -1055,91 +967,15 @@ class Routes:
             return
 
         app = h.app
-        info = app.tools.probe(path)
-        quality = resolve_quality(query.get("quality", [""])[0])
-        audio_index = _audio_index(info, query)
-        audio_mode = _audio_mode(query)
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality,
-                                       audio_index, audio_mode)
-        tracks = discover_subtitles(path, info)
-
-        requested_sub = query.get("sub", [""])[0]
-        burn_track = next(
-            (t for t in tracks if t.id == requested_sub and t.burn_in_only), None
-        )
-
-        params = {"id": video.id}
-        if quality.id != "auto":
-            params["quality"] = quality.id
-        if audio_index is not None:
-            params["audio"] = audio_index
-        if audio_mode != "off":
-            params["level"] = audio_mode
-        manual_offset = query.get("adelay", ["0"])[0]
-        try:
-            if float(manual_offset):
-                params["adelay"] = manual_offset
-        except (TypeError, ValueError):
-            pass
-        if burn_track is not None:
-            mode, badge = "transcode", f"Burning in {burn_track.label}"
-            params["sub"] = burn_track.id
-            url = "/media/transcode?" + urllib.parse.urlencode(params)
-        elif plan.mode == "direct":
-            mode, badge = "direct", "Direct Play"
-            url = "/media/stream?" + urllib.parse.urlencode(params)
-        else:
-            mode = plan.mode
-            badge = "Remuxed" if plan.mode == "remux" else "Transcoded"
-            url = "/media/transcode?" + urllib.parse.urlencode(params)
-
-        out_width, out_height = app.tools.output_size(info, plan, app.config.transcode, quality)
-
+        payload = playback.build_payload(app.tools, app.config, video, path, query)
         h.send_json({
-            "id": video.id,
-            "title": video.name,
-            "filename": video.filename,
-            "mode": mode,
-            "badge": badge,
-            "reason": plan.reason,
-            "duration": info.duration,
-            "width": info.width,
-            "height": info.height,
-            "output_width": out_width,
-            "output_height": out_height,
-            "video_codec": info.video_codec,
-            "audio_codec": (chosen.codec if (chosen := info.audio(audio_index))
-                            else info.audio_codec),
-            "audio_tracks": _audio_tracks(info),
-            "audio": chosen.index if chosen else -1,
-            "audio_level": audio_mode,
-            "video_action": plan.video_action,
-            "audio_action": plan.audio_action,
-            "audio_delay_ms": round(_audio_delay_ms(info, plan, query), 1),
-            "reorder_delay_ms": round(info.reorder_delay * 1000.0, 1),
-            "target_video_codec": app.config.transcode.video_codec,
-            "target_audio_codec": app.config.transcode.audio_codec,
-            "quality": quality.id,
-            "qualities": [
-                {"id": level.id, "label": level.label, "height": level.height}
-                for level in QUALITY_LADDER
-                if level.height == 0 or not info.height or level.height <= info.height
-            ],
-            # Direct play seeks via byte ranges; piped output needs a restart.
-            "native_seek": mode == "direct",
-            # A re-encode can start anywhere; a stream copy snaps to a keyframe.
-            "exact_seek": plan.video_action == "encode",
-            # Empty when the codec string is not known; the client then avoids MSE.
-            "mime": stream_mime(info, plan, app.config.transcode,
-                                burn_track is not None, audio_index),
-            "url": url,
-            "subtitles": [t.to_dict() for t in tracks],
+            **payload,
             "resume": app.progress.get(video.id) or {},
             "next_id": (following.id if (following := next_episode(app.library.videos, video))
                         else ""),
             "prev_id": (earlier.id if (earlier := previous_episode(app.library.videos, video))
                         else ""),
-            **_skip_payload(*_skip_segments(app, video, path, info.duration)),
+            **_skip_payload(*_skip_segments(app, video, path, payload["duration"])),
         })
 
     @staticmethod
@@ -1172,21 +1008,7 @@ class Routes:
         if target is None:
             return
 
-        info = app.tools.probe(path)
-        quality = resolve_quality(query.get("quality", [""])[0])
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality,
-                                       _audio_index(info, query), _audio_mode(query))
-        forward = query.get("dir", [""])[0] == "forward"
-        # Re-encoding can start anywhere; a stream copy snaps to a keyframe.
-        start = target
-        if plan.video_action == "copy" and target > 0:
-            start = app.tools.seek_landing(path, target, forward=forward)
-        h.send_json({
-            "requested": target,
-            "start": start,
-            "exact": plan.video_action != "copy",
-            "direction": "forward" if forward else "backward",
-        })
+        h.send_json(playback.seek_payload(app.tools, app.config, path, query, target))
 
     @staticmethod
     def stream(h, query):
@@ -1212,28 +1034,8 @@ class Routes:
         if start is None:
             return
 
-        info = app.tools.probe(path)
-        quality = resolve_quality(query.get("quality", [""])[0])
-        audio_index = _audio_index(info, query)
-        audio_mode = _audio_mode(query)
-        plan = app.tools.plan_playback(info, app.config.allow_hevc_direct, quality,
-                                       audio_index, audio_mode)
-
-        burn_index = None
-        requested_sub = query.get("sub", [""])[0]
-        if requested_sub.startswith("emb:"):
-            tracks = discover_subtitles(path, info)
-            track = next((t for t in tracks if t.id == requested_sub), None)
-            if track is not None and track.burn_in_only:
-                burn_index = int(requested_sub.split(":")[1])
-
-        cmd = app.tools.build_stream_command(
-            path, plan, app.config.transcode, start=start,
-            burn_subtitle_index=burn_index, quality=quality,
-            audio_delay_ms=_audio_delay_ms(info, plan, query), info=info,
-            audio_index=audio_index, audio_mode=audio_mode,
-        )
-        h.pump_process(cmd, label=f"{video.name} @ {start:.0f}s ({plan.mode}/{quality.id})")
+        cmd, label = playback.build_stream(app.tools, app.config, video, path, query, start)
+        h.pump_process(cmd, label=label)
 
     @staticmethod
     def thumbnail(h, query):
@@ -1631,75 +1433,6 @@ class Routes:
         h.send_json({"ok": True, "username": result.get("username", "")})
 
 
-class ReadAhead:
-    """Drains an ffmpeg pipe in a thread so it can run ahead of the socket.
-
-    Without this, ffmpeg blocks the moment the client stops pulling, so there
-    is no reserve to cover a network dip or to refill quickly after a seek.
-    """
-
-    def __init__(self, stream, capacity: int, chunk: int = CHUNK_SIZE):
-        self._stream = stream
-        self._capacity = max(chunk * 2, capacity)
-        self._chunk = chunk
-        self._queue: collections.deque = collections.deque()
-        self._size = 0
-        self._eof = False
-        self._stopped = False
-        self._lock = threading.Lock()
-        self._not_full = threading.Condition(self._lock)
-        self._not_empty = threading.Condition(self._lock)
-        self._thread = threading.Thread(target=self._fill, name="read-ahead", daemon=True)
-        self._thread.start()
-
-    @property
-    def buffered(self) -> int:
-        with self._lock:
-            return self._size
-
-    def _fill(self) -> None:
-        try:
-            while True:
-                data = self._stream.read(self._chunk)
-                if not data:
-                    break
-                with self._lock:
-                    while (self._size + len(data) > self._capacity
-                           and not self._stopped):
-                        self._not_full.wait(0.5)
-                    if self._stopped:
-                        return
-                    self._queue.append(data)
-                    self._size += len(data)
-                    self._not_empty.notify()
-        except (OSError, ValueError):
-            pass
-        finally:
-            with self._lock:
-                self._eof = True
-                self._not_empty.notify_all()
-
-    def read(self, timeout: float = 30.0) -> bytes:
-        with self._lock:
-            while not self._queue and not self._eof and not self._stopped:
-                if not self._not_empty.wait(timeout):
-                    return b""
-            if not self._queue:
-                return b""
-            data = self._queue.popleft()
-            self._size -= len(data)
-            self._not_full.notify()
-            return data
-
-    def close(self) -> None:
-        with self._lock:
-            self._stopped = True
-            self._queue.clear()
-            self._size = 0
-            self._not_full.notify_all()
-            self._not_empty.notify_all()
-
-
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     timeout = 15
@@ -1941,135 +1674,16 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     # -- byte-range streaming ---------------------------------------------
     def serve_file_range(self, path: Path):
-        try:
-            stat = path.stat()
-        except OSError:
-            self.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
-            return
-        file_size = stat.st_size
-
-        content_type, _ = mimetypes.guess_type(str(path))
-        if not content_type or not content_type.startswith("video/"):
-            content_type = "video/mp4"
-
-        parsed = parse_range(self.headers.get("Range"), file_size)
-        if parsed == "invalid":
-            self._begin(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, {
-                "Content-Range": f"bytes */{file_size}",
-                "Content-Length": 0,
-            })
-            return
-
-        headers = {
-            "Content-Type": content_type,
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "no-store",
-            "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
-        }
-        if parsed is None:
-            start, end, status = 0, file_size - 1, HTTPStatus.OK
-        else:
-            start, end = parsed
-            status = HTTPStatus.PARTIAL_CONTENT
-            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-
-        remaining = end - start + 1
-        headers["Content-Length"] = remaining
-        self._begin(status, headers)
-
-        if getattr(self, "_head_only", False):
-            return
-
-        try:
-            with path.open("rb") as handle:
-                handle.seek(start)
-                while remaining > 0:
-                    chunk = handle.read(min(CHUNK_SIZE, remaining))
-                    if not chunk:
-                        break
-                    if not self._write(chunk):
-                        return
-                    remaining -= len(chunk)
-        except OSError as exc:
-            log.warning("Stream read error for %s: %s", path.name, exc)
-            self.close_connection = True
+        streaming.serve_file_range(self, path)
 
     # -- ffmpeg pipe ------------------------------------------------------
     def pump_process(self, cmd: list[str], label: str):
         """Stream an ffmpeg process' stdout to the client, bounded by a semaphore."""
-        if getattr(self, "_head_only", False):
-            self.send_bytes(b"", "video/mp4")
-            return
-        sem = self.app.tools.transcode_sem
-        if not sem.acquire(timeout=20):
-            self.send_api_error(HTTPStatus.SERVICE_UNAVAILABLE,
-                                "Server is busy transcoding. Try again shortly.",
-                                extra={"Retry-After": "5"})
-            return
-
-        process = None
-        try:
-            try:
-                process = popen_quiet(cmd)
-            except OSError as exc:
-                self.send_api_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"ffmpeg failed: {exc}")
-                return
-            if not self.app.track_stream(process):
-                self.send_api_error(HTTPStatus.SERVICE_UNAVAILABLE, "Server is shutting down")
-                return
-            log.info("Streaming %s", label)
-            self.close_connection = True
-            self._begin(HTTPStatus.OK, {
-                "Content-Type": "video/mp4",
-                "Cache-Control": "no-store",
-                "Connection": "close",
-                "Accept-Ranges": "none",
-            })
-
-            if getattr(self, "_head_only", False):
-                return
-
-            reader = ReadAhead(process.stdout, self.app.config.stream_buffer_bytes)
-            try:
-                while True:
-                    chunk = reader.read()
-                    if not chunk:
-                        break
-                    if not self._write(chunk):
-                        break
-                    try:
-                        self.wfile.flush()
-                    except (OSError, ValueError):
-                        break
-            finally:
-                reader.close()
-        finally:
-            if process is not None:
-                self.app.forget_stream(process)
-                self._terminate(process)
-            sem.release()
-            log.info("Stream ended: %s", label)
+        streaming.pump_process(self, cmd, label)
 
     @staticmethod
     def _terminate(process: subprocess.Popen):
-        try:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-                process.wait(timeout=2)
-            except OSError:
-                pass
-        except OSError:
-            pass
-        finally:
-            if process.stdout:
-                try:
-                    process.stdout.close()
-                except OSError:
-                    pass
+        streaming.terminate_process(process)
 
 
 class LiteJellyHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):

@@ -14,14 +14,16 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly import auth
 from litejelly.config import load_config
-from litejelly.ffmpeg import MediaInfo
-from litejelly.web import Application, create_server
+from litejelly.ffmpeg import CapacityLimiter, MediaInfo, popen_quiet
+from litejelly.web import Application, RequestHandler, create_server
 
 for name in ("litejelly", "litejelly.web", "litejelly.library", "litejelly.admin",
              "litejelly.auth", "litejelly.thumbnails"):
@@ -108,6 +110,205 @@ class LiveServerTests(unittest.TestCase):
         payload = json.loads(response.read())
         self.assertEqual(len(payload["videos"]), 1)
         conn.close()
+
+    def test_two_direct_viewers_have_independent_ranges(self):
+        first = self.connect()
+        second = self.connect()
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
+        video_id = self.video_id(first)
+        payload = bytes(range(256)) * 4
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ranges.mp4"
+            path.write_bytes(payload)
+            with mock.patch.object(self.app, "resolve_video",
+                                   return_value=(self.app.library.videos[0], path)):
+                first.request("GET", f"/media/stream?id={video_id}", headers={"Range": "bytes=0-127"})
+                second.request("GET", f"/media/stream?id={video_id}", headers={"Range": "bytes=513-768"})
+                first_response = first.getresponse()
+                second_response = second.getresponse()
+                self.assertEqual(first_response.status, 206)
+                self.assertEqual(second_response.status, 206)
+                self.assertEqual(first_response.getheader("Content-Range"), "bytes 0-127/1024")
+                self.assertEqual(second_response.getheader("Content-Range"), "bytes 513-768/1024")
+                self.assertEqual(first_response.read(), payload[:128])
+                first.close()
+                self.assertEqual(second_response.read(), payload[513:769])
+                second.close()
+
+    def test_playback_contract_preserves_per_request_options(self):
+        connection = self.connect()
+        self.addCleanup(connection.close)
+        video_id = self.video_id(connection)
+        info = MediaInfo(probed=True, duration=3600, container="mp4", video_codec="h264",
+                         audio_codec="aac", width=1920, height=1080)
+        track = mock.Mock(id="emb:0", burn_in_only=True, label="English")
+        track.to_dict.return_value = {"id": "emb:0", "label": "English", "burn_in_only": True}
+        resume = {"video_id": video_id, "position": 120, "duration": 3600}
+        with mock.patch.object(self.app.tools, "ffmpeg", "fixture-ffmpeg"), \
+             mock.patch.object(self.app.tools, "probe", return_value=info), \
+             mock.patch.object(self.app.progress, "get", return_value=resume), \
+             mock.patch("litejelly.playback.discover_subtitles", return_value=[track]):
+            for query, mode in (("", "direct"), ("&quality=720p&level=night&adelay=75", "transcode"),
+                                ("&sub=emb:0", "transcode"), ("", "direct")):
+                with self.subTest(query=query):
+                    connection.request("GET", f"/api/playback?id={video_id}{query}")
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    payload = json.loads(response.read())
+                    self.assertEqual(payload["id"], video_id)
+                    self.assertEqual(payload["duration"], 3600)
+                    self.assertEqual(payload["mode"], mode)
+                    self.assertEqual(payload["resume"], resume)
+                    self.assertEqual(payload["native_seek"], mode == "direct")
+                    self.assertEqual(payload["subtitles"], [track.to_dict.return_value])
+                    self.assertTrue({"mime", "qualities", "audio_tracks", "next_id", "prev_id"} <= payload.keys())
+                    parameters = urllib.parse.parse_qs(urllib.parse.urlsplit(payload["url"]).query)
+                    self.assertEqual(parameters["id"], [video_id])
+                    if "quality" in query:
+                        self.assertEqual(parameters["quality"], ["720p"])
+                        self.assertEqual(parameters["level"], ["night"])
+                        self.assertEqual(parameters["adelay"], ["75"])
+                        self.assertEqual(payload["audio_delay_ms"], 75)
+                        self.assertEqual(payload["output_height"], 720)
+                    elif "sub=" in query:
+                        self.assertEqual(parameters["sub"], ["emb:0"])
+                        self.assertEqual(payload["badge"], "Burning in English")
+                    else:
+                        self.assertNotIn("quality", parameters)
+                        self.assertNotIn("level", parameters)
+                        self.assertNotIn("sub", parameters)
+
+    def test_pipe_viewers_seek_and_disconnect_independently(self):
+        """Real sockets and children verify isolation; fixture bytes are not encoded media."""
+        children = []
+        connections = []
+        responses = []
+        commands = []
+        terminated = {}
+        original_terminate = RequestHandler._terminate
+        lookup = self.connect()
+        try:
+            video_id = self.video_id(lookup)
+        finally:
+            lookup.close()
+
+        def spawn(command):
+            offset = float(command[command.index("-ss") + 1])
+            marker = int(offset) % 251
+            script = ("import sys\n"
+                      f"chunk = bytes([{marker}]) * 262144\n"
+                      "while True:\n"
+                      "    sys.stdout.buffer.write(chunk)\n"
+                      "    sys.stdout.buffer.flush()\n")
+            process = popen_quiet([sys.executable, "-u", "-c", script])
+            terminated[process] = threading.Event()
+            commands.append(command)
+            children.append(process)
+            return process
+
+        def terminate(process):
+            try:
+                original_terminate(process)
+            finally:
+                if process in terminated:
+                    terminated[process].set()
+
+        def open_viewer(offset, quality="auto"):
+            connection = self.connect()
+            connections.append(connection)
+            connection.request("GET", f"/media/transcode?id={video_id}&ss={offset}&quality={quality}")
+            response = connection.getresponse()
+            responses.append(response)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(512), bytes([offset % 251]) * 512)
+            return connection, response
+
+        info = MediaInfo(probed=True, duration=3600, container="mkv", video_codec="h264",
+                         audio_codec="aac", width=1920, height=1080)
+        with mock.patch.object(self.app.tools, "ffmpeg", "fixture-ffmpeg"), \
+             mock.patch.object(self.app.tools, "probe", return_value=info), \
+             mock.patch("litejelly.streaming.popen_quiet", side_effect=spawn), \
+             mock.patch.object(RequestHandler, "_terminate", side_effect=terminate):
+            try:
+                first, first_response = open_viewer(600)
+                second, second_response = open_viewer(2700, "720p")
+                self.assertEqual(len(children), 2)
+                self.assertIsNot(children[0], children[1])
+                self.assertTrue(all(child.poll() is None for child in children))
+                first_response.close()
+                first.close()
+                self.assertTrue(terminated[children[0]].wait(5))
+                self.assertIsNone(children[1].poll())
+                self.assertEqual(second_response.read(512), bytes([2700 % 251]) * 512)
+                replacement, replacement_response = open_viewer(1200)
+                self.assertEqual(len(children), 3)
+                self.assertEqual([float(command[command.index("-ss") + 1])
+                                  for command in commands], [600, 2700, 1200])
+                second_response.close()
+                second.close()
+                self.assertTrue(terminated[children[1]].wait(5))
+                self.assertIsNone(children[2].poll())
+                self.assertEqual(replacement_response.read(512), bytes([1200 % 251]) * 512)
+            finally:
+                for response in responses:
+                    response.close()
+                for connection in connections:
+                    connection.close()
+                for child in children:
+                    if not terminated[child].wait(5):
+                        original_terminate(child)
+                self.assertTrue(all(child.poll() is not None for child in children))
+
+    def test_busy_pipe_limit_does_not_block_direct_playback(self):
+        connection = self.connect()
+        self.addCleanup(connection.close)
+        video_id = self.video_id(connection)
+        with mock.patch.object(self.app.tools, "ffmpeg", "fixture-ffmpeg"), \
+             mock.patch.object(self.app.tools, "probe", return_value=MediaInfo()), \
+             mock.patch.object(self.app.tools.transcode_sem, "acquire", return_value=False), \
+             mock.patch("litejelly.streaming.popen_quiet") as spawn:
+            connection.request("GET", f"/media/transcode?id={video_id}")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 503)
+            self.assertEqual(response.getheader("Retry-After"), "5")
+            response.read()
+            connection.request("GET", f"/media/stream?id={video_id}", headers={"Range": "bytes=0-31"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), b"x" * 32)
+            spawn.assert_not_called()
+
+    def test_head_pipe_request_does_not_spawn_or_acquire_capacity(self):
+        connection = self.connect()
+        self.addCleanup(connection.close)
+        video_id = self.video_id(connection)
+        with mock.patch.object(self.app.tools, "ffmpeg", "fixture-ffmpeg"), \
+             mock.patch.object(self.app.tools, "probe", return_value=MediaInfo()), \
+             mock.patch.object(self.app.tools.transcode_sem, "acquire") as acquire, \
+             mock.patch("litejelly.streaming.popen_quiet") as spawn:
+            connection.request("HEAD", f"/media/transcode?id={video_id}")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"")
+            acquire.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_failed_pipe_start_releases_its_capacity(self):
+        connection = self.connect()
+        self.addCleanup(connection.close)
+        video_id = self.video_id(connection)
+        limiter = CapacityLimiter(1)
+        with mock.patch.object(self.app.tools, "ffmpeg", "fixture-ffmpeg"), \
+             mock.patch.object(self.app.tools, "probe", return_value=MediaInfo()), \
+             mock.patch.object(self.app.tools, "transcode_sem", limiter), \
+             mock.patch("litejelly.streaming.popen_quiet", side_effect=OSError("fixture failure")):
+            connection.request("GET", f"/media/transcode?id={video_id}")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 500)
+            response.read()
+            self.assertTrue(limiter.acquire(timeout=2))
+            limiter.release()
 
     def test_post_body_does_not_corrupt_the_next_request(self):
         # /api/rescan ignores its body. Left unread, the next request on the
