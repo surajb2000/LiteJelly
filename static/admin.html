@@ -358,6 +358,25 @@
       </section>
 
       <section class="card">
+        <h2>Profiles</h2>
+        <p class="hint">
+          Each profile keeps its own watch history and Continue Watching. With
+          more than one, every screen asks who is watching and remembers the
+          answer. Profiles are not passwords: anyone on the network can pick
+          any of them.
+        </p>
+        <ul class="profiles" id="profiles"></ul>
+        <div class="field">
+          <label for="profile-new">New profile</label>
+          <div class="profile-row">
+            <input type="text" id="profile-new" maxlength="24" autocomplete="off" spellcheck="false">
+            <button type="button" class="btn" id="profile-add">Add profile</button>
+          </div>
+        </div>
+        <span id="profile-status" class="save-status" role="status"></span>
+      </section>
+
+      <section class="card">
         <h2>Admin account</h2>
         <p class="hint">
           These settings are reachable from any device on the network, so they

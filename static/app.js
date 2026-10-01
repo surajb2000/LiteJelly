@@ -119,7 +119,8 @@
     subtitleList: '/api/subtitles',
     subtitleUpload: '/api/subtitles/upload',
     subtitleSearch: '/api/subtitles/search',
-    subtitleFetch: '/api/subtitles/fetch'
+    subtitleFetch: '/api/subtitles/fetch',
+    profiles: '/api/profiles'
   };
 
   const SEEK_SMALL = 10;
@@ -134,6 +135,8 @@
   const state = {
     view: 'LIBRARY',
     profile: 'desktop',
+    viewer: null,
+    viewers: [],
     videos: [],
     filtered: [],
     entries: [],
@@ -315,6 +318,131 @@
     }
   }
 
+  // --- Viewer profiles -------------------------------------------------
+  // "Viewer" because state.profile already names the device layout.
+  const VIEWER_KEY = 'litejelly_viewer';
+
+  function storedViewer() {
+    try {
+      return window.localStorage.getItem(VIEWER_KEY) || '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function forgetViewer() {
+    state.viewer = null;
+    try { window.localStorage.removeItem(VIEWER_KEY); } catch (err) { /* private mode */ }
+  }
+
+  function withViewer(url) {
+    if (!state.viewer) return url;
+    return url + (url.indexOf('?') === -1 ? '?' : '&') +
+      'profile=' + encodeURIComponent(state.viewer.id);
+  }
+
+  function viewerPayload(payload) {
+    if (state.viewer) payload.profile = state.viewer.id;
+    return payload;
+  }
+
+  async function startViewer() {
+    try {
+      const data = await getJSON(API.profiles);
+      state.viewers = Array.isArray(data.profiles) ? data.profiles : [];
+    } catch (err) {
+      state.viewers = [];
+    }
+    const saved = storedViewer();
+    const known = state.viewers.find(viewer => String(viewer.id) === saved);
+    if (known) {
+      chooseViewer(known, false);
+    } else if (state.viewers.length > 1) {
+      openViewerPicker();
+    } else {
+      // One profile, or none reachable: the server's default is the right one.
+      // Not remembered, so adding a second profile brings the picker up here.
+      state.viewer = state.viewers[0] || null;
+      renderViewerButton();
+      loadLibrary();
+    }
+  }
+
+  function chooseViewer(viewer, remember) {
+    state.viewer = viewer;
+    if (remember) {
+      try {
+        window.localStorage.setItem(VIEWER_KEY, String(viewer.id));
+      } catch (err) { /* private mode: picked again next time */ }
+    }
+    renderViewerButton();
+    closeViewerPicker();
+    closeSeries();
+    loadLibrary();
+  }
+
+  function renderViewerButton() {
+    const show = state.viewers.length > 1 && !!state.viewer;
+    el.viewerBtn.classList.toggle('hidden', !show);
+    el.viewerBtn.textContent = show ? state.viewer.name : '';
+    el.viewerBtn.title = show ? state.viewer.name + ' \u2014 switch profile' : 'Switch profile';
+  }
+
+  function viewerPickerOpen() {
+    return !el.viewerPicker.classList.contains('hidden');
+  }
+
+  function openViewerPicker() {
+    el.viewerList.replaceChildren();
+    let current = null;
+    state.viewers.forEach(viewer => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'viewer-choice';
+      button.textContent = viewer.name;
+      button.dataset.id = viewer.id;
+      if (state.viewer && state.viewer.id === viewer.id) {
+        button.classList.add('is-current');
+        button.setAttribute('aria-current', 'true');
+        current = button;
+      }
+      button.addEventListener('click', () => chooseViewer(viewer, true));
+      el.viewerList.appendChild(button);
+    });
+    el.viewerPicker.classList.remove('hidden');
+    const first = current || el.viewerList.firstElementChild;
+    if (first) first.focus();
+  }
+
+  function closeViewerPicker() {
+    if (!viewerPickerOpen()) return;
+    el.viewerPicker.classList.add('hidden');
+    if (!el.viewerBtn.classList.contains('hidden')) el.viewerBtn.focus();
+  }
+
+  function handleViewerPickerKeys(event) {
+    const isBack = event.key === 'Escape' || event.key === 'Backspace' ||
+                   event.key === 'BrowserBack' ||
+                   event.keyCode === 10009 || event.keyCode === 461;
+    if (isBack) {
+      event.preventDefault();
+      // Before anyone is chosen there is nothing to go back to.
+      if (state.viewer) closeViewerPicker();
+      return;
+    }
+    const arrows = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+    if (arrows.indexOf(event.key) === -1) return;
+    event.preventDefault();
+    const choices = $$('.viewer-choice', el.viewerList);
+    const active = document.activeElement;
+    if (choices.indexOf(active) === -1) {
+      if (choices.length) choices[0].focus();
+      return;
+    }
+    const next = nearestInDirection(active, choices, event.key);
+    if (next) next.focus();
+  }
+
   // --- Library ---------------------------------------------------------
   async function loadConfig() {
     try {
@@ -331,7 +459,7 @@
     const silent = options && options.silent;
     if (!silent) el.loading.classList.remove('hidden');
     try {
-      const data = await getJSON(API.library);
+      const data = await getJSON(withViewer(API.library));
       state.videos = indexForSearch(Array.isArray(data.videos) ? data.videos : []);
       state.progress = data.progress || {};
       state.continueWatching = Array.isArray(data.continue_watching)
@@ -341,6 +469,12 @@
       renderGenreFilter();
       applyFilters();
     } catch (err) {
+      // Deleted in Settings while this screen was open: ask again.
+      if (state.viewer && err.message === 'Unknown profile') {
+        forgetViewer();
+        startViewer();
+        return;
+      }
       showToast('Could not load library: ' + err.message, 5000);
       el.emptyTitle.textContent = 'Library unavailable';
       el.emptyHint.textContent = err.message;
@@ -958,7 +1092,7 @@
    */
   async function loadSeries(seriesId) {
     try {
-      const data = await getJSON(API.series + '?id=' + encodeURIComponent(seriesId));
+      const data = await getJSON(withViewer(API.series + '?id=' + encodeURIComponent(seriesId)));
       if (state.seriesId !== seriesId) return;
       state.seriesData = data;
       renderSeriesHero(data);
@@ -1164,12 +1298,12 @@
     // start", so fall back to the runtime the metadata gave us.
     const duration = row.duration || (row.runtime ? row.runtime * 60 : 0);
     try {
-      await postJSON(API.progress, {
+      await postJSON(API.progress, viewerPayload({
         id: row.id,
         position: finished ? duration : 0,
         duration: duration,
         finished: finished
-      });
+      }));
     } catch (err) {
       showToast('Could not update: ' + err.message, 4000);
       return;
@@ -1632,7 +1766,7 @@
   // Every request that rebuilds a plan has to carry the same choices, or
   // switching one of them silently resets the others.
   function playbackQuery(videoId, extra) {
-    let query = API.playback + '?id=' + encodeURIComponent(videoId) +
+    let query = withViewer(API.playback + '?id=' + encodeURIComponent(videoId)) +
       '&quality=' + encodeURIComponent((extra && extra.quality) || state.quality) +
       '&adelay=' + encodeURIComponent(extra && 'adelay' in extra ? extra.adelay : state.audioOffset);
     const audio = extra && 'audio' in extra ? extra.audio : state.audioTrack;
@@ -3637,7 +3771,7 @@
     state.lastSavedPosition = position;
 
     const finished = position >= duration * 0.96;
-    const payload = { id: plan.id, position: position, duration: duration };
+    const payload = viewerPayload({ id: plan.id, position: position, duration: duration });
 
     state.progress[plan.id] = {
       video_id: plan.id,
@@ -3892,6 +4026,11 @@
   function handleLibraryKeys(event) {
     const active = document.activeElement;
 
+    if (viewerPickerOpen()) {
+      handleViewerPickerKeys(event);
+      return;
+    }
+
     if (event.key === '/' && !isTypingTarget(active)) {
       event.preventDefault();
       el.searchInput.focus();
@@ -4051,6 +4190,9 @@
     el.serverName = $('#server-name');
     el.searchInput = $('#search-input');
     el.mediaCount = $('#media-count');
+    el.viewerBtn = $('#viewer-btn');
+    el.viewerPicker = $('#viewer-picker');
+    el.viewerList = $('#viewer-list');
     el.library = $('#library');
     el.libraryHeader = $('.library-header');
     el.mainNav = $('#main-nav');
@@ -4218,6 +4360,7 @@
     });
 
     $('#fullscreen-btn').addEventListener('click', toggleFullscreen);
+    el.viewerBtn.addEventListener('click', openViewerPicker);
   }
 
   function bindPlayerEvents() {
@@ -4407,7 +4550,8 @@
       }
       const id = state.playback.id;
       const nextId = state.playback.next_id;
-      postJSON(API.progress, { id: id, position: 0, duration: duration, finished: true })
+      postJSON(API.progress, viewerPayload({ id: id, position: 0, duration: duration,
+                                            finished: true }))
         .catch(() => {});
       state.progress[id] = {
         video_id: id, position: 0, duration: duration,
@@ -4523,7 +4667,7 @@
     });
 
     loadConfig();
-    loadLibrary();
+    startViewer();
   }
 
   if (document.readyState === 'loading') {

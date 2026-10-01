@@ -480,6 +480,102 @@
       });
   }
 
+  // -- profiles ------------------------------------------------------------
+
+  function profileStatus(message, kind) {
+    var node = $('profile-status');
+    node.className = 'save-status' + (kind ? ' ' + kind : '');
+    text(node, message);
+  }
+
+  function renderProfiles(list) {
+    var host = $('profiles');
+    clear(host);
+    for (var i = 0; i < list.length; i++) {
+      host.appendChild(profileRow(list[i], list.length > 1));
+    }
+  }
+
+  function profileRow(profile, deletable) {
+    var row = document.createElement('li');
+    row.className = 'profile-row';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 24;
+    input.value = profile.name;
+    input.setAttribute('aria-label', 'Name of profile ' + profile.name);
+    // Enter would otherwise submit the settings form this card sits in.
+    input.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        renameProfile(profile, input.value);
+      }
+    });
+    var rename = document.createElement('button');
+    rename.type = 'button';
+    rename.className = 'btn';
+    rename.textContent = 'Rename';
+    rename.addEventListener('click', function () { renameProfile(profile, input.value); });
+    var remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn danger';
+    remove.textContent = 'Delete';
+    remove.disabled = !deletable;
+    if (!deletable) { remove.title = 'The last profile cannot be deleted'; }
+    remove.addEventListener('click', function () { deleteProfile(profile); });
+    row.appendChild(input);
+    row.appendChild(rename);
+    row.appendChild(remove);
+    return row;
+  }
+
+  function profileResult(result, done) {
+    if (!result.ok) {
+      profileStatus(errorText(result, 'Failed'), 'error');
+      return false;
+    }
+    renderProfiles(result.data.profiles || []);
+    profileStatus(done, 'ok');
+    return true;
+  }
+
+  function loadProfiles() {
+    request('GET', '/api/profiles').then(function (result) {
+      if (result.ok) { renderProfiles(result.data.profiles || []); }
+    });
+  }
+
+  function addProfile() {
+    profileStatus('Adding\u2026');
+    request('POST', '/api/admin/profiles', { name: $('profile-new').value })
+      .then(function (result) {
+        var name = result.data && result.data.profile ? result.data.profile.name : '';
+        if (profileResult(result, 'Added ' + name)) { $('profile-new').value = ''; }
+      });
+  }
+
+  function renameProfile(profile, name) {
+    profileStatus('Renaming\u2026');
+    request('POST', '/api/admin/profiles/rename', { id: profile.id, name: name })
+      .then(function (result) {
+        var renamed = result.data && result.data.profile ? result.data.profile.name : '';
+        profileResult(result, 'Renamed to ' + renamed);
+      });
+  }
+
+  function deleteProfile(profile) {
+    if (!window.confirm('Delete ' + profile.name + ' and everything it has watched?')) {
+      return;
+    }
+    profileStatus('Deleting\u2026');
+    request('POST', '/api/admin/profiles/delete', { id: profile.id })
+      .then(function (result) {
+        var removed = result.data ? result.data.removed : 0;
+        profileResult(result, 'Deleted ' + profile.name + ' (' + removed +
+                      (removed === 1 ? ' watch entry)' : ' watch entries)'));
+      });
+  }
+
   // -- backup --------------------------------------------------------------
 
   function testEncoder() {
@@ -861,6 +957,7 @@
       fillForm(result.data.settings || {});
       // Kept in their own file, so they come from their own route.
       loadOpenSubtitles();
+      loadProfiles();
       setStatus('');
     });
   }
@@ -933,6 +1030,13 @@
     $('os-save').addEventListener('click', saveOpenSubtitles);
     $('os-test').addEventListener('click', testOpenSubtitles);
     $('os-forget').addEventListener('click', forgetOpenSubtitles);
+    $('profile-add').addEventListener('click', addProfile);
+    $('profile-new').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        addProfile();
+      }
+    });
     $('settings-export').addEventListener('click', exportSettings);
     $('settings-import').addEventListener('click', function () {
       $('settings-file').click();

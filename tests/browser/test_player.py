@@ -6,6 +6,7 @@ certify codec decoding, GPU composition, or playback on a physical device.
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import unittest
 from pathlib import Path
@@ -99,6 +100,9 @@ class PlayerTests(unittest.TestCase):
         self.page.set_default_timeout(5000)
         self.context.add_init_script(MEDIA_CLOCK)
         self.requests = []
+        self.calls = []
+        self.profiles = [{"id": 1, "name": "Home"}]
+        self.gone_profiles = set()
         self.pending_plans = []
         self.pending_seeks = []
         self.errors = []
@@ -125,6 +129,7 @@ class PlayerTests(unittest.TestCase):
         parsed = urlparse(route.request.url)
         query = parse_qs(parsed.query)
         self.requests.append(parsed.path)
+        self.calls.append((route.request.method, parsed, route.request.post_data))
         if parsed.netloc != "litejelly.test":
             self.errors.append("Unexpected external request: " + parsed.netloc)
             route.abort()
@@ -162,7 +167,15 @@ class PlayerTests(unittest.TestCase):
                 self.pending_seeks.append((route, data))
                 return
         elif parsed.path == "/api/library":
+            if query.get("profile", [""])[0] in self.gone_profiles:
+                # Deleted in Settings while this screen still held it.
+                self.profiles = [p for p in self.profiles
+                                 if str(p["id"]) not in self.gone_profiles]
+                route.fulfill(status=404, json={"error": "Unknown profile"})
+                return
             data = {"videos": [VIDEO], "progress": {}, "continue_watching": [], "status": {}}
+        elif parsed.path == "/api/profiles":
+            data = {"profiles": self.profiles, "default": self.profiles[0]["id"]}
         elif parsed.path == "/api/config":
             data = {"server_name": "LiteJelly", "ffmpeg_available": True}
         elif parsed.path == "/api/trickplay":
@@ -214,6 +227,87 @@ class PlayerTests(unittest.TestCase):
         while self.pending_seeks:
             self.release(self.pending_seeks)
         return position
+
+    def calls_to(self, path):
+        """Query strings and bodies of every request the client made to one route."""
+        return [(parse_qs(url.query), body) for _method, url, body in self.calls
+                if url.path == path]
+
+    def profiles_named(self, path):
+        """The profile each request to one route named, None where it named none."""
+        return [query.get("profile", [None])[0] for query, _body in self.calls_to(path)]
+
+    def use_two_profiles(self, stored=None):
+        self.profiles = [{"id": 1, "name": "Home"}, {"id": 2, "name": "Kids"}]
+        if stored is not None:
+            self.context.add_init_script(
+                "localStorage.setItem('litejelly_viewer', '%d')" % stored)
+
+    def test_one_profile_needs_no_picker(self):
+        self.page.goto(ORIGIN)
+        expect(self.page.locator("#hero-title")).to_have_text("Fixture Film")
+        expect(self.page.locator("#viewer-picker")).to_be_hidden()
+        expect(self.page.locator("#viewer-btn")).to_be_hidden()
+        self.assertEqual(self.profiles_named("/api/library"), ["1"])
+
+    def test_two_profiles_ask_who_is_watching_and_remember_the_answer(self):
+        self.use_two_profiles()
+        self.page.goto(ORIGIN)
+        expect(self.page.locator("#viewer-picker")).to_be_visible()
+        choices = self.page.locator(".viewer-choice")
+        expect(choices).to_have_text(["Home", "Kids"])
+        expect(choices.first).to_be_focused()
+        self.assertEqual(self.calls_to("/api/library"), [])
+        # Nobody chosen yet, so Back has nowhere to go.
+        self.page.keyboard.press("Escape")
+        expect(self.page.locator("#viewer-picker")).to_be_visible()
+        self.page.keyboard.press("ArrowRight")
+        expect(choices.nth(1)).to_be_focused()
+        with self.page.expect_request(lambda request: urlparse(request.url).path == "/api/library"):
+            self.page.keyboard.press("Enter")
+        expect(self.page.locator("#viewer-picker")).to_be_hidden()
+        expect(self.page.locator("#viewer-btn")).to_have_text("Kids")
+        self.assertEqual(self.profiles_named("/api/library"), ["2"])
+
+        self.page.reload()
+        expect(self.page.locator("#hero-title")).to_have_text("Fixture Film")
+        expect(self.page.locator("#viewer-picker")).to_be_hidden()
+        expect(self.page.locator("#viewer-btn")).to_have_text("Kids")
+        self.assertEqual(self.profiles_named("/api/library"), ["2", "2"])
+
+    def test_the_topbar_switches_profile(self):
+        self.use_two_profiles(stored=1)
+        self.page.goto(ORIGIN)
+        button = self.page.locator("#viewer-btn")
+        expect(button).to_have_text("Home")
+        button.click()
+        expect(self.page.locator(".viewer-choice.is-current")).to_be_focused()
+        self.page.keyboard.press("Escape")
+        expect(self.page.locator("#viewer-picker")).to_be_hidden()
+        expect(button).to_be_focused()
+        button.click()
+        with self.page.expect_request(lambda request: urlparse(request.url).path == "/api/library"):
+            self.page.locator(".viewer-choice", has_text="Kids").click()
+        expect(button).to_have_text("Kids")
+        self.assertEqual(self.profiles_named("/api/library")[-1], "2")
+
+    def test_playback_and_saved_progress_carry_the_profile(self):
+        self.use_two_profiles(stored=2)
+        self.open_player()
+        self.assertEqual(self.profiles_named("/api/playback")[:1], ["2"])
+        with self.page.expect_request("**/api/progress") as posted:
+            self.page.locator("#video-player").dispatch_event("ended")
+        self.assertEqual(json.loads(posted.value.post_data).get("profile"), 2)
+
+    def test_a_profile_deleted_elsewhere_falls_back_quietly(self):
+        self.use_two_profiles(stored=2)
+        self.gone_profiles = {"2"}
+        self.page.goto(ORIGIN)
+        expect(self.page.locator("#hero-title")).to_have_text("Fixture Film")
+        self.assertEqual(self.profiles_named("/api/library"), ["2", "1"])
+        expect(self.page.locator("#toast")).not_to_contain_text("Could not load")
+        expect(self.page.locator("#viewer-btn")).to_be_hidden()
+        self.assertIsNone(self.page.evaluate("localStorage.getItem('litejelly_viewer')"))
 
     def test_library_renders_and_searches(self):
         self.page.goto(ORIGIN)

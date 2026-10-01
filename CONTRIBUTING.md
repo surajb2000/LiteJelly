@@ -44,8 +44,12 @@ This document outlines the architectural standards, code quality conventions, an
 - Compatibility imports for `parse_range`, `ReadAhead` and the audio helpers
    remain in `web.py`; do not remove them as unused imports without migrating
    their callers. New tests should patch the owning playback/streaming module.
-- Saved progress remains per video, not per screen. Changing that model requires
-   an explicit profile/identity design and migration, not a playback-cache tweak.
+- Saved progress is keyed by (profile, video), never by screen. Every route that
+   reads or writes progress resolves the request's `profile` through
+   `Routes._profile`: blank means the default (lowest id), unknown answers 404.
+   Creating, renaming and deleting profiles is admin-only; picking one is not.
+   The client calls profiles "viewers", because `state.profile` and
+   `data-profile` already name the device layout.
 
 ### 1. Python Standards & Typing
 - Target **Python 3.10+**.

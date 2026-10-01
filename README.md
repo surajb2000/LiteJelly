@@ -13,7 +13,7 @@ Heavy media servers like Plex, Jellyfin, or Emby often struggle on low-spec hard
 - **Featherweight Frontend**: 193 KB of HTML, CSS and vanilla JavaScript for the whole player and library, with no frameworks and no build step. A further 445 KB of self-hosted font is fetched once and then cached for a year, so a return visit is the 193 KB alone. For comparison, the clients this replaces ship 10–30 MB of JavaScript before any of it runs.
 - **Smart Transcoding & Remuxing**: Offloads codec heavy-lifting (HEVC/x265, AC-3, DTS, 10-bit) to the host server via portable FFmpeg.
 - **10-Foot TV Experience**: The interface sizes itself to the screen it is on, judged by what the device can do rather than by what its user agent claims to be.
-- **Shared Resume History**: SQLite-backed playback progress (WAL mode) shared across devices. Active playback remains independent; saved progress is one record per video, not a separate record per viewer.
+- **Viewer Profiles**: SQLite-backed playback progress (WAL mode), kept per profile and shared across that profile's devices. With one profile nothing changes; add a second in Settings and each screen asks who is watching and remembers the answer.
 
 ---
 
@@ -214,7 +214,7 @@ lucid-fermi/
 │   ├── playback.py         # Request-local playback options, payloads and commands
 │   ├── providers.py        # TVmaze, AniList, AniSkip, TheIntroDB, TMDb and OMDb clients with a versioned on-disk cache
 │   ├── settings.py         # settings.json load/save and admin input validation
-│   ├── store.py            # Durable progress, media identities and legacy database migration
+│   ├── store.py            # Per-profile progress, media identities and database upgrades
 │   ├── streaming.py        # Per-viewer ranges, buffered output and process cleanup
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
 │   ├── thumbnails.py       # Single-flight thumbnail worker pool with fallback seeking
@@ -275,6 +275,7 @@ lucid-fermi/
     ├── mutate_subtitle_upload.ps1 # The same, for what may be written to disk
     ├── mutate_safety.ps1   # Identity, reconfiguration and outbound-request safeguards
     ├── mutate_performance.ps1 # The measured performance fixes
+    ├── mutate_profiles.ps1 # Per-profile history, the upgrade and who may change profiles
     ├── measure_library.py  # Scan and library-response cost at a chosen library size
     └── mutate_opensubtitles.ps1   # The same, for the search and download rules
 ```
@@ -423,10 +424,13 @@ FFmpeg-based streams have separate child processes and buffers. Seeking or
 disconnecting one screen does not stop another. Sharing a probe only avoids
 repeating the same file inspection; it does not share a playback stream.
 
-Saved progress is different: there is one database record per video and the
-most recent saved update wins. Concurrent viewers can overwrite the future
-resume position or watched status without moving each other's active playback.
-Per-viewer profiles and independent resume histories are not implemented.
+Saved progress is kept per profile: one record per profile and video, where
+the most recent saved update wins. Two people on different profiles keep
+separate resume points, watched marks and Continue Watching. Two screens on
+the same profile share them, as before. Profiles are added, renamed and
+deleted under **General → Profiles** in Settings; deleting one deletes its
+watch history. The first start after upgrading moves existing history to a
+profile called Home, in one transaction.
 
 | Resource | Limit and behavior |
 | :--- | :--- |
@@ -534,6 +538,8 @@ allowed to watch. Plan around these facts:
 - **The library is open.** Browsing, playback, subtitles, thumbnails and saved
   progress need no sign-in. Anyone who reaches the port can play every
   configured folder, start FFmpeg work, and change watch history.
+- **Profiles are not accounts.** They keep histories apart for convenience;
+  anyone on the network can pick any profile, or name one in a request.
 - **Do not port-forward it or expose it to the internet.** For use away from
   home, reach your LAN through a VPN instead, which keeps this model intact.
   A VPN needs an app on each phone or laptop, and most TVs cannot run one.
@@ -632,9 +638,8 @@ because on a phone-hosted server those are usually in tension.
   worth it only if a real library on a real TV shows the parse to be slow.
 - **Cast as a way in.** Portraits are shown but do nothing. The data to filter
   a library by actor is already fetched and cached.
-- **More than one viewer.** Progress and watched state are shared by everyone
-  using the server, so two people watching the same series overwrite each
-  other's resume point. Audio and subtitle choices are remembered per browser.
+- **Per-profile preferences.** Audio, subtitle and quality choices are still
+  remembered per browser rather than per profile.
 
 ### Interface
 
@@ -690,6 +695,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_opensubtitles.p
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_restart.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_browse.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_safety.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/mutate_profiles.ps1
 ```
 Each script delegates to `tools/mutation_runner.py`, which copies source and
 tests to a temporary directory. The original worktree is never mutated. A

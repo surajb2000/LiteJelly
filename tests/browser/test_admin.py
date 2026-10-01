@@ -61,6 +61,8 @@ class AdminKeyTests(unittest.TestCase):
         self.account = {"configured": True, "username": "viewer", "has_key": True,
                         "has_password": True, "verified": False, "error": ""}
         self.errors = []
+        self.profiles = [{"id": 1, "name": "Home"}]
+        self.settings_posts = 0
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.context.route("**/*", self.respond)
 
@@ -89,6 +91,8 @@ class AdminKeyTests(unittest.TestCase):
         if parsed.path == "/api/admin/session":
             data = {"state": "ready", "username": "admin"}
         elif parsed.path == "/api/admin/settings":
+            if route.request.method == "POST":
+                self.settings_posts += 1
             data = {"settings": SETTINGS, "content_types": ["mixed"], "presets": ["veryfast"],
                     "hwaccels": ["none"], "restart_required_fields": ["port", "host"],
                     "library": {"count": 0}, "metadata": {"enabled": True, "records": 0,
@@ -111,11 +115,37 @@ class AdminKeyTests(unittest.TestCase):
         elif parsed.path == "/favicon.ico":
             route.fulfill(status=404, body="")
             return
+        elif parsed.path == "/api/profiles":
+            data = {"profiles": self.profiles, "default": self.profiles[0]["id"]}
+        elif parsed.path.startswith("/api/admin/profiles"):
+            self.change_profiles(route, parsed.path, json.loads(route.request.post_data or "{}"))
+            return
         else:
             self.errors.append("Unexpected fixture route: " + parsed.path)
             route.abort()
             return
         route.fulfill(json=data)
+
+    def change_profiles(self, route, path, body):
+        """Just enough of the server's profile rules to drive the card."""
+        names = [p["name"].lower() for p in self.profiles]
+        if path.endswith("/delete"):
+            if len(self.profiles) == 1:
+                route.fulfill(status=409, json={"error": "The last profile cannot be deleted"})
+                return
+            self.profiles = [p for p in self.profiles if p["id"] != body["id"]]
+            route.fulfill(json={"ok": True, "removed": 3, "profiles": self.profiles})
+            return
+        if (body.get("name") or "").lower() in names:
+            route.fulfill(status=400, json={"error": "A profile with that name already exists"})
+            return
+        if path.endswith("/rename"):
+            profile = next(p for p in self.profiles if p["id"] == body["id"])
+            profile["name"] = body["name"]
+        else:
+            profile = {"id": max(p["id"] for p in self.profiles) + 1, "name": body["name"]}
+            self.profiles.append(profile)
+        route.fulfill(json={"ok": True, "profile": profile, "profiles": self.profiles})
 
     def open_admin(self):
         self.page.goto(ORIGIN + "/admin")
@@ -163,6 +193,39 @@ class AdminKeyTests(unittest.TestCase):
         self.sign_in_ok = False
         self.page.locator("#os-test").click()
         expect(state).to_have_text("Sign-in failed: You cannot consume this service")
+
+    def test_profiles_are_added_renamed_and_deleted(self):
+        self.open_admin()
+        self.page.locator('.tab[data-panel="panel-general"]').click()
+        rows = self.page.locator("#profiles .profile-row")
+        expect(rows).to_have_count(1)
+        expect(rows.first.locator("button", has_text="Delete")).to_be_disabled()
+
+        new = self.page.locator("#profile-new")
+        new.fill("Kids")
+        new.press("Enter")
+        expect(rows).to_have_count(2)
+        expect(new).to_have_value("")
+        expect(self.page.locator("#profile-status")).to_have_text("Added Kids")
+
+        new.fill("home")
+        self.page.locator("#profile-add").click()
+        expect(self.page.locator("#profile-status")).to_have_text(
+            "A profile with that name already exists")
+        expect(rows).to_have_count(2)
+
+        name = rows.nth(1).locator("input")
+        name.fill("Children")
+        name.press("Enter")
+        expect(self.page.locator("#profile-status")).to_have_text("Renamed to Children")
+        self.assertEqual(self.profiles[1]["name"], "Children")
+
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        rows.nth(1).locator("button", has_text="Delete").click()
+        expect(rows).to_have_count(1)
+        expect(self.page.locator("#profile-status")).to_have_text(
+            "Deleted Children (3 watch entries)")
+        self.assertEqual(self.settings_posts, 0, "Enter in a profile box saved the settings")
 
 
 if __name__ == "__main__":

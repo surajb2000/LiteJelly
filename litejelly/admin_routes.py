@@ -23,6 +23,7 @@ from .config import load_config
 from .ffmpeg import HWACCEL_CHOICES
 from .opensubtitles import Account as OpenSubtitlesAccount, OpenSubtitlesError
 from .providers import check_key
+from .store import ProfileError
 
 log = logging.getLogger("litejelly.admin")
 
@@ -604,3 +605,61 @@ class AdminRoutes:
                         status=HTTPStatus.BAD_GATEWAY)
             return
         h.send_json({"ok": True, "username": result.get("username", "")})
+
+    # Changing who exists is admin-only; picking among them is open to any viewer.
+    @staticmethod
+    def admin_profile_create(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        try:
+            profile = h.app.progress.create_profile(body.get("name"))
+        except ProfileError as exc:
+            h.send_api_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        log.info("Profile %r created", profile["name"])
+        h.send_json({"ok": True, "profile": profile,
+                     "profiles": h.app.progress.list_profiles()})
+
+    @staticmethod
+    def admin_profile_rename(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        profile_id = h.app.progress.resolve_profile(body.get("id"))
+        if profile_id is None or body.get("id") in (None, ""):
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Unknown profile")
+            return
+        try:
+            profile = h.app.progress.rename_profile(profile_id, body.get("name"))
+        except ProfileError as exc:
+            h.send_api_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        log.info("Profile %d renamed to %r", profile_id, profile["name"])
+        h.send_json({"ok": True, "profile": profile,
+                     "profiles": h.app.progress.list_profiles()})
+
+    @staticmethod
+    def admin_profile_delete(h, query):
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        profile_id = h.app.progress.resolve_profile(body.get("id"))
+        # Blank resolves to the default, which a delete must never guess at.
+        if profile_id is None or body.get("id") in (None, ""):
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Unknown profile")
+            return
+        try:
+            removed = h.app.progress.delete_profile(profile_id)
+        except ProfileError as exc:
+            h.send_api_error(HTTPStatus.CONFLICT, str(exc))
+            return
+        log.info("Profile %d deleted with %d watch entries", profile_id, removed)
+        h.send_json({"ok": True, "removed": removed,
+                     "profiles": h.app.progress.list_profiles()})

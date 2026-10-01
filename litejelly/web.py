@@ -36,7 +36,7 @@ from .library import (
 from .paths import is_within
 from .playback import _audio_delay_ms, _audio_index, _audio_mode, _audio_tracks
 from .providers import MetadataProviders, artwork_digest
-from .store import ProgressStore
+from .store import ProgressStore, UnknownProfile
 from .streaming import CHUNK_SIZE, ReadAhead, parse_range
 from .subtitles import (SubtitleService, discover as discover_subtitles,
                         language_from_name, save_sidecar,
@@ -270,6 +270,10 @@ class Application:
             ("POST", "/api/admin/opensubtitles/test"): AdminRoutes.admin_opensubtitles_test,
             ("GET", "/api/progress"): Routes.progress_get,
             ("POST", "/api/progress"): Routes.progress_post,
+            ("GET", "/api/profiles"): Routes.profiles,
+            ("POST", "/api/admin/profiles"): AdminRoutes.admin_profile_create,
+            ("POST", "/api/admin/profiles/rename"): AdminRoutes.admin_profile_rename,
+            ("POST", "/api/admin/profiles/delete"): AdminRoutes.admin_profile_delete,
             ("GET", "/api/admin/settings"): AdminRoutes.admin_settings_get,
             ("POST", "/api/admin/settings"): AdminRoutes.admin_settings_post,
             ("GET", "/api/admin/settings/export"): AdminRoutes.admin_settings_export,
@@ -438,9 +442,25 @@ class Routes:
         h.send_json(payload)
 
     @staticmethod
+    def _profile(h, value) -> int | None:
+        """The viewer a request is for; answers 404 itself when that profile is gone."""
+        profile = h.app.progress.resolve_profile(value)
+        if profile is None:
+            h.send_api_error(HTTPStatus.NOT_FOUND, "Unknown profile")
+        return profile
+
+    @staticmethod
+    def profiles(h, query):
+        store = h.app.progress
+        h.send_json({"profiles": store.list_profiles(), "default": store.default_profile()})
+
+    @staticmethod
     def library(h, query):
+        profile = Routes._profile(h, query.get("profile", [""])[0])
+        if profile is None:
+            return
         entries = h.app.library.videos
-        progress = h.app.progress.all()
+        progress = h.app.progress.all(profile)
         h.send_json({
             "videos": h.app.library.listing(),
             "progress": progress,
@@ -470,11 +490,14 @@ class Routes:
 
     @staticmethod
     def progress_get(h, query):
+        profile = Routes._profile(h, query.get("profile", [""])[0])
+        if profile is None:
+            return
         video_id = query.get("id", [""])[0]
         if video_id:
-            h.send_json(h.app.progress.get(video_id) or {})
+            h.send_json(h.app.progress.get(video_id, profile) or {})
         else:
-            h.send_json({"progress": h.app.progress.all()})
+            h.send_json({"progress": h.app.progress.all(profile)})
 
     @staticmethod
     def progress_post(h, query):
@@ -497,14 +520,21 @@ class Routes:
             h.send_api_error(HTTPStatus.BAD_REQUEST, "position/duration must be finite")
             return
         finished = body.get("finished")
+        profile = Routes._profile(h, body.get("profile"))
+        if profile is None:
+            return
         saved = h.app.progress.save(
             video_id, position, duration,
             bool(finished) if finished is not None else None,
+            profile=profile,
         )
         h.send_json({"ok": True, **saved})
 
     @staticmethod
     def playback(h, query):
+        profile = Routes._profile(h, query.get("profile", [""])[0])
+        if profile is None:
+            return
         video, path = h.app.resolve_video(query)
         if video is None:
             h.send_api_error(HTTPStatus.NOT_FOUND, "Video not found")
@@ -517,7 +547,7 @@ class Routes:
         payload = playback.build_payload(app.tools, app.config, video, path, query)
         h.send_json({
             **payload,
-            "resume": app.progress.get(video.id) or {},
+            "resume": app.progress.get(video.id, profile) or {},
             "next_id": (following.id if (following := next_episode(app.library.videos, video))
                         else ""),
             "prev_id": (earlier.id if (earlier := previous_episode(app.library.videos, video))
@@ -689,6 +719,9 @@ class Routes:
         whole season's text, the cast and the artwork all come back together.
         """
         app = h.app
+        profile = Routes._profile(h, query.get("profile", [""])[0])
+        if profile is None:
+            return
         series_id = query.get("id", [""])[0]
         episodes = [v for v in app.library.videos if v.series_id == series_id]
         if not episodes:
@@ -713,6 +746,7 @@ class Routes:
                          "character": member.get("character", ""),
                          "image": digest})
 
+        progress = app.progress.all(profile)
         h.send_json({
             "id": series_id,
             "title": (info.title if info and info.title else first.title),
@@ -726,13 +760,13 @@ class Routes:
             "poster_id": first.id if first.has_poster else "",
             "backdrop_id": next((v.id for v in episodes if v.backdrop_path), ""),
             "cast": cast,
-            "episodes": [Routes._episode_row(app, video) for video in episodes],
+            "episodes": [Routes._episode_row(video, progress.get(video.id) or {})
+                         for video in episodes],
         })
 
     @staticmethod
-    def _episode_row(app, video):
+    def _episode_row(video, progress):
         meta = video.meta or {}
-        progress = app.progress.get(video.id) or {}
         return {
             "id": video.id,
             "season": video.season,
@@ -991,6 +1025,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_api_error(HTTPStatus.NOT_FOUND, "Not found")
         except DISCONNECT_ERRORS:
             self.close_connection = True
+        except UnknownProfile:
+            # Deleted between resolving the request and using it.
+            self.send_api_error(HTTPStatus.NOT_FOUND, "Unknown profile")
         except Exception as exc:
             log.exception("Unhandled error for %s %s", method, self.path)
             try:
