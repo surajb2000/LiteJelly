@@ -10,15 +10,29 @@ import threading
 from email.utils import formatdate
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from .ffmpeg import popen_quiet
 
 if TYPE_CHECKING:
-    from .web import RequestHandler
+    from .web import Application
 
 log = logging.getLogger("litejelly.streaming")
 CHUNK_SIZE = 256 * 1024
+
+
+class ResponseSink(Protocol):
+    """The part of the HTTP handler a stream writes through."""
+
+    app: Application
+    headers: object
+    wfile: object
+    close_connection: bool
+
+    def begin_response(self, status, headers: dict) -> None: ...
+    def write_body(self, data: bytes) -> bool: ...
+    def send_bytes(self, payload: bytes, content_type: str, *args, **kwargs) -> None: ...
+    def send_api_error(self, status, message: str, extra: dict | None = None) -> None: ...
 
 
 def parse_range(header: str | None, file_size: int) -> tuple[int, int] | str | None:
@@ -114,7 +128,7 @@ class ReadAhead:
             self._not_empty.notify_all()
 
 
-def serve_file_range(handler: RequestHandler, path: Path) -> None:
+def serve_file_range(handler: ResponseSink, path: Path) -> None:
     """Serve an already-resolved media path using this request's private file handle."""
     try:
         stat = path.stat()
@@ -127,7 +141,7 @@ def serve_file_range(handler: RequestHandler, path: Path) -> None:
         content_type = "video/mp4"
     parsed = parse_range(handler.headers.get("Range"), file_size)
     if parsed == "invalid":
-        handler._begin(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, {
+        handler.begin_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, {
             "Content-Range": f"bytes */{file_size}",
             "Content-Length": 0,
         })
@@ -146,7 +160,7 @@ def serve_file_range(handler: RequestHandler, path: Path) -> None:
         headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
     remaining = end - start + 1
     headers["Content-Length"] = remaining
-    handler._begin(status, headers)
+    handler.begin_response(status, headers)
     if getattr(handler, "_head_only", False):
         return
     try:
@@ -156,7 +170,7 @@ def serve_file_range(handler: RequestHandler, path: Path) -> None:
                 chunk = handle.read(min(CHUNK_SIZE, remaining))
                 if not chunk:
                     break
-                if not handler._write(chunk):
+                if not handler.write_body(chunk):
                     return
                 remaining -= len(chunk)
     except OSError as exc:
@@ -164,7 +178,7 @@ def serve_file_range(handler: RequestHandler, path: Path) -> None:
         handler.close_connection = True
 
 
-def pump_process(handler: RequestHandler, cmd: list[str], label: str) -> None:
+def pump_process(handler: ResponseSink, cmd: list[str], label: str) -> None:
     """Own one request's child and buffer, releasing its shared capacity on every exit."""
     if getattr(handler, "_head_only", False):
         handler.send_bytes(b"", "video/mp4")
@@ -187,7 +201,7 @@ def pump_process(handler: RequestHandler, cmd: list[str], label: str) -> None:
             return
         log.info("Streaming %s", label)
         handler.close_connection = True
-        handler._begin(HTTPStatus.OK, {
+        handler.begin_response(HTTPStatus.OK, {
             "Content-Type": "video/mp4",
             "Cache-Control": "no-store",
             "Connection": "close",
@@ -201,7 +215,7 @@ def pump_process(handler: RequestHandler, cmd: list[str], label: str) -> None:
                 chunk = reader.read()
                 if not chunk:
                     break
-                if not handler._write(chunk):
+                if not handler.write_body(chunk):
                     break
                 try:
                     handler.wfile.flush()
@@ -212,7 +226,7 @@ def pump_process(handler: RequestHandler, cmd: list[str], label: str) -> None:
     finally:
         if process is not None:
             handler.app.forget_stream(process)
-            handler._terminate(process)
+            terminate_process(process)
         sem.release()
         log.info("Stream ended: %s", label)
 

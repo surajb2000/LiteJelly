@@ -22,11 +22,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from litejelly import auth
+from litejelly import auth, streaming
 from litejelly import settings as settings_module
 from litejelly.config import load_config
 from litejelly.ffmpeg import CapacityLimiter, MediaInfo, popen_quiet
-from litejelly.web import Application, RequestHandler, create_server
+from litejelly.web import Application, create_server
 
 for name in ("litejelly", "litejelly.web", "litejelly.library", "litejelly.admin",
              "litejelly.auth", "litejelly.thumbnails"):
@@ -189,7 +189,7 @@ class LiveServerTests(unittest.TestCase):
         responses = []
         commands = []
         terminated = {}
-        original_terminate = RequestHandler._terminate
+        original_terminate = streaming.terminate_process
         lookup = self.connect()
         try:
             video_id = self.video_id(lookup)
@@ -232,7 +232,7 @@ class LiveServerTests(unittest.TestCase):
         with mock.patch.object(self.app.tools, "ffmpeg", "fixture-ffmpeg"), \
              mock.patch.object(self.app.tools, "probe", return_value=info), \
              mock.patch("litejelly.streaming.popen_quiet", side_effect=spawn), \
-             mock.patch.object(RequestHandler, "_terminate", side_effect=terminate):
+             mock.patch("litejelly.streaming.terminate_process", side_effect=terminate):
             try:
                 first, first_response = open_viewer(600)
                 second, second_response = open_viewer(2700, "720p")
@@ -744,7 +744,7 @@ class LiveServerTests(unittest.TestCase):
         self.addCleanup(conn.close)
         headers = dict(WRITE_HEADERS, Cookie=cookie)
         answer = {"ok": False, "state": "rejected", "detail": "TMDb: Invalid API key"}
-        with mock.patch("litejelly.web.check_key", return_value=answer) as check:
+        with mock.patch("litejelly.admin_routes.check_key", return_value=answer) as check:
             conn.request("POST", "/api/admin/metadata/test", headers=headers,
                          body=json.dumps({"provider": "tmdb", "key": " typed-key "}))
             response = conn.getresponse()

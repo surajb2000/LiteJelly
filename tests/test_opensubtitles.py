@@ -356,8 +356,9 @@ class DownloadedFileTests(unittest.TestCase):
 
 class RouteTests(unittest.TestCase):
     def setUp(self):
-        self.web = (Path(__file__).resolve().parent.parent
-                    / "litejelly" / "web.py").read_text(encoding="utf-8")
+        package = Path(__file__).resolve().parent.parent / "litejelly"
+        self.web = (package / "web.py").read_text(encoding="utf-8")
+        self.admin = (package / "admin_routes.py").read_text(encoding="utf-8")
 
     def test_fetching_requires_an_admin_session(self):
         handler = self.web[self.web.index("def subtitle_fetch"):]
@@ -372,11 +373,11 @@ class RouteTests(unittest.TestCase):
 
     def test_a_downloaded_file_is_saved_through_save_sidecar(self):
         handler = self.web[self.web.index("def subtitle_fetch"):]
-        handler = handler[:handler.index("def admin_opensubtitles")]
+        handler = handler[:handler.index("class RequestHandler")]
         self.assertIn("save_sidecar(path, data, language)", handler)
 
     def test_the_password_is_never_sent_back(self):
-        handler = self.web[self.web.index("def admin_opensubtitles"):]
+        handler = self.admin[self.admin.index("def admin_opensubtitles"):]
         handler = handler[:handler.index("def admin_opensubtitles_test")]
         self.assertIn("public_status()", handler)
         self.assertNotIn(".password", handler.split("OpenSubtitlesAccount(")[0])

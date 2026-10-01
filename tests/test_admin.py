@@ -411,7 +411,8 @@ class DamagedCredentialsTests(unittest.TestCase):
         from unittest import mock
         from litejelly import auth
         from litejelly.config import Config
-        from litejelly.web import Application, Routes
+        from litejelly.admin_routes import AdminRoutes as Routes
+        from litejelly.web import Application
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

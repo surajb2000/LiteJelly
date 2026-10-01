@@ -28,14 +28,19 @@ This document outlines the architectural standards, code quality conventions, an
 - `web.py` owns application lifecycle, route registration, HTTP validation,
    authorization and response orchestration. Resolve paths and validate finite
    media times here before passing requests into playback or streaming code.
+- `admin_routes.py` holds every admin and account handler. Each guarded handler
+   calls `require_admin` first, and writes pass `write=True`; keep new admin
+   routes here rather than among the open library routes in `web.py`.
 - `playback.py` builds request-local selections, response details, seek results
    and stream commands. It must not write a viewer's choices into shared
    `MediaInfo`, start live streams, or depend on HTTP handler globals.
 - `ffmpeg.py` owns codec policy, file-signature probe caching and process launch
    primitives. Same-file probe sharing is metadata reuse, never stream reuse.
 - `streaming.py` owns range parsing, private file handles, `ReadAhead` and the
-   process pump. Every acquired stream slot must be released on success,
-   disconnect, failed spawn or rejected registration during shutdown.
+   process pump. It writes through the `ResponseSink` protocol (`begin_response`,
+   `write_body`), never a handler's private members. Every acquired stream slot
+   must be released on success, disconnect, failed spawn or rejected
+   registration during shutdown.
 - Compatibility imports for `parse_range`, `ReadAhead` and the audio helpers
    remain in `web.py`; do not remove them as unused imports without migrating
    their callers. New tests should patch the owning playback/streaming module.

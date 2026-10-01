@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import io
+import json
 import sys
 import threading
 import unittest
@@ -251,7 +252,11 @@ class RequestLimitsTests(unittest.TestCase):
         request = mock.Mock()
         with mock.patch.object(server, "shutdown_request") as close:
             server.process_request(request, ("127.0.0.1", 1))
-        self.assertIn(b"503", request.sendall.call_args.args[0])
+        reply = request.sendall.call_args.args[0]
+        head, _, body = reply.partition(b"\r\n\r\n")
+        self.assertIn(b"503", head)
+        self.assertIn(b"Content-Length: " + str(len(body)).encode(), head)
+        self.assertEqual(json.loads(body)["status"], 503, "every error answers in JSON")
         close.assert_called_once_with(request)
 
     def test_nonfinite_and_excessive_seek_values_are_rejected(self):

@@ -147,31 +147,10 @@ class ProgressStore:
             rows = self._conn.execute("SELECT * FROM progress").fetchall()
         return {row["video_id"]: self._row_to_dict(row) for row in rows}
 
-    def continue_watching(self, limit: int = 20) -> list[dict]:
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT * FROM progress
-                WHERE finished = 0 AND position >= ?
-                ORDER BY updated_at DESC LIMIT ?
-                """,
-                (MIN_RESUME_SECONDS, limit),
-            ).fetchall()
-        return [self._row_to_dict(row) for row in rows]
-
     def clear(self, video_id: str) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM progress WHERE video_id = ?", (video_id,))
             self._conn.commit()
-
-    def prune(self, known_ids: set[str]) -> None:
-        """Drop rows for videos that are no longer in the library."""
-        with self._lock:
-            rows = self._conn.execute("SELECT video_id FROM progress").fetchall()
-            stale = [(r["video_id"],) for r in rows if r["video_id"] not in known_ids]
-            if stale:
-                self._conn.executemany("DELETE FROM progress WHERE video_id = ?", stale)
-                self._conn.commit()
 
     def close(self) -> None:
         with self._lock:

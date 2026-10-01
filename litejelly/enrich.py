@@ -114,13 +114,20 @@ class Enricher:
                 self._queue.task_done()
 
             # Tell the library once the burst is done, not once per lookup.
-            if self._queue.empty() and self._pending_updates:
-                self._pending_updates = False
-                if self.on_updated:
-                    try:
-                        self.on_updated()
-                    except Exception:
-                        log.exception("Rescan after enrichment failed")
+            with self._lock:
+                notify = self._queue.empty() and self._pending_updates
+                if notify:
+                    self._pending_updates = False
+                callback = self.on_updated if notify else None
+            if callback:
+                try:
+                    callback()
+                except Exception:
+                    log.exception("Rescan after enrichment failed")
+
+    def _mark_updated(self) -> None:
+        with self._lock:
+            self._pending_updates = True
 
     def _run(self, job) -> None:
         kind = job[0]
@@ -142,7 +149,7 @@ class Enricher:
                     return
                 if member.get("image"):
                     self.providers.artwork(member["image"])
-            self._pending_updates = True
+            self._mark_updated()
         elif kind == "movie":
             _, title, year = job
             info = self.providers.movie(title, year)
@@ -154,11 +161,11 @@ class Enricher:
                 return
             if info.poster_url:
                 self.providers.artwork(info.poster_url)
-            self._pending_updates = True
+            self._mark_updated()
         elif kind == "skip":
             _, mal_id, episode = job
             if self.providers.skip_times(mal_id, episode):
-                self._pending_updates = True
+                self._mark_updated()
         elif kind == "intro":
             _, imdb_id, season, episode, duration = job
             found = self.providers.intro_times(imdb_id, season, episode, duration)

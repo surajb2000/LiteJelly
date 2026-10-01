@@ -199,6 +199,7 @@ lucid-fermi/
 ├── litejelly/              # Core Python package (Zero pip dependencies)
 │   ├── __init__.py         # Version info
 │   ├── admin.py            # Admin access control: session cookies, CSRF guard
+│   ├── admin_routes.py     # Admin and account handlers: setup, sign-in, settings, keys
 │   ├── auth.py             # Password hashing, credential storage, sessions, lockout
 │   ├── chapters.py         # Chapter markers and the Skip intro / credits segments
 │   ├── config.py           # Configuration loading, validation, and CLI overrides
