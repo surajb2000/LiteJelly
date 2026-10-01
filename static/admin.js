@@ -704,6 +704,7 @@
     $('sign-out').hidden = true;
     $('setup-form').hidden = which !== 'setup';
     $('setup-remote').hidden = which !== 'setup-remote';
+    $('setup-damaged').hidden = which !== 'setup-damaged';
     $('login-form').hidden = which !== 'login';
     var focus = which === 'setup' ? 'setup-username'
               : which === 'login' ? 'login-username' : null;
@@ -722,6 +723,10 @@
   function refreshSession() {
     return request('GET', '/api/admin/session').then(function (result) {
       var data = result.data || {};
+      if (data.state === 'damaged') {
+        showGate('setup-damaged');
+        return false;
+      }
       if (data.state === 'setup') {
         if (data.min_password_length) {
           text($('setup-rule'), 'At least ' + data.min_password_length + ' characters.');

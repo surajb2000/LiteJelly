@@ -152,6 +152,18 @@ def _build_metadata(config):
     return providers, Enricher(providers)
 
 
+def _save_and_apply(app, app_dir: Path, previous: dict, updated: dict) -> list[str]:
+    """Persist and apply settings together; a failed apply restores the previous file."""
+    user_settings.save_overrides(app_dir, updated)
+    try:
+        new_config, warnings = load_config(app_dir)
+        app.apply_config(new_config)
+    except BaseException:
+        user_settings.save_overrides(app_dir, previous)
+        raise
+    return warnings
+
+
 def _skip_segments(app, video, path, duration: float) -> tuple[list[dict], bool]:
     """Chapters first; an online answer only when the file has none.
 
@@ -248,6 +260,12 @@ class Application:
         self.sessions = admin_accounts.SessionStore()
         self.throttle = admin_accounts.LoginThrottle()
         self.credentials = admin_accounts.load_credentials(config.app_dir)
+        self.credentials_damaged = (self.credentials is None
+                                    and admin_accounts.credentials_damaged(config.app_dir))
+        if self.credentials_damaged:
+            log.error("%s exists but cannot be read; admin setup stays closed until "
+                      "'python server.py --reset-admin' repairs it",
+                      admin_accounts.CREDENTIALS_FILE)
         self.opensubtitles = OpenSubtitles(config.app_dir)
         self._last_rescan = 0.0
         self._streams: set = set()
@@ -316,33 +334,49 @@ class Application:
         with self._config_lock:
             if self._closing:
                 raise RuntimeError("Server is shutting down")
+            # Build everything first, so a failure leaves the running services untouched.
+            built = []
+            try:
+                tools = FFmpegTools(
+                    new_config.app_dir,
+                    transcode_slots=new_config.transcode.max_concurrent,
+                    thumbnail_slots=new_config.thumbnail_workers,
+                    ffmpeg_path=new_config.ffmpeg_path,
+                    ffprobe_path=new_config.ffprobe_path,
+                )
+                built.append(tools.close)
+                metadata, enricher = _build_metadata(new_config)
+                if enricher is not None:
+                    built.append(enricher.stop)
+                    enricher.on_updated = lambda: self.library.request_scan(force=True)
+                subtitles = SubtitleService(tools, new_config.cache_dir)
+                thumbnails = ThumbnailService(tools, new_config.cache_dir,
+                                              new_config.thumbnail_workers)
+                built.append(thumbnails.close)
+                trickplay = TrickplayService(tools, new_config.cache_dir,
+                                             new_config.trickplay,
+                                             new_config.trickplay_interval)
+                built.append(trickplay.close)
+                static_dir = new_config.static_dir.resolve()
+            except BaseException:
+                for close in reversed(built):
+                    close()
+                raise
+
             old_tools = self.tools
-            tools = FFmpegTools(
-                new_config.app_dir,
-                transcode_slots=new_config.transcode.max_concurrent,
-                thumbnail_slots=new_config.thumbnail_workers,
-                ffmpeg_path=new_config.ffmpeg_path,
-                ffprobe_path=new_config.ffprobe_path,
-            )
-            tools.transcode_sem = old_tools.transcode_sem
-            tools.transcode_sem.resize(new_config.transcode.max_concurrent)
             old_thumbnails = self.thumbnails
             old_trickplay = self.trickplay
             old_enricher = self.enricher
-            metadata, enricher = _build_metadata(new_config)
-            if enricher is not None:
-                enricher.on_updated = lambda: self.library.request_scan(force=True)
+            tools.transcode_sem = old_tools.transcode_sem
+            tools.transcode_sem.resize(new_config.transcode.max_concurrent)
             self.config = new_config
             self.tools = tools
             self.metadata = metadata
             self.enricher = enricher
-            self.subtitles = SubtitleService(tools, new_config.cache_dir)
-            self.thumbnails = ThumbnailService(tools, new_config.cache_dir,
-                                               new_config.thumbnail_workers)
-            self.trickplay = TrickplayService(tools, new_config.cache_dir,
-                                              new_config.trickplay,
-                                              new_config.trickplay_interval)
-            self.static_dir = new_config.static_dir.resolve()
+            self.subtitles = subtitles
+            self.thumbnails = thumbnails
+            self.trickplay = trickplay
+            self.static_dir = static_dir
             self.library.metadata = metadata
             self.library.enricher = enricher
             old_thumbnails.close()
@@ -479,6 +513,9 @@ class Routes:
         """What the admin page should show: setup, login, or the settings."""
         app = h.app
         client = h.client_address[0] if h.client_address else ""
+        if app.credentials is None and app.credentials_damaged:
+            h.send_json({"state": "damaged"})
+            return
         if app.credentials is None:
             h.send_json({
                 "state": "setup",
@@ -508,6 +545,11 @@ class Routes:
         client = h.client_address[0] if h.client_address else ""
         if app.credentials is not None:
             h.send_api_error(HTTPStatus.CONFLICT, "An admin account already exists.")
+            return
+        if app.credentials_damaged:
+            h.send_api_error(HTTPStatus.CONFLICT,
+                             "The admin account file cannot be read. Run "
+                             "'python server.py --reset-admin' on the server, then restart it.")
             return
         if not admin_auth.is_loopback(client):
             log.warning("Refused remote admin setup from %s", client)
@@ -710,14 +752,13 @@ class Routes:
                 merged[key] = value
 
         try:
-            user_settings.save_overrides(app_dir, merged)
-        except OSError as exc:
-            h.send_json({"ok": False, "errors": [f"Could not save settings: {exc}"]},
-                        status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            warnings = _save_and_apply(h.app, app_dir, existing, merged)
+        except Exception as exc:
+            log.exception("Settings were not applied")
+            h.send_json({"ok": False, "errors": [
+                f"Settings were not applied, and the previous ones are still in use: {exc}"]},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
-
-        new_config, warnings = load_config(app_dir)
-        h.app.apply_config(new_config)
 
         h.send_json({
             "ok": True,
@@ -851,14 +892,14 @@ class Routes:
         needs_restart = user_settings.restart_required(
             {"port": h.app.config.port, "host": h.app.config.host}, clean)
         try:
-            user_settings.save_overrides(app_dir, clean)
-        except OSError as exc:
-            h.send_json({"ok": False, "errors": [f"Could not save settings: {exc}"]},
-                        status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            warnings = _save_and_apply(h.app, app_dir,
+                                       user_settings.load_overrides(app_dir), clean)
+        except Exception as exc:
+            log.exception("Restored settings were not applied")
+            h.send_json({"ok": False, "errors": [
+                f"Settings were not applied, and the previous ones are still in use: {exc}"]},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
-
-        new_config, warnings = load_config(app_dir)
-        h.app.apply_config(new_config)
         log.info("Settings restored from a file on the admin page")
         h.send_json({
             "ok": True,

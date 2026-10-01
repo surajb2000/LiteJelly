@@ -293,9 +293,13 @@ python server.py
 # Optional: choose the port or bind address
 python server.py --host 0.0.0.0 --port 8000
 
-# Optional: seed a folder on first run instead of using the admin page
+# Optional: serve a folder for this run without saving it
 python server.py --dir "D:\Movies"
 ```
+
+`--dir` replaces the saved media folders for that run only, and says so in the
+log when saved folders exist. Saving the admin page while it is in effect
+stores whatever the form then shows.
 
 On the first run the library is empty. Open **`http://127.0.0.1:<port>/admin`**,
 add your media folders and save. Settings persist, so from then on
@@ -502,7 +506,9 @@ signing in — a TV, a laptop, your phone. The library itself needs no sign-in
 and stays open to everyone on the LAN, as before.
 
 Forgot the password? Run `python server.py --reset-admin` on the server to set
-a new one.
+a new one. The same command repairs a damaged `credentials.json`: if that file
+exists but cannot be read, setup stays closed rather than letting anyone at the
+server create a fresh account.
 
 **How it is protected.** Passwords are stored as a salted PBKDF2-SHA256 hash
 in `credentials.json`, never in plain text, and that file is written
@@ -516,6 +522,29 @@ burn the server's CPU. Changing the password signs out every other device.
 files out of, so a request that can change it can make the server share
 anything on the machine. Writes additionally require a same-origin request, so
 another website cannot post to it from your browser.
+
+### Security model: a trusted home network
+
+LiteJelly is built for a home LAN where everyone who can reach the port is
+allowed to watch. Plan around these facts:
+
+- **The library is open.** Browsing, playback, subtitles, thumbnails and saved
+  progress need no sign-in. Anyone who reaches the port can play every
+  configured folder, start FFmpeg work, and change watch history.
+- **Do not port-forward it or expose it to the internet.** For use away from
+  home, reach your LAN through a VPN instead, which keeps this model intact.
+- **Running it behind a reverse proxy is not supported yet.** Every request
+  would appear to come from the proxy. Before an admin account exists, that
+  would let any proxied client use the setup that is meant for the server's own
+  keyboard, and every client would share one sign-in lockout.
+- **An admin session is server-level trust.** It chooses which folders are
+  served, reads logs, and can point the FFmpeg path at any program the server's
+  account can run. Treat the admin password like the server's own login.
+- **Traffic is plain HTTP**, including the admin password when signing in.
+  The session cookie therefore has no `Secure` flag.
+
+Settings apply all-or-nothing: if new settings cannot be applied, the previous
+ones stay in use and `settings.json` is restored.
 
 ---
 
@@ -596,15 +625,15 @@ because on a phone-hosted server those are usually in tension.
   but the size does.
 - **Cast as a way in.** Portraits are shown but do nothing. The data to filter
   a library by actor is already fetched and cached.
-- **More than one viewer.** Progress, and the per-show track choices, are
-  shared by everyone using the server. Two people watching the same series
-  overwrite each other.
+- **More than one viewer.** Progress and watched state are shared by everyone
+  using the server, so two people watching the same series overwrite each
+  other's resume point. Audio and subtitle choices are remembered per browser.
 
 ### Interface
 
-- **Drive the browser code end to end, unattended.** Journeys are checked in a
-  real browser by hand today, and the fixtures in `tools/` exist for it, but
-  nothing runs them on its own. The static checks cannot see a journey.
+- **Checks on real devices.** Headless journeys run the real client and
+  admin page against fixture APIs and a simulated media clock. Decoding, A/V
+  sync and remote-control behaviour on an actual TV are still checked by hand.
 - **A real suggestion.** The hero no longer claims to be one - it says plainly
   that a title is unstarted - but genres and watch history are both available
   to do better than ranking by artwork.

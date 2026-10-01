@@ -116,6 +116,15 @@ def credentials_path(app_dir: Path) -> Path:
     return app_dir / CREDENTIALS_FILE
 
 
+def credentials_damaged(app_dir: Path) -> bool:
+    """True when an account file exists but cannot be used.
+
+    Treating it as "no account" would reopen first-run setup to anyone at the
+    server's keyboard, so it has to be repaired with --reset-admin instead.
+    """
+    return credentials_path(app_dir).exists() and load_credentials(app_dir) is None
+
+
 def load_credentials(app_dir: Path) -> Credentials | None:
     path = credentials_path(app_dir)
     if not path.is_file():

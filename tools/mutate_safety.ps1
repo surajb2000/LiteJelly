@@ -12,6 +12,10 @@ $mutations = @(
     @{ file = 'litejelly/streaming.py'; name = 'ignore viewer byte offset'; from = 'handle.seek(start)'; to = 'handle.seek(0)' }
     @{ file = 'litejelly/playback.py'; name = 'reset viewer stream offset'; from = 'config.transcode, start=start,'; to = 'config.transcode, start=0,' }
     @{ file = 'litejelly/playback.py'; name = 'drop playback audio delay'; from = '"audio_delay_ms": round(_audio_delay_ms(info, plan, query), 1),'; to = '"audio_delay_ms": 0.0,' }
+    @{ file = 'litejelly/web.py'; name = 'damaged credentials reopen setup'; from = "        self.credentials_damaged = (self.credentials is None`n                                    and admin_accounts.credentials_damaged(config.app_dir))"; to = '        self.credentials_damaged = False' }
+    @{ file = 'litejelly/web.py'; name = 'failed apply keeps new settings file'; from = "    except BaseException:`n        user_settings.save_overrides(app_dir, previous)`n        raise"; to = "    except BaseException:`n        raise" }
+    @{ file = 'litejelly/web.py'; name = 'limit resized before the build'; from = "            # Build everything first, so a failure leaves the running services untouched.`n            built = []"; to = "            self.tools.transcode_sem.resize(new_config.transcode.max_concurrent)`n            built = []" }
+    @{ file = 'server.py'; name = 'no version guard'; from = 'if sys.version_info < (3, 10):'; to = 'if False:' }
 )
-$mutations | ConvertTo-Json -Depth 5 -Compress | python "$PSScriptRoot/mutation_runner.py" --suite tests.test_identity,tests.test_lifecycle,tests.test_net,tests.test_subtitle_upload,tests.test_http
+$mutations | ConvertTo-Json -Depth 5 -Compress | python "$PSScriptRoot/mutation_runner.py" --suite tests.test_identity,tests.test_lifecycle,tests.test_net,tests.test_subtitle_upload,tests.test_http,tests.test_admin
 exit $LASTEXITCODE

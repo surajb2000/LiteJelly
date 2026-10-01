@@ -7,11 +7,16 @@ and embedded-subtitle extraction.
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 10):
+    sys.exit("LiteJelly needs Python 3.10 or newer; this is Python "
+             + sys.version.split()[0] + ".")
+
 import argparse
 import atexit
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -58,7 +63,8 @@ def parse_args(argv=None):
     parser.add_argument("--port", type=int, help="Port to listen on")
     parser.add_argument("--host", help="Address to bind (default 0.0.0.0)")
     parser.add_argument("--dir", action="append",
-                        help="Media directory, for first run only (repeatable)")
+                        help="Media directory for this run, replacing the saved "
+                             "folders without saving it (repeatable)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Log debug detail for this run")
     parser.add_argument("--reset-admin", action="store_true",

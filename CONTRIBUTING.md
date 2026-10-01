@@ -56,7 +56,7 @@ This document outlines the architectural standards, code quality conventions, an
 
 ### 3. Concurrency & Thread Safety
 - LiteJelly runs on a multithreaded server model (`http.server.ThreadingHTTPServer` with `daemon_threads = True`).
-- All shared resources (`Library._videos`, `ProgressStore._conn`, `ThumbnailService._pending`, `FFmpegTools._probe_cache`) must be synchronized using `threading.Lock()` or `threading.RLock()`.
+- All shared resources (`Library._videos`, `ProgressStore._conn`, `ThumbnailService._pending`, `FFmpegTools._probe_cache`, `_pending_probes` and `_keyframe_cache`, `SessionStore`, `LoginThrottle`) must be synchronized using `threading.Lock()` or `threading.RLock()`.
 - **Single-Flight Pattern**: For expensive operations (e.g., probing or thumbnail extraction), share a `threading.Event` or `Future` so simultaneous requests for the same item wait for one worker. Share failures as well as results, release waiters on shutdown, and keep different media files independent.
 - Preserve `CapacityLimiter` across settings reloads: reducing its limit must not forget occupied slots. Thumbnail/trickplay worker counts and the HTTP connection limit are separate bounds, not a global CPU scheduler.
 - Closing a worker service must reject new jobs, drain queued work and avoid blocking sentinel writes to a full queue. In-flight network I/O can finish under its timeout, but stopped services must not continue queuing follow-up work.
@@ -85,7 +85,7 @@ This document outlines the architectural standards, code quality conventions, an
 - Guard every admin route with `RequestHandler.require_admin()`. It requires a valid session and, on writes, a same-origin request.
 - Never store an admin password in plaintext or log credentials. `litejelly.auth` hashes with PBKDF2 and a per-password salt; compare with `hmac.compare_digest`, never `==`. The existing OpenSubtitles account file is a separate server-side credential store and is never included in settings exports.
 - Verify the password once at sign-in and carry the result in a session. Hashing is deliberately slow, so doing it per request would make every page load expensive and turn the login endpoint into a CPU exhaustion vector.
-- First-account creation is loopback-only. Allowing it over the network makes ownership a race between the owner and anyone else who can reach the port.
+- First-account creation is loopback-only. Allowing it over the network makes ownership a race between the owner and anyone else who can reach the port. A `credentials.json` that exists but cannot be read keeps setup closed until `--reset-admin` repairs it.
 - Credentials live in `credentials.json`, never in `settings.json`, which is served to the admin page.
 - `Config.to_public_dict()` feeds the unauthenticated `/api/config`. Never add filesystem paths, binary locations, credentials or bind addresses to it; those belong in `to_admin_dict()`.
 - Validate admin input in `litejelly.settings.validate()`, not in the route. Unknown keys are ignored and enumerated values (content types, presets) are whitelisted rather than pattern-matched.
@@ -98,6 +98,7 @@ This document outlines the architectural standards, code quality conventions, an
 - Reject unsupported transfer framing and duplicate lengths before dispatch. Maintain both connection limits and socket idle timeouts; an accept backlog is not a thread limit.
 
 ### 8. Applying Configuration at Runtime
+- Build every replacement service before changing live state. If any build fails, close what was built and leave the running services, stream limit and `settings.json` as they were (`_save_and_apply` restores the previous file).
 - `FFmpegTools`, `SubtitleService` and `ThumbnailService` capture configuration values. Rebuild derived services together, cancel the retired generation, retain the shared stream limiter and restore the enrichment completion callback.
 - `Library` owns its directory list. Change it through `Library.set_media_dirs()` so the lock is held, the scan fingerprint is cleared, and any scan already in flight is discarded rather than publishing stale `dir_index` values.
 - `port` and `host` cannot be rebound on a live server. They are saved and reported through `settings.RESTART_REQUIRED` instead of being applied.

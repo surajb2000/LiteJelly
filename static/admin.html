@@ -53,6 +53,15 @@
       </p>
     </div>
 
+    <div id="setup-damaged" hidden>
+      <h2>The admin account needs repair</h2>
+      <p class="hint">
+        credentials.json exists but cannot be read. Setup stays closed rather
+        than letting anyone create a new account. On the server, run
+        <code>python server.py --reset-admin</code>, then restart LiteJelly.
+      </p>
+    </div>
+
     <form id="login-form" hidden>
       <h2>Sign in</h2>
       <div class="field">

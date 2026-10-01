@@ -216,6 +216,9 @@ def load_config(app_dir: Path, args=None) -> tuple[Config, list[str]]:
         if getattr(args, "host", None):
             cfg.host = args.host
         if getattr(args, "dir", None):
+            if raw_dirs:
+                warnings.append("--dir replaces the saved media folders for this run; "
+                                "they are unchanged on disk.")
             raw_dirs = list(args.dir)
 
     resolved: list[MediaDir] = []

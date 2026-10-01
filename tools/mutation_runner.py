@@ -95,6 +95,8 @@ def run_mutations(root: Path, suite: str, mutations: list[dict]) -> int:
             if source.is_dir():
                 shutil.copytree(source, sandbox / name,
                                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.mutbak"))
+        if (root / "server.py").is_file():
+            shutil.copy2(root / "server.py", sandbox / "server.py")
         report_path = sandbox / "result.json"
         report, returncode, output = execute_suite(sandbox, suite, report_path)
         count = report.get("tests", 0)

@@ -21,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly import auth
+from litejelly import settings as settings_module
 from litejelly.config import load_config
 from litejelly.ffmpeg import CapacityLimiter, MediaInfo, popen_quiet
 from litejelly.web import Application, RequestHandler, create_server
@@ -608,6 +609,23 @@ class LiveServerTests(unittest.TestCase):
         self.assertIn("errors", json.loads(response.read()))
         conn.close()
         self.assertEqual(self.app.config.server_name, before)
+
+    def test_a_settings_change_that_cannot_apply_is_not_kept(self):
+        conn, cookie = self.authed()
+        self.addCleanup(conn.close)
+        app_dir = self.app.config.app_dir
+        before = settings_module.load_overrides(app_dir)
+        for path, body in (("/api/admin/settings", {"server_name": "Never applied"}),
+                           ("/api/admin/settings/import", {"settings": {"server_name": "Nor this"}})):
+            with self.subTest(path=path), \
+                 mock.patch.object(self.app, "apply_config", side_effect=RuntimeError("broken")):
+                conn.request("POST", path, body=json.dumps(body),
+                             headers=dict(WRITE_HEADERS, Cookie=cookie))
+                response = conn.getresponse()
+                self.assertEqual(response.status, 500)
+                self.assertIn("previous ones are still in use",
+                              " ".join(json.loads(response.read())["errors"]))
+                self.assertEqual(settings_module.load_overrides(app_dir), before)
 
     def test_settings_import_is_admin_guarded(self):
         conn = self.connect()

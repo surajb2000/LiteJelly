@@ -115,6 +115,13 @@ class CredentialStorageTests(unittest.TestCase):
         auth.credentials_path(self.root).write_text("{ broken", encoding="utf-8")
         self.assertIsNone(auth.load_credentials(self.root))
 
+    def test_a_corrupt_file_is_damaged_not_missing(self):
+        self.assertFalse(auth.credentials_damaged(self.root))
+        auth.save_credentials(self.root, self._credentials())
+        self.assertFalse(auth.credentials_damaged(self.root))
+        auth.credentials_path(self.root).write_text("{ broken", encoding="utf-8")
+        self.assertTrue(auth.credentials_damaged(self.root))
+
     def test_incomplete_file_means_no_account(self):
         auth.credentials_path(self.root).write_text('{"username": "admin"}',
                                                     encoding="utf-8")

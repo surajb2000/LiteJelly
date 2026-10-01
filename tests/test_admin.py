@@ -351,6 +351,27 @@ class ConfigLayeringTests(unittest.TestCase):
         self.assertEqual(config.port, 7777)
         self.assertEqual(config.server_name, "FromSettings")
 
+    def test_dir_argument_says_it_replaces_saved_folders(self):
+        class Args:
+            port = None
+            host = None
+            dir = [str(self.shows)]
+
+        settings.save_overrides(self.root, {"media_dirs": [str(self.movies)]})
+        config, warnings = load_config(self.root, Args())
+        self.assertEqual(config.media_paths, [str(self.shows.resolve())])
+        self.assertTrue(any("--dir replaces" in warning for warning in warnings))
+        self.assertEqual(settings.load_overrides(self.root)["media_dirs"], [str(self.movies)])
+
+    def test_dir_argument_on_a_first_run_is_quiet(self):
+        class Args:
+            port = None
+            host = None
+            dir = [str(self.shows)]
+
+        _config, warnings = load_config(self.root, Args())
+        self.assertEqual(warnings, [])
+
     def test_no_media_dirs_is_a_valid_first_run_state(self):
         # Previously this silently fell back to ~/Videos, which indexed files
         # the user never asked to share.
@@ -370,6 +391,42 @@ class ConfigLayeringTests(unittest.TestCase):
         config, warnings = load_config(self.root)
         self.assertEqual(config.server_name, "Den")
         self.assertEqual(warnings, [])
+
+
+class VersionGuardTests(unittest.TestCase):
+    def test_old_python_gets_a_plain_message(self):
+        import runpy
+        from unittest import mock
+
+        server = Path(__file__).resolve().parent.parent / "server.py"
+        with mock.patch.object(sys, "version_info", (3, 9, 18)):
+            with self.assertRaises(SystemExit) as caught:
+                runpy.run_path(str(server), run_name="version_guard_check")
+        self.assertIn("needs Python 3.10", str(caught.exception.code))
+
+
+class DamagedCredentialsTests(unittest.TestCase):
+    def test_a_damaged_file_keeps_first_run_setup_closed(self):
+        """A corrupt credentials.json used to reopen setup to anyone at the keyboard."""
+        from unittest import mock
+        from litejelly import auth
+        from litejelly.config import Config
+        from litejelly.web import Application, Routes
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            auth.credentials_path(root).write_text("{ broken", encoding="utf-8")
+            app = Application(Config(app_dir=root))
+            try:
+                handler = mock.Mock(app=app, client_address=("127.0.0.1", 1))
+                Routes.admin_session(handler, {})
+                handler.send_json.assert_called_once_with({"state": "damaged"})
+                Routes.admin_setup(handler, {})
+                self.assertEqual(int(handler.send_api_error.call_args.args[0]), 409)
+                handler.read_json_body.assert_not_called()
+            finally:
+                app.shutdown()
+            self.assertIn("{ broken", auth.credentials_path(root).read_text(encoding="utf-8"))
 
 
 class PublicConfigTests(unittest.TestCase):

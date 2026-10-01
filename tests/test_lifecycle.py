@@ -195,6 +195,36 @@ class ReconfigurationTests(unittest.TestCase):
                 limiter.release()
                 app.shutdown()
 
+    def test_a_failed_rebuild_leaves_the_running_services_alone(self):
+        """The stream limit used to be resized before the rest of the build could fail."""
+        with TemporaryDirectory() as directory:
+            config = Config(app_dir=Path(directory), transcode=TranscodeSettings(max_concurrent=1))
+            app = Application(config)
+            running = (app.config, app.tools, app.thumbnails, app.trickplay)
+            built = []
+            real_tools = FFmpegTools
+
+            def track(*args, **kwargs):
+                tools = real_tools(*args, **kwargs)
+                built.append(tools)
+                return tools
+
+            changed = Config(app_dir=Path(directory), transcode=TranscodeSettings(max_concurrent=4))
+            try:
+                with mock.patch("litejelly.web.FFmpegTools", side_effect=track), \
+                     mock.patch("litejelly.web.TrickplayService", side_effect=RuntimeError("broken")):
+                    with self.assertRaises(RuntimeError):
+                        app.apply_config(changed)
+                self.assertEqual((app.config, app.tools, app.thumbnails, app.trickplay), running)
+                self.assertTrue(app.tools.transcode_sem.acquire(blocking=False))
+                self.assertFalse(app.tools.transcode_sem.acquire(blocking=False),
+                                 "the live limit must still be the old one")
+                app.tools.transcode_sem.release()
+                self.assertFalse(app.tools._stop.is_set())
+                self.assertTrue(built and built[0]._stop.is_set(), "half-built tools must be closed")
+            finally:
+                app.shutdown()
+
     def test_closed_trickplay_service_cannot_queue_more_work(self):
         with TemporaryDirectory() as directory:
             service = TrickplayService(mock.Mock(available=True), Path(directory))
