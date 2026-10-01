@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+if [ -n "${LITEJELLY_PYTHON:-}" ]; then
+    exec "$LITEJELLY_PYTHON" tools/pre_commit.py
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 tools/pre_commit.py
+elif command -v python >/dev/null 2>&1; then
+    exec python tools/pre_commit.py
+else
+    echo "LiteJelly pre-commit: Python 3.10+ is required." >&2
+    exit 1
+fi
