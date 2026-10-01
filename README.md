@@ -13,7 +13,7 @@ Heavy media servers like Plex, Jellyfin, or Emby often struggle on low-spec hard
 - **Featherweight Frontend**: 193 KB of HTML, CSS and vanilla JavaScript for the whole player and library, with no frameworks and no build step. A further 445 KB of self-hosted font is fetched once and then cached for a year, so a return visit is the 193 KB alone. For comparison, the clients this replaces ship 10–30 MB of JavaScript before any of it runs.
 - **Smart Transcoding & Remuxing**: Offloads codec heavy-lifting (HEVC/x265, AC-3, DTS, 10-bit) to the host server via portable FFmpeg.
 - **10-Foot TV Experience**: The interface sizes itself to the screen it is on, judged by what the device can do rather than by what its user agent claims to be.
-- **Local Synchronization**: SQLite-backed playback progress (WAL mode) shared instantly across all devices on your local network.
+- **Shared Resume History**: SQLite-backed playback progress (WAL mode) shared across devices. Active playback remains independent; saved progress is one record per video, not a separate record per viewer.
 
 ---
 
@@ -24,22 +24,26 @@ graph TD
     Client["Browser / TV / Mobile (HTML5 + Vanilla JS)"]
     Server["server.py (Entry Point)"]
     Web["litejelly.web (Application & Routes)"]
+    Playback["litejelly.playback (Request-local Selection & Payloads)"]
     Lib["litejelly.library (Library Scanner & Index)"]
     Store["litejelly.store (SQLite ProgressStore)"]
     FFmpeg["litejelly.ffmpeg (FFmpegTools & PlaybackPlanner)"]
     Subs["litejelly.subtitles (SubtitleService)"]
     Thumbs["litejelly.thumbnails (ThumbnailService)"]
-    Buffer["ReadAhead (Buffered Process Pipe)"]
+    Transport["litejelly.streaming (Ranges, ReadAhead & Process Cleanup)"]
 
     Client <-->|"HTTP / Range Requests / JSON API"| Web
     Server --> Web
     Web --> Lib
     Web --> Store
     Web --> FFmpeg
+    Web --> Playback
+    Playback --> FFmpeg
+    Playback --> Subs
     Web --> Subs
     Web --> Thumbs
-    Web --> Buffer
-    Buffer -->|"Fragmented MP4 Stream (stdout)"| Client
+    Web --> Transport
+    Transport -->|"Private file handle or process per request"| Client
 ```
 
 ### Tech Stack
@@ -48,6 +52,21 @@ graph TD
 - **Frontend**: Vanilla ES6+ JavaScript (IIFE, template cloning, polyfills for older Android TV browsers), semantic HTML5, and responsive CSS3 glassmorphism.
 - **Database**: SQLite with WAL (Write-Ahead Logging) enabled.
 
+### Playback ownership
+
+`web.py` resolves media IDs, validates HTTP input, enforces access rules and
+adds progress, episode navigation and skip data to responses. `playback.py`
+selects request-local quality, tracks, dialogue mode and seek behavior, and
+builds playback details and FFmpeg commands. `ffmpeg.py` owns codec policy,
+probe caching and subprocess launch primitives. `streaming.py` owns byte-range
+reads, per-request process output, backpressure and cleanup.
+
+Shared probe results contain file facts such as duration, codecs and available
+tracks. They do not contain a viewer's position or selections. On the client,
+`player-session.js` owns the active playback lifetime and invalidates stale
+requests when the viewer exits or switches titles. There is no frontend build
+step and these changes add no server dependencies.
+
 ---
 
 ## 🚀 Key Features
@@ -55,7 +74,7 @@ graph TD
 ### 1. Intelligent Playback Planning
 LiteJelly probes every video before streaming to find the fastest, lowest-overhead playback path:
 - **Direct Play**: Browser-native containers (MP4, WebM) with H.264 video and AAC/MP3/Opus audio stream directly with HTTP 206 partial content range requests.
-- **Direct Remux (Stream Copy)**: Files with compatible H.264 video but incompatible audio (AC-3, DTS, TrueHD) copy the video stream at 0% CPU usage and re-encode only the audio to stereo AAC.
+- **Direct Remux (Stream Copy)**: Compatible video is copied without video re-encoding; incompatible audio (AC-3, DTS, TrueHD) can be re-encoded to stereo AAC. Copying, demuxing and audio processing still consume resources.
 - **Full Transcode**: Incompatible video codecs (HEVC/H.265, 10-bit, MPEG-2, VC-1) are transcoded on-the-fly to standard 720p/1080p H.264 + AAC in fragmented MP4 chunks.
 - **Quality Ladder**: User-selectable qualities (`Auto`, `Original`, `1080p`, `720p`, `480p`, `360p`).
 - **Hardware encoding, chosen by measurement**: NVENC, QuickSync, AMF, VAAPI and Media Foundation are offered only if they survive a real timed encode, because `ffmpeg -encoders` cheerfully lists encoders that fail the moment you use them. On this laptop it lists five that do not run. `Auto` times software too and keeps whichever was fastest - which was not always the GPU.
@@ -191,18 +210,21 @@ lucid-fermi/
 │   ├── net.py              # Public-address HTTPS connections and checked redirects
 │   ├── opensubtitles.py    # Subtitle search and download, and the account it needs
 │   ├── paths.py            # Realpath containment and symlink traversal guards
+│   ├── playback.py         # Request-local playback options, payloads and commands
 │   ├── providers.py        # TVmaze, AniList, AniSkip, TheIntroDB, TMDb and OMDb clients with a versioned on-disk cache
 │   ├── settings.py         # settings.json load/save and admin input validation
 │   ├── store.py            # Durable progress, media identities and legacy database migration
+│   ├── streaming.py        # Per-viewer ranges, buffered output and process cleanup
 │   ├── subtitles.py        # Sidecar discovery, SRT->VTT parser, cue shifting, burn-in logic
 │   ├── thumbnails.py       # Single-flight thumbnail worker pool with fallback seeking
 │   ├── trickplay.py        # Sprite sheets of frames for the seek-bar preview
-│   └── web.py              # HTTP server, REST API, ReadAhead ring buffer, streaming pump
+│   └── web.py              # Application lifecycle, HTTP validation and API orchestration
 │
 ├── static/                 # Frontend assets, no build step and no CDN
 │   ├── index.html          # Semantic HTML5 layout with accessible templates
 │   ├── style.css           # Device profiles, tile shapes, player OSD, @supports layer
 │   ├── app.js              # State machine, spatial navigation, custom video controls
+│   ├── player-session.js   # Playback lifetime, operation cancellation and held timeline
 │   ├── admin.html          # Settings page, served at /admin (separate from the TV UI)
 │   ├── admin.css           # Settings page styling, sharing the library's tokens
 │   ├── admin.js            # Settings form, directory picker, save/validation handling
@@ -358,7 +380,7 @@ and Jellyfin separate configuration from the viewing experience. There is
 deliberately no settings icon in the library UI: someone watching a film on a
 TV has no reason to reach the transcoder configuration with a D-pad.
 
-It is grouped into four tabs so the everyday controls are not buried among the
+It is grouped into five tabs so the everyday controls are not buried among the
 rare ones:
 
 | Tab | Contains |
@@ -377,6 +399,31 @@ that title so the next scan can try again.
 
 Everything except `port` and `host` applies immediately; those two are saved
 and reported as needing a restart.
+
+### Multiple screens and resource limits
+
+Two screens can watch the same file at different positions, with different
+quality and audio selections. Direct streams have separate file handles;
+FFmpeg-based streams have separate child processes and buffers. Seeking or
+disconnecting one screen does not stop another. Sharing a probe only avoids
+repeating the same file inspection; it does not share a playback stream.
+
+Saved progress is different: there is one database record per video and the
+most recent saved update wins. Concurrent viewers can overwrite the future
+resume position or watched status without moving each other's active playback.
+Per-viewer profiles and independent resume histories are not implemented.
+
+| Resource | Limit and behavior |
+| :--- | :--- |
+| FFmpeg streams | `transcode.max_concurrent`, default 2, counts both remux and transcode streams. A full limit waits up to 20 seconds, then responds with HTTP 503 and `Retry-After: 5`. |
+| Direct playback | Does not consume an FFmpeg slot; it still consumes HTTP connections, disk and network bandwidth. |
+| Stream buffer | `stream_buffer_mb`, default 8 MiB queued per FFmpeg stream, plus an in-flight chunk and OS/socket buffers. This is not a total process-memory limit. |
+| HTTP connections | 64 active connections, including playback and API traffic. Socket idle timeout is 15 seconds, not a total stream-duration limit. |
+| Background previews | Bounded thumbnail/trickplay queues and workers. Decoder, filter and encoder stages request one thread each; these are not a global CPU budget or playback-priority scheduler. |
+
+Changing the stream limit preserves occupied slots. Raising it does not make
+the CPU or network faster; use playback observations on the actual host and
+clients to choose a value. HEAD requests do not launch an FFmpeg stream.
 
 ### Storage upgrade and safety
 
@@ -402,6 +449,13 @@ copying just an open database file can miss WAL transactions. A failed migration
 keeps the source and removes its temporary output. If the process is forcibly
 killed during migration, a `.migration-lock` may remain beside the new database:
 remove it only after confirming no server is running and preserving the old database.
+
+The admin settings export is not a full server backup. Preserve `settings.json`
+and `config.json` alongside the durable database when moving a server. Admin
+credentials in `credentials.json` and the OpenSubtitles account in
+`opensubtitles.json` are separate sensitive files, excluded from settings
+exports; protect their permissions and never commit them. Do not delete existing
+credentials or `data/` as part of cache cleanup.
 
 Settings changes retain occupied stream slots rather than creating a fresh
 allowance. Thumbnail and trickplay shutdown discard queued jobs without waiting
@@ -566,11 +620,21 @@ Run the automated test suite:
 python -m unittest discover -s tests
 ```
 
-The default suite needs no pip packages or external services. HTTP tests use
+The default suite needs no pip packages or external services; the staged-hook
+tests require Git. HTTP tests use
 isolated loopback servers; media tests use generated fixtures and skip when
 their optional tools are unavailable. `tests/test_frontend.py` checks source
 structure, element references and selected compatibility rules. Those checks
 do not execute JavaScript and cannot certify browser behavior.
+
+The multi-screen HTTP tests exercise distinct byte ranges and concurrent child
+processes at different seek offsets. They verify that seeking or disconnecting
+one viewer leaves another running, that direct playback works when FFmpeg slots
+are busy, and that failed starts release capacity. Child processes emit controlled
+fixture bytes, not encoded video: these tests prove server-side isolation and
+cleanup, not codec quality or synchronized A/V on physical screens. Playback API
+checks preserve quality, dialogue mode, audio trim, burn-in URLs and resume fields.
+Run this slice with `python -m unittest discover -s tests -p test_http.py -v`.
 
 A textual check is only worth having if it fails when the thing it describes
 breaks, so the ones guarding a fixed bug come with a script beside them that

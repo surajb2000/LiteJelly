@@ -23,6 +23,25 @@ This document outlines the architectural standards, code quality conventions, an
 
 ## 🐍 Backend Architecture Guidelines (`litejelly/`)
 
+### Module ownership
+
+- `web.py` owns application lifecycle, route registration, HTTP validation,
+   authorization and response orchestration. Resolve paths and validate finite
+   media times here before passing requests into playback or streaming code.
+- `playback.py` builds request-local selections, response details, seek results
+   and stream commands. It must not write a viewer's choices into shared
+   `MediaInfo`, start live streams, or depend on HTTP handler globals.
+- `ffmpeg.py` owns codec policy, file-signature probe caching and process launch
+   primitives. Same-file probe sharing is metadata reuse, never stream reuse.
+- `streaming.py` owns range parsing, private file handles, `ReadAhead` and the
+   process pump. Every acquired stream slot must be released on success,
+   disconnect, failed spawn or rejected registration during shutdown.
+- Compatibility imports for `parse_range`, `ReadAhead` and the audio helpers
+   remain in `web.py`; do not remove them as unused imports without migrating
+   their callers. New tests should patch the owning playback/streaming module.
+- Saved progress remains per video, not per screen. Changing that model requires
+   an explicit profile/identity design and migration, not a playback-cache tweak.
+
 ### 1. Python Standards & Typing
 - Target **Python 3.10+**.
 - Always include `from __future__ import annotations` at the top of every module.
@@ -38,16 +57,17 @@ This document outlines the architectural standards, code quality conventions, an
 ### 3. Concurrency & Thread Safety
 - LiteJelly runs on a multithreaded server model (`http.server.ThreadingHTTPServer` with `daemon_threads = True`).
 - All shared resources (`Library._videos`, `ProgressStore._conn`, `ThumbnailService._pending`, `FFmpegTools._probe_cache`) must be synchronized using `threading.Lock()` or `threading.RLock()`.
-- **Single-Flight Pattern**: For expensive operations (e.g., thumbnail extraction), use `threading.Event` so multiple simultaneous requests for the same item wait for a single worker rather than launching duplicate FFmpeg processes.
+- **Single-Flight Pattern**: For expensive operations (e.g., probing or thumbnail extraction), share a `threading.Event` or `Future` so simultaneous requests for the same item wait for one worker. Share failures as well as results, release waiters on shutdown, and keep different media files independent.
 - Preserve `CapacityLimiter` across settings reloads: reducing its limit must not forget occupied slots. Thumbnail/trickplay worker counts and the HTTP connection limit are separate bounds, not a global CPU scheduler.
 - Closing a worker service must reject new jobs, drain queued work and avoid blocking sentinel writes to a full queue. In-flight network I/O can finish under its timeout, but stopped services must not continue queuing follow-up work.
 
 ### 4. Subprocess & FFmpeg Management
 - Always specify `creationflags = subprocess.CREATE_NO_WINDOW` on Windows (`os.name == 'nt'`) so console windows do not flash during background probes or transcodes.
 - Never let a child inherit stdin. ffmpeg switches the controlling terminal to no-echo so it can read its interactive keys, and killing the server first leaves the shell needing a manual `stty echo`. Pass `stdin=subprocess.DEVNULL` and `-nostdin`.
-- Always wrap subprocess lifecycles in `try ... finally:` blocks to guarantee termination (`process.terminate()` -> `process.wait(timeout=0.5)` -> `process.kill()`).
+- Always wrap subprocess lifecycles in `try ... finally:` blocks to guarantee termination. Stream cleanup uses `streaming.terminate_process`: terminate, wait up to two seconds, then kill and reap if necessary.
 - Pass the owning service's cancellation event to `run_quiet` for background media work. Cancellation must kill and reap the child, and partially generated images must never become cache hits.
-- Use the threaded `ReadAhead` ring buffer when streaming process `stdout` to avoid blocking FFmpeg when the network client pauses or buffers.
+- Thumbnail and trickplay commands limit decoder, filter and encoder threads to one each. Keep `-threads 1` both before and after `-i`; these are separate codec contexts. This bounds those FFmpeg stages, not all process threads or total machine CPU usage, and does not change live playback encoding.
+- Use the bounded deque-backed `streaming.ReadAhead` queue for process `stdout`. It provides a limited reserve; once full, backpressure still reaches FFmpeg.
 - Fast input seeking (`-ss` before `-i`) must be used for streaming transcodes.
 - Pass the requested seek time unchanged. Snapping it onto a keyframe makes FFmpeg rewind to the previous one, and an open-GOP keyframe list cannot be trusted as entry points.
 - Add `-noaccurate_seek` whenever the video is stream-copied. Accurate seek trims audio to the exact timestamp while copied video starts at a keyframe, which splits them by up to a whole GOP.
@@ -94,6 +114,7 @@ This document outlines the architectural standards, code quality conventions, an
 ### 10. Work That Blocks a Request
 - A TV browser opens only a handful of connections. Never do slow work inside a request handler: generating thumbnails there held those connections behind a worker semaphore and starved the page.
 - Queue the work, answer `202` immediately, and let the client retry. Give up after a bounded number of failures so a file that can never succeed is not retried on every page load.
+- Continue Watching builds request-local series successors once per needed series. Do not scan and sort the whole library for every finished episode, or add a persistent cache without progress and library invalidation rules.
 
 ---
 
@@ -129,6 +150,57 @@ This document outlines the architectural standards, code quality conventions, an
 
 ## 🧪 Testing & Verification
 
+### Local commit hooks
+
+The versioned `.githooks/pre-commit` hook runs `tools/pre_commit.py` using Git
+and Python 3.10+ only. It checks the staged index, not unstaged working files:
+
+- Whitespace errors and merge-conflict markers reported by `git diff --cached --check`.
+- Python compilation without execution or bytecode output, and valid JSON without NaN/Infinity.
+- Accidental credentials, environment files, generated data, database files and bundled executables.
+- Newly added files larger than 5 MiB, checked before reading their contents.
+
+The path checks are a guard against accidental commits, not a full secret
+scanner. Python syntax is checked by the selected interpreter; the supported
+Python-version matrix remains a CI responsibility. JavaScript syntax,
+cross-file behavior, browser journeys and mutation checks remain test/CI gates.
+
+Hooks never format, rewrite or stage files automatically. This preserves
+partial staging. Fix the reported problem, review the diff and stage only
+the intended changes before retrying the commit.
+
+Adding these files does not activate them. After approval, enable them for
+this clone with:
+```bash
+git config --local core.hooksPath .githooks
+```
+On Unix or in Git Bash, also run `chmod +x .githooks/pre-commit`. Record its
+executable mode when committing the hook with
+`git update-index --chmod=+x .githooks/pre-commit` after staging it. Git does
+not automatically enable versioned hooks in new clones. Check for an existing
+`core.hooksPath` before replacing it. `LITEJELLY_PYTHON` can select an existing
+interpreter explicitly; otherwise the launcher tries `python3`, then `python`.
+
+Run the same staged checks manually without activation:
+```bash
+python tools/pre_commit.py
+```
+
+Recommended follow-ups, subject to explicit tool-installation approval:
+
+- **Formatting:** Ruff for Python; optionally Prettier for JavaScript/CSS/HTML/Markdown.
+   Prefer check-only hooks and explicit formatting before staging. Introduce
+   formatting in a separate reviewed commit, since some existing tests compare
+   source strings and may need behavior-based replacements first.
+- **Linting:** a small Ruff rule set, expanded after the existing baseline is reviewed.
+- **Pre-push/CI:** the full unit suite, mutation checks and optional browser journeys;
+   these are too expensive to run on every commit.
+- **Secret scanning:** a dedicated scanner in CI after approval, beyond the local path guard.
+
+No formatter, hook manager, package or browser is installed by these commands.
+
+### Regression suites
+
 - Every new core feature or parser modification should include corresponding unit tests, added in the same change rather than deferred.
   - `tests/test_litejelly.py` — path containment, range parsing, subtitles, title parsing.
   - `tests/test_admin.py` — settings validation, admin access control, library reconfiguration.
@@ -142,5 +214,26 @@ This document outlines the architectural standards, code quality conventions, an
 - Mutation checks run through `tools/mutation_runner.py` in a temporary copy. Require a clean baseline and explicit assertion failures; test errors, missing targets, survivors and timeouts are failures of the check, not successful detections. Never infer success from stderr text or mutate a developer's working files in place.
 - Run the optional browser suite with `python -m unittest discover -s tests/browser -v` only in an environment where its tooling is already installed. API and media-clock fixtures make ordering deterministic; use observable state or events rather than fixed sleeps. Traces and screenshots belong in the ignored `test-results/browser/` directory.
 - Keep the distinction between structural checks, simulated browser journeys and real-media verification explicit. Headless geometry tests cannot prove hardware-overlay behavior or A/V synchronization on a TV.
+- Multi-screen HTTP regressions use real sockets and controlled child processes,
+  not real codec playback. Keep distinct byte content in range fixtures so a
+  wrong seek cannot pass unnoticed. Cover disconnect/seek isolation, busy slots,
+  HEAD requests and failed-spawn cleanup. `tools/mutate_safety.ps1` includes
+  negative controls for range offsets, stream offsets and playback audio trim.
 - Give new helper functions concise purpose docstrings. Document time units, state changes, failure behavior and cancellation where applicable; keep incident histories in regression tests instead of narrating implementation lines.
 - For A/V synchronization testing, utilize `tools/avsync_probe.py` to measure clock drift against test clips. Its beep-onset detection is not yet reliable at sub-100 ms resolution; prefer packet and timestamp measurements for small offsets.
+
+### Performance regression checks
+
+- `tests/test_lifecycle.py` checks shared cold probes, independent-file concurrency,
+   cache invalidation, cancellation and the existing deque-based stream buffer.
+   Three overlapping same-file requests must launch one probe, not three.
+- `tests/test_nextup.py` checks unchanged Continue Watching selection and one
+   ordering pass per series. Four finished episodes must need four ordering-key
+   evaluations, not sixteen.
+- `tests/test_thumbnails.py` and `tests/test_trickplay.py` check thread limits
+   on every preview fallback path. Real FFmpeg also produced both preview types
+   successfully with these flags during local verification.
+- A local single-run comparison against `bf0f3ba` on 2026-10-01 used 10,000
+   fully watched synthetic episodes across 100 series: Continue Watching took
+   7.80 seconds before and 0.011 seconds after, with identical output. This is
+   a specific worst-case history workload, not a general CPU or TV benchmark.
