@@ -536,6 +536,10 @@ allowed to watch. Plan around these facts:
   configured folder, start FFmpeg work, and change watch history.
 - **Do not port-forward it or expose it to the internet.** For use away from
   home, reach your LAN through a VPN instead, which keeps this model intact.
+  A VPN needs an app on each phone or laptop, and most TVs cannot run one.
+  Browser-only access from outside, with nothing installed on the viewing
+  device, would need viewer sign-in, HTTPS through a reverse proxy, trusted-
+  proxy handling and request limits. LiteJelly does not have those yet.
 - **Running it behind a reverse proxy is not supported yet.** Every request
   would appear to come from the proxy. Before an admin account exists, that
   would let any proxied client use the setup that is meant for the server's own
