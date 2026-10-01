@@ -243,3 +243,13 @@ No formatter, hook manager, package or browser is installed by these commands.
    fully watched synthetic episodes across 100 series: Continue Watching took
    7.80 seconds before and 0.011 seconds after, with identical output. This is
    a specific worst-case history workload, not a general CPU or TV benchmark.
+- `tools/measure_library.py [count ...]` builds throwaway libraries and reports
+   scan time, the per-scan change check, and `/api/library` size and latency
+   with and without gzip. Measure with it before changing library or listing
+   code. On 2026-10-01 at 10,000 files (local SSD, loopback): scan 4.2 s, change
+   check 0.5 s, 5,436 KB of JSON (322 ms) or 442 KB gzipped (106 ms).
+- `tests/test_performance.py` pins the three fixes that followed by counting
+   work, not timing it: subtitle discovery resolves only candidate names (a film
+   in a 3,334-file folder took 2,529 ms before, 62 ms after), the public listing
+   is built once per scan, and JSON of 8 KB or more is gzipped when accepted.
+   `tools/mutate_performance.ps1` is the matching negative-control gate.

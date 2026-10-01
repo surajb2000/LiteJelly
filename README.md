@@ -274,6 +274,8 @@ lucid-fermi/
     ├── mutate_subtitles.ps1 # The same, for the subtitle fetching rules
     ├── mutate_subtitle_upload.ps1 # The same, for what may be written to disk
     ├── mutate_safety.ps1   # Identity, reconfiguration and outbound-request safeguards
+    ├── mutate_performance.ps1 # The measured performance fixes
+    ├── measure_library.py  # Scan and library-response cost at a chosen library size
     └── mutate_opensubtitles.ps1   # The same, for the search and download rules
 ```
 
@@ -620,10 +622,10 @@ because on a phone-hosted server those are usually in tension.
 
 ### Library
 
-- **Paging or streaming the library payload.** The whole library is sent in one
-  response. That is fine for hundreds of files and will not be for thousands,
-  on a device with this much memory. Absolute paths no longer go out with it,
-  but the size does.
+- **Paging the library payload.** The whole library is sent in one response,
+  gzipped when the browser accepts it: measured at 46 KB for 1,000 files and
+  442 KB for 10,000 (5.4 MB uncompressed). That is fine on a LAN; paging is
+  worth it only if a real library on a real TV shows the parse to be slow.
 - **Cast as a way in.** Portraits are shown but do nothing. The data to filter
   a library by actor is already fetched and cached.
 - **More than one viewer.** Progress and watched state are shared by everyone

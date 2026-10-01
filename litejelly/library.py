@@ -336,6 +336,7 @@ class Library:
         self._identify = identify
         self._videos: list[Video] = []
         self._by_id: dict[str, Video] = {}
+        self._listing: tuple[list[Video], list[dict]] | None = None
         self._signature: dict[str, tuple] = {}
         self._dirs_version = 0
         self._lock = threading.RLock()
@@ -363,6 +364,23 @@ class Library:
     def get(self, video_id: str) -> Video | None:
         with self._lock:
             return self._by_id.get(video_id)
+
+    def listing(self) -> list[dict]:
+        """Public fields for the current snapshot, built once per scan.
+
+        Rebuilding them took 97 ms per library request at 10,000 files, and
+        a published snapshot is never modified, only replaced.
+        """
+        with self._lock:
+            videos = self._videos
+            cached = self._listing
+        if cached is not None and cached[0] is videos:
+            return cached[1]
+        listing = [video.to_dict() for video in videos]
+        with self._lock:
+            if self._videos is videos:
+                self._listing = (videos, listing)
+        return listing
 
     def set_media_dirs(self, media_dirs, scan_interval: int | None = None) -> None:
         """Swap the scanned directories and force a rescan.

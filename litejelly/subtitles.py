@@ -110,16 +110,18 @@ def _sidecar_candidates(video_path: Path) -> list[Path]:
         except OSError:
             return
         for entry in entries:
+            # Name checks first: a film folder can hold thousands of files, and
+            # resolving and statting each one cost 2.5 s per playback start.
+            if entry.suffix.lower() not in SUBTITLE_EXTENSIONS:
+                continue
+            if require_stem and not entry.stem.lower().startswith(stem):
+                continue
             if not is_within(video_path.parent, entry) or not entry.is_file():
                 continue
             try:
                 if entry.stat().st_size == 0:
                     continue
             except OSError:
-                continue
-            if entry.suffix.lower() not in SUBTITLE_EXTENSIONS:
-                continue
-            if require_stem and not entry.stem.lower().startswith(stem):
                 continue
             key = str(entry).lower()
             if key not in seen:
@@ -131,12 +133,11 @@ def _sidecar_candidates(video_path: Path) -> list[Path]:
 
     # Rips often drop subtitles in a Subs/ folder, sometimes one per title.
     try:
-        children = sorted(p for p in parent.iterdir() if p.is_dir())
+        children = sorted(p for p in parent.iterdir()
+                          if p.name.lower() in SUBTITLE_DIR_NAMES and p.is_dir())
     except OSError:
         children = []
     for child in children:
-        if child.name.lower() not in SUBTITLE_DIR_NAMES:
-            continue
         collect(child, require_stem=False)
         nested = child / video_path.stem
         if nested.is_dir():
