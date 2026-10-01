@@ -8,8 +8,10 @@ Run with:  python -m unittest discover -s tests
 """
 
 import http.client
+import errno
 import json
 import logging
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -260,6 +262,96 @@ class LiveServerTests(unittest.TestCase):
                     if not terminated[child].wait(5):
                         original_terminate(child)
                 self.assertTrue(all(child.poll() is not None for child in children))
+
+    def test_a_failed_progress_write_is_reported_and_the_server_carries_on(self):
+        conn = self.connect()
+        self.addCleanup(conn.close)
+        video_id = self.video_id(conn)
+        full = sqlite3.OperationalError("database or disk is full")
+        with mock.patch.object(self.app.progress, "save", side_effect=full):
+            conn.request("POST", "/api/progress", headers={"Content-Type": "application/json"},
+                         body=json.dumps({"id": video_id, "position": 30, "duration": 100}))
+            response = conn.getresponse()
+            self.assertEqual(response.status, 500)
+            self.assertEqual(json.loads(response.read())["error"], "Internal server error")
+        conn.request("GET", "/api/library")
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200, "the same connection must keep working")
+        response.read()
+
+    def test_a_password_change_that_cannot_be_saved_changes_nothing(self):
+        conn, cookie = self.authed()
+        self.addCleanup(conn.close)
+        before = self.app.credentials
+        with mock.patch("litejelly.auth.os.replace",
+                        side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            conn.request("POST", "/api/admin/password", headers=dict(WRITE_HEADERS, Cookie=cookie),
+                         body=json.dumps({"current_password": ADMIN_PASSWORD,
+                                          "new_password": "a-different-password"}))
+            response = conn.getresponse()
+            self.assertEqual(response.status, 500)
+            response.read()
+        self.assertIs(self.app.credentials, before)
+        self.assertEqual(list(self.app.config.app_dir.glob("credentials.json*")), [])
+        conn.request("GET", "/api/admin/settings", headers={"Cookie": cookie})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200, "existing sessions must survive")
+        response.read()
+        other = self.connect()
+        self.addCleanup(other.close)
+        self.assertIsNotNone(self.sign_in(other), "the old password must still work")
+
+    def test_applying_settings_does_not_interrupt_a_running_stream(self):
+        lookup = self.connect()
+        try:
+            video_id = self.video_id(lookup)
+        finally:
+            lookup.close()
+        children = []
+        script = ("import sys\nchunk = b'a' * 262144\nwhile True:\n"
+                  "    sys.stdout.buffer.write(chunk)\n    sys.stdout.buffer.flush()\n")
+
+        def spawn(_command):
+            process = popen_quiet([sys.executable, "-u", "-c", script])
+            children.append(process)
+            return process
+
+        info = MediaInfo(probed=True, duration=3600, container="mkv", video_codec="h264",
+                         audio_codec="aac", width=1920, height=1080)
+        old_tools = self.app.tools
+        limiter = old_tools.transcode_sem
+        conn = self.connect()
+        response = None
+        try:
+            with mock.patch.object(old_tools, "ffmpeg", "fixture-ffmpeg"), \
+                 mock.patch.object(old_tools, "probe", return_value=info), \
+                 mock.patch("litejelly.streaming.popen_quiet", side_effect=spawn):
+                conn.request("GET", f"/media/transcode?id={video_id}&ss=60")
+                response = conn.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read(512)
+                self.app.apply_config(self.app.config)
+            self.assertIsNot(self.app.tools, old_tools)
+            self.assertIs(self.app.tools.transcode_sem, limiter)
+            self.assertIsNone(children[0].poll(), "the stream's process must keep running")
+            self.assertEqual(len(response.read(262144)), 262144)
+            self.assertTrue(limiter.acquire(blocking=False))
+            try:
+                self.assertFalse(limiter.acquire(blocking=False),
+                                 "the running stream must still hold its slot")
+            finally:
+                limiter.release()
+        finally:
+            if response is not None:
+                response.close()
+            conn.close()
+            for child in children:
+                try:
+                    child.wait(timeout=5)
+                except Exception:
+                    child.kill()
+                    child.wait(timeout=5)
+        self.assertTrue(all(child.poll() is not None for child in children))
 
     def test_busy_pipe_limit_does_not_block_direct_playback(self):
         connection = self.connect()

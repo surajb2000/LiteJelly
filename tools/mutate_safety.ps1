@@ -16,6 +16,11 @@ $mutations = @(
     @{ file = 'litejelly/web.py'; name = 'failed apply keeps new settings file'; from = "    except BaseException:`n        user_settings.save_overrides(app_dir, previous)`n        raise"; to = "    except BaseException:`n        raise" }
     @{ file = 'litejelly/web.py'; name = 'limit resized before the build'; from = "            # Build everything first, so a failure leaves the running services untouched.`n            built = []"; to = "            self.tools.transcode_sem.resize(new_config.transcode.max_concurrent)`n            built = []" }
     @{ file = 'server.py'; name = 'no version guard'; from = 'if sys.version_info < (3, 10):'; to = 'if False:' }
+    @{ file = 'litejelly/store.py'; name = 'progress writes unlocked'; from = "            position = 0.0`n`n        with self._lock:"; to = "            position = 0.0`n`n        if True:" }
+    @{ file = 'litejelly/settings.py'; name = 'settings temp left behind'; from = "        Path(temporary).unlink(missing_ok=True)`n        raise"; to = '        raise' }
+    @{ file = 'litejelly/auth.py'; name = 'credentials temp left behind'; from = "        Path(temporary).unlink(missing_ok=True)`n        raise"; to = '        raise' }
+    @{ file = 'litejelly/subtitles.py'; name = 'cache failure breaks subtitles'; from = "            except OSError as exc:`n                log.debug(`"Could not cache subtitle: %s`", exc)"; to = "            except ValueError as exc:`n                log.debug(`"Could not cache subtitle: %s`", exc)" }
+    @{ file = 'litejelly/web.py'; name = 'password change revokes before saving'; from = "        try:`n            admin_accounts.save_credentials(app.config.app_dir, credentials)"; to = "        app.sessions.revoke_all()`n        try:`n            admin_accounts.save_credentials(app.config.app_dir, credentials)" }
 )
-$mutations | ConvertTo-Json -Depth 5 -Compress | python "$PSScriptRoot/mutation_runner.py" --suite tests.test_identity,tests.test_lifecycle,tests.test_net,tests.test_subtitle_upload,tests.test_http,tests.test_admin
+$mutations | ConvertTo-Json -Depth 5 -Compress | python "$PSScriptRoot/mutation_runner.py" --suite tests.test_identity,tests.test_lifecycle,tests.test_net,tests.test_subtitle_upload,tests.test_http,tests.test_admin,tests.test_failures
 exit $LASTEXITCODE
