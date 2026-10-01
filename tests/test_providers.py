@@ -13,12 +13,16 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+from io import BytesIO
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from litejelly.providers import (
-    MetadataCache, MetadataProviders, SeriesInfo, artwork_digest, episode_key,
+    MetadataCache, MetadataProviders, ProviderError, RateLimitedFetcher, SeriesInfo,
+    artwork_digest, check_key, episode_key,
     parse_anilist, parse_aniskip, parse_introdb, parse_omdb, parse_tmdb,
     parse_tvmaze, redact, strip_html,
 )
@@ -417,13 +421,16 @@ class _FakeFetcher:
                 return payload
         return None
 
-    def fetch_json(self, url, data=None, content_type=""):
+    def fetch_json(self, url, data=None, content_type="", strict=False):
         if self.raise_on_call:
             raise AssertionError("the network must not be used here")
         self.calls.append(url)
-        return self._match(url)
+        payload = self._match(url)
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
 
-    def fetch(self, url, data=None, content_type=""):
+    def fetch(self, url, data=None, content_type="", strict=False):
         if self.raise_on_call:
             raise AssertionError("the network must not be used here")
         self.calls.append(url)
@@ -627,6 +634,112 @@ class KeyedProviderTests(unittest.TestCase):
         self.assertIn("api_key=s3cret", fetcher.calls[0])
         for path in self.root.rglob("*.json"):
             self.assertNotIn("s3cret", path.read_text(encoding="utf-8"))
+
+    def test_a_refused_key_is_not_remembered_as_no_match(self):
+        """A mistyped key used to cache every film as unknown for three days."""
+        refused = ProviderError("Invalid API key", rejected=True)
+        fetcher = _FakeFetcher({"search/movie": refused})
+        providers = MetadataProviders(self.root, fetcher, tmdb_key="wrong")
+        self.assertIsNone(providers.movie("Fight Club", 1999))
+        self.assertFalse(providers.has_looked_up_movie("Fight Club", 1999))
+        self.assertIsNone(providers.movie("Inception", 2010))
+        self.assertEqual(len(fetcher.calls), 1, "a refused key must not be sent again")
+
+    def test_an_unreachable_provider_is_asked_again_later(self):
+        unreachable = ProviderError("Could not reach the service: reset")
+        fetcher = _FakeFetcher({"search/movie": unreachable})
+        providers = MetadataProviders(self.root, fetcher, tmdb_key="k")
+        self.assertIsNone(providers.movie("Fight Club", 1999))
+        self.assertFalse(providers.has_looked_up_movie("Fight Club", 1999))
+        providers.movie("Fight Club", 1999)
+        self.assertEqual(len(fetcher.calls), 2)
+
+    def test_a_refused_tmdb_does_not_cache_a_show_as_unknown(self):
+        refused = ProviderError("Invalid API key", rejected=True)
+        fetcher = _FakeFetcher({"search/tv": refused})
+        providers = MetadataProviders(self.root, fetcher, tmdb_key="wrong")
+        self.assertIsNone(providers.series("Obscure Show"))
+        self.assertFalse(providers.has_looked_up("Obscure Show"))
+
+    def test_a_refused_omdb_key_keeps_the_rest_of_the_show(self):
+        refused = ProviderError("Invalid API key!", rejected=True)
+        fetcher = _FakeFetcher({"singlesearch": TVMAZE, "omdbapi": refused})
+        info = MetadataProviders(self.root, fetcher, omdb_key="wrong").series("The Mentalist")
+        self.assertEqual(info.title, "The Mentalist")
+        self.assertIsNone(info.imdb_rating)
+
+
+class StrictFetchTests(unittest.TestCase):
+    """Strict fetches separate a refused key and a dead network from 'no match'."""
+
+    def _fail_with(self, error):
+        fetcher = RateLimitedFetcher(interval=0)
+        with mock.patch("litejelly.providers.open_remote", side_effect=error):
+            with self.assertRaises(ProviderError) as caught:
+                fetcher.fetch("https://api.themoviedb.org/3/configuration", strict=True)
+        return caught.exception
+
+    def _http(self, code, body):
+        return urllib.error.HTTPError("u", code, "x", {}, BytesIO(body))
+
+    def test_a_refused_key_carries_the_providers_message(self):
+        error = self._fail_with(self._http(401, b'{"status_code":7,"status_message":'
+                                                b'"Invalid API key: You must be granted a valid key."}'))
+        self.assertTrue(error.rejected)
+        self.assertIn("Invalid API key", str(error))
+
+    def test_omdb_measured_reply_to_a_wrong_key(self):
+        """Measured 2026-10-01: OMDb answers 401 {"Error":"Invalid API key!"}."""
+        error = self._fail_with(self._http(401, b'{"Response":"False","Error":"Invalid API key!"}'))
+        self.assertTrue(error.rejected)
+        self.assertEqual(str(error), "Invalid API key!")
+
+    def test_a_spent_quota_is_not_a_refused_key(self):
+        error = self._fail_with(self._http(401, b'{"Response":"False","Error":"Request limit reached!"}'))
+        self.assertFalse(error.rejected)
+
+    def test_a_reset_connection_is_unreachable_not_refused(self):
+        """Measured 2026-10-01: TMDb reset the connection from this network."""
+        error = self._fail_with(urllib.error.URLError(ConnectionResetError(10054, "reset")))
+        self.assertFalse(error.rejected)
+        self.assertIn("Could not reach", str(error))
+
+    def test_lenient_fetch_still_returns_none(self):
+        fetcher = RateLimitedFetcher(interval=0)
+        with mock.patch("litejelly.providers.open_remote", side_effect=self._http(401, b"{}")):
+            self.assertIsNone(fetcher.fetch("https://api.tvmaze.com/x"))
+
+
+class CheckKeyTests(unittest.TestCase):
+    def test_a_working_tmdb_key_is_ready(self):
+        fetcher = _FakeFetcher({"configuration": {"images": {}}})
+        self.assertEqual(check_key("tmdb", "good", fetcher)["state"], "valid")
+        self.assertIn("api_key=good", fetcher.calls[0])
+
+    def test_a_refused_key_is_rejected_with_the_reason(self):
+        fetcher = _FakeFetcher({"configuration": ProviderError("Invalid API key", rejected=True)})
+        result = check_key("tmdb", "bad", fetcher)
+        self.assertEqual((result["ok"], result["state"]), (False, "rejected"))
+        self.assertIn("Invalid API key", result["detail"])
+
+    def test_an_unreachable_provider_is_not_called_a_bad_key(self):
+        fetcher = _FakeFetcher({"configuration": ProviderError("Could not reach the service")})
+        self.assertEqual(check_key("tmdb", "k", fetcher)["state"], "failed")
+
+    def test_omdb_refusal_inside_a_200_reply(self):
+        fetcher = _FakeFetcher({"omdbapi": {"Response": "False", "Error": "Invalid API key!"}})
+        self.assertEqual(check_key("omdb", "bad", fetcher)["state"], "rejected")
+
+    def test_a_working_omdb_key_is_ready(self):
+        fetcher = _FakeFetcher({"omdbapi": OMDB})
+        self.assertTrue(check_key("omdb", "good", fetcher)["ok"])
+
+    def test_no_answer_is_not_ready(self):
+        self.assertEqual(check_key("tmdb", "k", _FakeFetcher({}))["state"], "failed")
+
+    def test_only_known_providers_are_checked(self):
+        with self.assertRaises(ValueError):
+            check_key("elsewhere", "k", _FakeFetcher({}))
 
 
 class IntroDbParsingTests(unittest.TestCase):

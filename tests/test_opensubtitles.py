@@ -378,8 +378,56 @@ class RouteTests(unittest.TestCase):
     def test_the_password_is_never_sent_back(self):
         handler = self.web[self.web.index("def admin_opensubtitles"):]
         handler = handler[:handler.index("def admin_opensubtitles_test")]
-        self.assertIn("to_public_dict()", handler)
+        self.assertIn("public_status()", handler)
         self.assertNotIn(".password", handler.split("OpenSubtitlesAccount(")[0])
+
+
+class VerificationTests(unittest.TestCase):
+    """Filled-in fields are not a working account; only a sign-in says so."""
+
+    def setUp(self):
+        self.dir = TemporaryDirectory()
+        self.root = Path(self.dir.name)
+        os_api.save_account(self.root, os_api.Account("key", "user", "hunter2"))
+        self.client = os_api.OpenSubtitles(self.root)
+        self.client._pace = lambda: None
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_a_saved_account_is_not_verified_yet(self):
+        status = self.client.public_status()
+        self.assertTrue(status["configured"])
+        self.assertFalse(status["verified"])
+        self.assertEqual(status["error"], "")
+
+    def test_a_successful_sign_in_verifies_it(self):
+        fake, _ = stub([{"token": "abc"}])
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
+            self.client.sign_in()
+        self.assertTrue(self.client.public_status()["verified"])
+
+    def test_a_refused_sign_in_reports_why(self):
+        body = BytesIO(b'{"message": "You cannot consume this service"}')
+        fake, _ = stub([urllib.error.HTTPError("u", 403, "Forbidden", {}, body)])
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
+            with self.assertRaises(os_api.OpenSubtitlesError):
+                self.client.sign_in()
+        status = self.client.public_status()
+        self.assertFalse(status["verified"])
+        self.assertIn("You cannot consume this service", status["error"])
+
+    def test_changing_the_account_needs_a_new_sign_in(self):
+        fake, _ = stub([{"token": "abc"}])
+        with mock.patch("litejelly.opensubtitles.open_remote", fake):
+            self.client.sign_in()
+        self.client.set_account(os_api.Account("key", "someone-else", "pw"))
+        self.assertFalse(self.client.public_status()["verified"])
+
+    def test_the_status_never_carries_secrets(self):
+        public = json.dumps(self.client.public_status())
+        self.assertNotIn("hunter2", public)
+        self.assertNotIn('"key"', public)
 
 
 if __name__ == "__main__":

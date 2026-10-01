@@ -38,7 +38,7 @@ from .library import (
 )
 from .paths import is_within
 from .playback import _audio_delay_ms, _audio_index, _audio_mode, _audio_tracks
-from .providers import MetadataProviders, artwork_digest
+from .providers import MetadataProviders, artwork_digest, check_key
 from .store import ProgressStore
 from .streaming import CHUNK_SIZE, ReadAhead, parse_range
 from .subtitles import (SubtitleService, discover as discover_subtitles,
@@ -291,6 +291,7 @@ class Application:
             ("POST", "/api/admin/settings/import"): Routes.admin_settings_import,
             ("POST", "/api/admin/metadata/clear"): Routes.admin_metadata_clear,
             ("POST", "/api/admin/metadata/forget"): Routes.admin_metadata_forget,
+            ("POST", "/api/admin/metadata/test"): Routes.admin_metadata_test,
             ("POST", "/api/admin/encoder/test"): Routes.admin_encoder_test,
             ("GET", "/api/admin/session"): Routes.admin_session,
             ("POST", "/api/admin/setup"): Routes.admin_setup,
@@ -922,6 +923,24 @@ class Routes:
         h.send_json({"ok": True, "removed": removed, "title": video.title})
 
     @staticmethod
+    def admin_metadata_test(h, query):
+        """Ask TMDb or OMDb whether a key works; a filled-in field proves nothing."""
+        if not h.require_admin(query, write=True):
+            return
+        body = h.read_json_body()
+        if body is None:
+            return
+        provider = str(body.get("provider") or "")
+        key = str(body.get("key") or "").strip()
+        if provider not in ("tmdb", "omdb"):
+            h.send_api_error(HTTPStatus.BAD_REQUEST, "Unknown provider")
+            return
+        if not key or len(key) > 128 or any(ch.isspace() for ch in key):
+            h.send_api_error(HTTPStatus.BAD_REQUEST, "That does not look like an API key")
+            return
+        h.send_json(check_key(provider, key))
+
+    @staticmethod
     def progress_get(h, query):
         video_id = query.get("id", [""])[0]
         if video_id:
@@ -1391,7 +1410,7 @@ class Routes:
         if not h.require_admin(query):
             return
         h.send_json({"ok": True,
-                     "opensubtitles": h.app.opensubtitles.account.to_public_dict()})
+                     "opensubtitles": h.app.opensubtitles.public_status()})
 
     @staticmethod
     def admin_opensubtitles_save(h, query):
@@ -1418,7 +1437,7 @@ class Routes:
             return
         log.info("OpenSubtitles account %s",
                  "cleared" if body.get("forget") else "updated")
-        h.send_json({"ok": True, "opensubtitles": account.to_public_dict()})
+        h.send_json({"ok": True, "opensubtitles": h.app.opensubtitles.public_status()})
 
     @staticmethod
     def admin_opensubtitles_test(h, query):

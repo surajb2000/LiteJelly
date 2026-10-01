@@ -397,6 +397,14 @@ actually measured. And "forget this match" exists because a lookup that lands
 on the wrong show is otherwise permanent: it clears the cached records for
 that title so the next scan can try again.
 
+API keys are not called ready because a field is filled in. TMDb and OMDb keys
+are checked with the provider when entered, when the page opens, and on
+**Test key**; the result is Ready, Rejected (with the provider's reason) or
+Couldn't check when the service is unreachable. OpenSubtitles reads Ready only
+after a sign-in with the saved account succeeds. A refused or unreachable
+lookup is no longer remembered as "no match", so fixing a key takes effect on
+the next scan.
+
 Everything except `port` and `host` applies immediately; those two are saved
 and reported as needing a restart.
 

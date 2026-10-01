@@ -172,6 +172,8 @@ class OpenSubtitles:
         self.account = load_account(app_dir)
         self._token = ""
         self._token_at = 0.0
+        self._verified_as = ""
+        self._last_error = ""
         self._lock = threading.RLock()
         self._pace_lock = threading.Lock()
         self._last_call = 0.0
@@ -183,6 +185,16 @@ class OpenSubtitles:
             self.account = account
             self._token = ""
             self._token_at = 0.0
+            self._verified_as = ""
+            self._last_error = ""
+
+    def public_status(self) -> dict:
+        """The saved account, and whether signing in with it has actually worked."""
+        # Read without the lock: a sign-in holds it across a network call.
+        status = self.account.to_public_dict()
+        status["verified"] = bool(self._verified_as) and self._verified_as == self.account.username
+        status["error"] = self._last_error
+        return status
 
     # -- plumbing ---------------------------------------------------------
 
@@ -244,15 +256,22 @@ class OpenSubtitles:
             if not self.account.configured:
                 raise OpenSubtitlesError(
                     "OpenSubtitles needs an API key, a username and a password")
-            body = self._call("POST", "/login", {
-                "username": self.account.username,
-                "password": self.account.password,
-            })
-            token = str(body.get("token") or "")
-            if not token:
-                raise OpenSubtitlesError("OpenSubtitles refused the sign-in")
+            try:
+                body = self._call("POST", "/login", {
+                    "username": self.account.username,
+                    "password": self.account.password,
+                })
+                token = str(body.get("token") or "")
+                if not token:
+                    raise OpenSubtitlesError("OpenSubtitles refused the sign-in")
+            except OpenSubtitlesError as error:
+                self._verified_as = ""
+                self._last_error = str(error)
+                raise
             self._token = token
             self._token_at = time.time()
+            self._verified_as = self.account.username
+            self._last_error = ""
             return token
 
     # -- the two things it is for -----------------------------------------

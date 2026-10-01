@@ -15,7 +15,8 @@
     hwaccels: ['none'],
     restartFields: [],
     localIp: '',
-    port: 0
+    port: 0,
+    keyChecks: {}
   };
 
   function $(id) { return document.getElementById(id); }
@@ -91,18 +92,70 @@
 
   // -- media directory rows ------------------------------------------------
 
-  // A key field that is filled in is the difference between a provider that
-  // works and one that silently does nothing, so say which it is.
+  // Only the provider's own answer may call a key ready; typing proves nothing.
+  var KEY_FIELDS = {
+    tmdb: { input: 'tmdb_api_key', pill: 'tmdb-status', note: 'tmdb-check', button: 'tmdb-test' },
+    omdb: { input: 'omdb_api_key', pill: 'omdb-status', note: 'omdb-check', button: 'omdb-test' }
+  };
+  var KEY_LOOKS = {
+    empty: ['Needs key', 'needs-key'],
+    unchecked: ['Not checked', 'unchecked'],
+    checking: ['Checking\u2026', 'unchecked'],
+    valid: ['Ready', 'ready'],
+    rejected: ['Rejected', 'rejected'],
+    failed: ['Couldn\u2019t check', 'needs-key']
+  };
+
+  function renderKey(provider) {
+    var field = KEY_FIELDS[provider];
+    var value = $(field.input).value.trim();
+    var check = state.keyChecks[provider];
+    var known = check && check.key === value;
+    var current = !value ? 'empty' : (known ? check.state : 'unchecked');
+    var look = KEY_LOOKS[current];
+    var pill = $(field.pill);
+    pill.className = 'pill ' + look[1];
+    text(pill, look[0]);
+    var note = $(field.note);
+    note.className = 'save-status' + (current === 'valid' ? ' ok'
+      : (current === 'rejected' || current === 'failed') ? ' error' : '');
+    text(note, current === 'valid' ? 'Accepted by the provider.' : (known ? check.detail : ''));
+    $(field.button).disabled = !value || current === 'checking';
+  }
+
   function syncProviderStatus() {
-    [['tmdb_api_key', 'tmdb-status'], ['omdb_api_key', 'omdb-status']]
-      .forEach(function (pair) {
-        var field = $(pair[0]);
-        var pill = $(pair[1]);
-        if (!field || !pill) return;
-        var ready = field.value.trim() !== '';
-        pill.textContent = ready ? 'Ready' : 'Needs key';
-        pill.className = 'pill ' + (ready ? 'ready' : 'needs-key');
-      });
+    Object.keys(KEY_FIELDS).forEach(renderKey);
+  }
+
+  function checkKey(provider, force) {
+    var value = $(KEY_FIELDS[provider].input).value.trim();
+    var previous = state.keyChecks[provider];
+    if (!value || (!force && previous && previous.key === value)) {
+      renderKey(provider);
+      return;
+    }
+    var pending = { key: value, state: 'checking', detail: '' };
+    state.keyChecks[provider] = pending;
+    renderKey(provider);
+    function settle(outcome, detail) {
+      // A newer check for this provider owns the result.
+      if (state.keyChecks[provider] !== pending) { return; }
+      state.keyChecks[provider] = { key: value, state: outcome, detail: detail };
+      renderKey(provider);
+    }
+    request('POST', '/api/admin/metadata/test', { provider: provider, key: value })
+      .then(function (result) {
+        var data = result.data || {};
+        if (result.ok && KEY_LOOKS[data.state]) {
+          settle(data.state, data.detail || '');
+        } else {
+          settle('failed', errorText(result, 'The check failed.'));
+        }
+      }, function () { settle('failed', 'The check could not be sent.'); });
+  }
+
+  function checkSavedKeys() {
+    Object.keys(KEY_FIELDS).forEach(function (provider) { checkKey(provider, false); });
   }
 
   // Capitalising the raw value gives "Qsv" and "Mediafoundation".
@@ -176,6 +229,7 @@
     $('tmdb_api_key').value = settings.tmdb_api_key || '';
     $('omdb_api_key').value = settings.omdb_api_key || '';
     syncProviderStatus();
+    checkSavedKeys();
     $('ffmpeg_path').value = settings.ffmpeg_path || '';
     $('ffprobe_path').value = settings.ffprobe_path || '';
     $('log_verbosity').value = settings.log_verbosity || 'info';
@@ -351,13 +405,18 @@
     text(node, message);
   }
 
-  function renderOpenSubtitles(info) {
-    var state = 'Not set up';
-    if (info && info.configured) { state = 'Ready, as ' + info.username; }
-    else if (info && (info.has_key || info.username || info.has_password)) {
-      state = 'Incomplete: needs a key, a username and a password';
+  function openSubtitlesState(info) {
+    if (!info || !(info.has_key || info.username || info.has_password)) {
+      return 'Not set up';
     }
-    text($('os-state'), state);
+    if (!info.configured) { return 'Incomplete: needs a key, a username and a password'; }
+    if (info.verified) { return 'Ready, signed in as ' + info.username; }
+    if (info.error) { return 'Sign-in failed: ' + info.error; }
+    return 'Saved, not checked yet';
+  }
+
+  function renderOpenSubtitles(info) {
+    text($('os-state'), openSubtitlesState(info));
     if (info && info.username) { $('os_username').value = info.username; }
     // The key and the password are never sent back, so the boxes stay empty
     // and blank means "keep what is stored".
@@ -384,16 +443,24 @@
       }
       renderOpenSubtitles(result.data.opensubtitles);
       openSubtitlesStatus('Saved', 'ok');
+      if (result.data.opensubtitles && result.data.opensubtitles.configured) {
+        testOpenSubtitles();
+      }
     });
   }
 
   function testOpenSubtitles() {
-    openSubtitlesStatus('Signing in…');
+    openSubtitlesStatus('Signing in\u2026');
+    $('os-test').disabled = true;
     request('POST', '/api/admin/opensubtitles/test', {}).then(function (result) {
+      $('os-test').disabled = false;
       if (!result.ok) {
-        openSubtitlesStatus((result.data && result.data.error) || 'Failed', 'error');
+        var message = (result.data && result.data.error) || 'Failed';
+        text($('os-state'), 'Sign-in failed: ' + message);
+        openSubtitlesStatus(message, 'error');
         return;
       }
+      text($('os-state'), 'Ready, signed in as ' + result.data.username);
       openSubtitlesStatus('Signed in as ' + result.data.username, 'ok');
     });
   }
@@ -850,6 +917,11 @@
     $('log-filter').addEventListener('change', loadLogs);
     $('tmdb_api_key').addEventListener('input', syncProviderStatus);
     $('omdb_api_key').addEventListener('input', syncProviderStatus);
+    Object.keys(KEY_FIELDS).forEach(function (provider) {
+      var field = KEY_FIELDS[provider];
+      $(field.input).addEventListener('change', function () { checkKey(provider, false); });
+      $(field.button).addEventListener('click', function () { checkKey(provider, true); });
+    });
     $('meta-forget').addEventListener('click', forgetShow);
     $('encoder-test').addEventListener('click', testEncoder);
     $('meta-clear').addEventListener('click', clearMetadata);

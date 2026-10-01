@@ -621,12 +621,34 @@ class LiveServerTests(unittest.TestCase):
 
     def test_metadata_endpoints_are_admin_guarded(self):
         conn = self.connect()
-        for path in ("/api/admin/metadata/clear", "/api/admin/metadata/forget"):
+        for path in ("/api/admin/metadata/clear", "/api/admin/metadata/forget",
+                     "/api/admin/metadata/test"):
             conn.request("POST", path, body="{}", headers=WRITE_HEADERS)
             response = conn.getresponse()
             self.assertEqual(response.status, 401, path)
             response.read()
         conn.close()
+
+    def test_key_check_reports_the_providers_answer(self):
+        conn, cookie = self.authed()
+        self.addCleanup(conn.close)
+        headers = dict(WRITE_HEADERS, Cookie=cookie)
+        answer = {"ok": False, "state": "rejected", "detail": "TMDb: Invalid API key"}
+        with mock.patch("litejelly.web.check_key", return_value=answer) as check:
+            conn.request("POST", "/api/admin/metadata/test", headers=headers,
+                         body=json.dumps({"provider": "tmdb", "key": " typed-key "}))
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read()), answer)
+            check.assert_called_once_with("tmdb", "typed-key")
+            for body in ({"provider": "elsewhere", "key": "k"}, {"provider": "omdb", "key": ""},
+                         {"provider": "omdb", "key": "has space"}):
+                conn.request("POST", "/api/admin/metadata/test", headers=headers,
+                             body=json.dumps(body))
+                response = conn.getresponse()
+                self.assertEqual(response.status, 400, body)
+                response.read()
+            self.assertEqual(check.call_count, 1)
 
     def test_metadata_clear_reports_when_lookups_are_off(self):
         # Online metadata is opt-in, so there is nothing cached to clear.

@@ -165,6 +165,10 @@
           <label for="tmdb_api_key">TMDb API key (optional)</label>
           <input type="text" id="tmdb_api_key" name="tmdb_api_key" spellcheck="false"
                  autocomplete="off" placeholder="Leave empty to skip films">
+          <div class="actions">
+            <button type="button" class="btn" id="tmdb-test">Test key</button>
+            <span id="tmdb-check" class="save-status" role="status"></span>
+          </div>
           <p class="hint">
             Films have no source that works without an account. A free key from
             themoviedb.org adds posters, plots and ratings for them.
@@ -174,6 +178,10 @@
           <label for="omdb_api_key">OMDb API key (optional)</label>
           <input type="text" id="omdb_api_key" name="omdb_api_key" spellcheck="false"
                  autocomplete="off" placeholder="Leave empty for no IMDb scores">
+          <div class="actions">
+            <button type="button" class="btn" id="omdb-test">Test key</button>
+            <span id="omdb-check" class="save-status" role="status"></span>
+          </div>
           <p class="hint">
             The only free route to the actual IMDb rating. A free key is
             emailed by omdbapi.com.

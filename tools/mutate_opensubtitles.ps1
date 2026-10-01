@@ -13,7 +13,10 @@ $mutations = @(
     @{ file = 'litejelly/web.py';           name = 'fetch needs no account'; from = "    def subtitle_fetch(h, query):`n        `"`"`"Download one of those results and keep it beside the video.`"`"`"`n        if not h.require_admin(query, write=True):"; to = "    def subtitle_fetch(h, query):`n        `"`"`"Download one of those results and keep it beside the video.`"`"`"`n        if False:" }
     @{ file = 'litejelly/web.py';           name = 'search needs no account'; from = "        if not h.require_admin(query, write=False):"; to = "        if False:" }
     @{ file = 'litejelly/web.py';           name = 'download skips the check'; from = "language = str(body.get(`"language`") or `"`") or language_from_name(remote_name)`n        try:`n            saved = save_sidecar(path, data, language)"; to = "language = str(body.get(`"language`") or `"`") or language_from_name(remote_name)`n        try:`n            saved = path.with_suffix(`".srt`")" }
+    @{ file = 'litejelly/opensubtitles.py'; name = 'saved account counts as verified'; from = 'status["verified"] = bool(self._verified_as) and self._verified_as == self.account.username'; to = 'status["verified"] = self.account.configured' }
+    @{ file = 'litejelly/providers.py';     name = 'refused key cached as no match'; from = "            log.debug(`"TMDb lookup for %r not cached: %s`", title, exc)`n            return None`n        if info is None:`n            self.cache.put(`"tmdb-movie`", key, None, miss=True)"; to = "            info = None`n        if info is None:`n            self.cache.put(`"tmdb-movie`", key, None, miss=True)" }
+    @{ file = 'litejelly/providers.py';     name = 'unreachable called refused'; from = 'return {"ok": False, "state": "rejected" if exc.rejected else "failed",'; to = 'return {"ok": False, "state": "rejected",' }
 )
 
-$mutations | ConvertTo-Json -Depth 5 -Compress | python "$PSScriptRoot/mutation_runner.py" --suite tests.test_opensubtitles
+$mutations | ConvertTo-Json -Depth 5 -Compress | python "$PSScriptRoot/mutation_runner.py" --suite tests.test_opensubtitles,tests.test_providers
 exit $LASTEXITCODE

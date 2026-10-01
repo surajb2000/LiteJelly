@@ -96,6 +96,30 @@ query ($search: String) {
 """
 
 
+class ProviderError(Exception):
+    """A lookup that failed, as opposed to one that found nothing."""
+
+    def __init__(self, message: str, rejected: bool = False):
+        super().__init__(message)
+        self.rejected = rejected
+
+
+def _provider_message(error: urllib.error.HTTPError) -> str:
+    """The provider's own explanation, which says more than the status code."""
+    try:
+        body = error.read(4096) if getattr(error, "fp", None) is not None else b""
+        payload = json.loads(body.decode("utf-8", "replace")) if body else {}
+    except (OSError, ValueError, AttributeError):
+        payload = {}
+    if isinstance(payload, dict):
+        # TMDb, OMDb and generic APIs respectively.
+        for name in ("status_message", "Error", "message"):
+            value = payload.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:200]
+    return f"HTTP {error.code}"
+
+
 def strip_html(text: str) -> str:
     """TVmaze and AniList summaries arrive as HTML."""
     if not text:
@@ -123,7 +147,8 @@ class RateLimitedFetcher:
             self._last = time.monotonic()
 
     def fetch(self, url: str, data: bytes | None = None,
-              content_type: str = "") -> bytes | None:
+              content_type: str = "", strict: bool = False) -> bytes | None:
+        """Return the body, or None for no match; ``strict`` raises ProviderError on failure."""
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         if content_type:
             headers["Content-Type"] = content_type
@@ -134,7 +159,11 @@ class RateLimitedFetcher:
             try:
                 with open_remote(request, timeout=REQUEST_TIMEOUT) as response:
                     payload = response.read(MAX_RESPONSE_BYTES + 1)
-                    return payload if len(payload) <= MAX_RESPONSE_BYTES else None
+                    if len(payload) <= MAX_RESPONSE_BYTES:
+                        return payload
+                    if strict:
+                        raise ProviderError("The reply was larger than allowed")
+                    return None
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     return None  # A clean "no match", not a failure.
@@ -143,20 +172,30 @@ class RateLimitedFetcher:
                     time.sleep(2 ** attempt * 2)
                     continue
                 log.debug("%s returned HTTP %s", redact(url), exc.code)
+                if strict:
+                    message = _provider_message(exc)
+                    # OMDb answers 401 for a spent daily quota too; that key is valid.
+                    refused = exc.code in (401, 403) and "limit" not in message.lower()
+                    raise ProviderError(message, rejected=refused) from exc
                 return None
             except (urllib.error.URLError, OSError, ValueError) as exc:
                 log.debug("%s failed: %s", redact(url), exc)
+                if strict:
+                    reason = getattr(exc, "reason", exc)
+                    raise ProviderError(f"Could not reach the service: {reason}") from exc
                 return None
         return None
 
     def fetch_json(self, url: str, data: bytes | None = None,
-                   content_type: str = "") -> dict | None:
-        raw = self.fetch(url, data, content_type)
+                   content_type: str = "", strict: bool = False) -> dict | None:
+        raw = self.fetch(url, data, content_type, strict=strict)
         if not raw:
             return None
         try:
             parsed = json.loads(raw.decode("utf-8", "replace"))
         except ValueError:
+            if strict:
+                raise ProviderError("The reply was not JSON") from None
             return None
         return parsed if isinstance(parsed, dict) else None
 
@@ -532,6 +571,34 @@ def _collect_urls(node, found: set[str]) -> None:
         found.add(artwork_digest(node))
 
 
+KEY_PROVIDERS = {"tmdb": "TMDb", "omdb": "OMDb"}
+
+
+def check_key(provider: str, key: str, fetcher: RateLimitedFetcher | None = None) -> dict:
+    """Ask the provider about a key; only its answer may call the key ready."""
+    quoted = urllib.parse.quote(key)
+    if provider == "tmdb":
+        url = f"{TMDB_ROOT}/configuration?api_key={quoted}"
+    elif provider == "omdb":
+        url = f"{OMDB_ROOT}?apikey={quoted}&i=tt0111161"
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+    label = KEY_PROVIDERS[provider]
+    try:
+        payload = (fetcher or RateLimitedFetcher(interval=0)).fetch_json(url, strict=True)
+    except ProviderError as exc:
+        return {"ok": False, "state": "rejected" if exc.rejected else "failed",
+                "detail": f"{label}: {exc}"}
+    if payload is None:
+        return {"ok": False, "state": "failed", "detail": f"{label} gave no usable answer"}
+    if provider == "omdb" and str(payload.get("Response")).lower() == "false":
+        message = str(payload.get("Error") or "refused the request")
+        refused = "key" in message.lower()
+        return {"ok": False, "state": "rejected" if refused else "failed",
+                "detail": f"{label}: {message}"}
+    return {"ok": True, "state": "valid", "detail": ""}
+
+
 class MetadataProviders:
     """Looks things up once, remembers the answer, and never blocks a request."""
 
@@ -542,6 +609,21 @@ class MetadataProviders:
         self.fetcher = fetcher or RateLimitedFetcher()
         self.tmdb_key = (tmdb_key or "").strip()
         self.omdb_key = (omdb_key or "").strip()
+        # Providers that refused their key; a settings change builds a fresh instance.
+        self._refused: dict[str, str] = {}
+
+    def _keyed_json(self, provider: str, url: str) -> dict | None:
+        """Fetch with a configured key, and stop sending a key once it is refused."""
+        if provider in self._refused:
+            raise ProviderError(self._refused[provider], rejected=True)
+        try:
+            return self.fetcher.fetch_json(url, strict=True)
+        except ProviderError as exc:
+            if exc.rejected:
+                self._refused[provider] = str(exc)
+                log.warning("%s refused the configured API key: %s",
+                            KEY_PROVIDERS[provider], exc)
+            raise
 
     # -- series -----------------------------------------------------------
     def cached_series(self, title: str, anime: bool = False) -> SeriesInfo | None:
@@ -702,7 +784,12 @@ class MetadataProviders:
         info = self._fetch_anilist(title) if anime else self._fetch_tvmaze(title)
         if info is None and not anime:
             # TMDb covers shows TVmaze does not, but only with a key.
-            info = self._fetch_tmdb(title, kind="tv")
+            try:
+                info = self._fetch_tmdb(title, kind="tv")
+            except ProviderError as exc:
+                # A refused or unreachable TMDb is not evidence the show is unknown.
+                log.debug("TMDb lookup for %r not cached: %s", title, exc)
+                return None
         if info is None:
             self.cache.put(namespace, title, None, miss=True)
             return None
@@ -719,7 +806,11 @@ class MetadataProviders:
         if cached is not None:
             return SeriesInfo.from_dict(cached) if cached else None
 
-        info = self._fetch_tmdb(title, year, kind="movie")
+        try:
+            info = self._fetch_tmdb(title, year, kind="movie")
+        except ProviderError as exc:
+            log.debug("TMDb lookup for %r not cached: %s", title, exc)
+            return None
         if info is None:
             self.cache.put("tmdb-movie", key, None, miss=True)
             return None
@@ -748,7 +839,7 @@ class MetadataProviders:
                f"&query={urllib.parse.quote(title)}&include_adult=false")
         if year:
             url += f"&year={int(year)}"
-        payload = self.fetcher.fetch_json(url)
+        payload = self._keyed_json("tmdb", url)
         return parse_tmdb(payload, kind) if payload else None
 
     def _attach_imdb_rating(self, info: SeriesInfo) -> None:
@@ -759,7 +850,11 @@ class MetadataProviders:
                  else f"t={urllib.parse.quote(info.title)}"
                       + (f"&y={info.year}" if info.year else ""))
         url = f"{OMDB_ROOT}?apikey={urllib.parse.quote(self.omdb_key)}&{query}"
-        payload = self.fetcher.fetch_json(url)
+        try:
+            payload = self._keyed_json("omdb", url)
+        except ProviderError as exc:
+            log.debug("OMDb rating for %r skipped: %s", info.title, exc)
+            return
         if not payload:
             return
         rating, imdb_id = parse_omdb(payload)
